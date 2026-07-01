@@ -17,6 +17,7 @@ class Regime(str, Enum):
     RANGING = "RANGING"
     HIGH_VOLATILITY = "HIGH_VOLATILITY"
     NEUTRAL = "NEUTRAL"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"  # warmup — not a tradeable regime
 
 
 class Direction(str, Enum):
@@ -64,7 +65,12 @@ class MarketSnapshot:
     # Optional context the guards consume; sensible defaults keep tests simple.
     open_positions: Dict[str, Direction] = field(default_factory=dict)
     news_windows: List["NewsWindow"] = field(default_factory=list)
-    account_drawdown_pct: float = 0.0  # current daily drawdown, positive number
+    account_drawdown_pct: float = 0.0  # legacy daily-drawdown scalar (fallback)
+    # Richer risk inputs (optional; guards fall back to the legacy fields above
+    # when these are not supplied, preserving behaviour).
+    equity: Optional[float] = None                       # live account equity
+    position_counts: Dict[str, int] = field(default_factory=dict)      # symbol -> open count
+    symbol_exposure_pct: Dict[str, float] = field(default_factory=dict)  # symbol -> % of equity
 
     def tf(self, timeframe: str) -> List[Candle]:
         return self.candles.get(timeframe, [])
@@ -115,6 +121,7 @@ class ScoreResult:
     orb: Optional["ORBDecision"] = None
     thesis: str = ""  # Trade Thesis Summary — informational only, never scored
     strategies: Optional[dict] = None  # consolidated multi-strategy breakdown
+    data_quality_flag: bool = False    # True during warmup / insufficient data
 
     def as_dict(self) -> dict:
         return {
@@ -127,6 +134,7 @@ class ScoreResult:
             "orb": self.orb.as_dict() if self.orb else None,
             "thesis": self.thesis,
             "strategies": self.strategies,
+            "data_quality_flag": self.data_quality_flag,
         }
 
 

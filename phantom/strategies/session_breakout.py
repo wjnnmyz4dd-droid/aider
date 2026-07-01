@@ -13,8 +13,9 @@ Scoring: Session Breakout +8, +Trend +5, +BOS +5.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ..config import Config, DEFAULT_CONFIG
@@ -37,6 +38,7 @@ class SessionBreakoutContinuation(Strategy):
     def __init__(self, config: Config = DEFAULT_CONFIG):
         self.config = config
         self._ranges = {}  # keyed by symbol:date -> AsiaRange (for introspection)
+        self._lock = threading.Lock()  # FIX 9
 
     def asia_range(self, snap: MarketSnapshot) -> Optional[AsiaRange]:
         sp = self.config.strategies
@@ -51,7 +53,10 @@ class SessionBreakoutContinuation(Strategy):
         rng = AsiaRange(snap.symbol.upper(), day.isoformat(),
                         max(c.high for c in candles), min(c.low for c in candles),
                         complete=now >= end)
-        self._ranges[f"{snap.symbol.upper()}:{day.isoformat()}"] = rng
+        cutoff = (day - timedelta(days=self.config.state_ttl_days)).isoformat()  # FIX 8
+        with self._lock:  # FIX 9
+            self._ranges[f"{snap.symbol.upper()}:{day.isoformat()}"] = rng
+            self._ranges = {k: v for k, v in self._ranges.items() if v.date >= cutoff}
         return rng
 
     def evaluate(self, snap: MarketSnapshot, ctx: StrategyContext) -> StrategySignal:

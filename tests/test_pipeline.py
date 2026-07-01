@@ -6,19 +6,26 @@ import json
 import threading
 import unittest
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from phantom.app import create_app
 from phantom.api import registered_routes, serve
-from phantom.orb import ORBContext, ORBEngine
+from phantom.config import DEFAULT_CONFIG
+from phantom.guards import ComplianceEngine, Guards
+from phantom.orb import ORBContext, ORBEngine, ORBRange
 from phantom.scanner import Scanner
-from phantom.types import Candle, Decision, Direction, Regime
+from phantom.types import Candle, Decision, Direction, MarketSnapshot, Regime
 from tests.fixtures import (
+    NOW,
     approve_long_snapshot,
     guard_blocked_snapshot,
     ranging_snapshot,
     strong_approve_snapshot,
 )
+
+
+def _bare_snap(symbol="EURUSD", **kw):
+    return MarketSnapshot(symbol=symbol, now=NOW, candles={}, spread=0.00008, **kw)
 
 
 def _orb_ctx(regime=Regime.TRENDING_UP, news=True, spread=True, corr=True, atr=0.0005):
@@ -228,6 +235,124 @@ class TestAnalytics(unittest.TestCase):
         panel = StrategyPerformanceTracker().panel()
         self.assertIsNone(panel["best"])
         self.assertEqual(panel["strategies"]["ORB"]["trades"], 0)
+
+
+class TestSafetyPatch(unittest.TestCase):
+    # FIX 1 — ORB idempotency
+    def test_orb_confirms_once_then_suppressed(self):
+        eng = ORBEngine()
+        ctx = _orb_ctx()
+        d1 = eng.evaluate(approve_long_snapshot(), ctx)
+        d2 = eng.evaluate(approve_long_snapshot(), ctx)
+        self.assertTrue(d1.confirmed)
+        self.assertFalse(d2.confirmed)
+        self.assertIn("duplicate", d2.reason)
+        self.assertEqual(d2.score_impact, 0.0)
+
+    def test_orb_idempotency_via_scanner(self):
+        s = Scanner()
+        r1 = s.scan_symbol(approve_long_snapshot())
+        r2 = s.scan_symbol(approve_long_snapshot())
+        self.assertTrue(r1.orb.confirmed)
+        self.assertFalse(r2.orb.confirmed)
+
+    # FIX 2 — same-direction stacking blocked
+    def test_exposure_blocks_same_direction_stacking(self):
+        g = Guards()
+        snap = _bare_snap(open_positions={"EURUSD": Direction.LONG})
+        self.assertFalse(g.exposure(snap, Direction.LONG).passed)   # no pyramiding
+        self.assertFalse(g.exposure(snap, Direction.SHORT).passed)  # conflict
+        self.assertTrue(g.exposure(_bare_snap(), Direction.LONG).passed)  # flat ok
+
+    def test_exposure_pct_cap(self):
+        g = Guards()
+        snap = _bare_snap(symbol_exposure_pct={"EURUSD": 100.0})
+        self.assertFalse(g.exposure(snap, Direction.LONG).passed)
+
+    # FIX 3 — correlation fail-closed
+    def test_correlation_fail_closed_unknown_symbol(self):
+        g = Guards()
+        res = g.correlation(_bare_snap(symbol="EURGBP"), Direction.LONG)
+        self.assertFalse(res.passed)
+        self.assertIn("UNKNOWN_CORRELATION_BUCKET", res.detail)
+        self.assertTrue(g.correlation(_bare_snap(symbol="EURUSD"), Direction.LONG).passed)
+
+    # FIX 4 — compliance kill switch + daily lockout off live equity
+    def test_compliance_daily_lockout(self):
+        ce = ComplianceEngine()
+        self.assertTrue(ce.check(_bare_snap(equity=10000)).passed)
+        r = ce.check(_bare_snap(equity=9400))   # 6% daily DD > 5%
+        self.assertFalse(r.passed)
+        self.assertIn("DAILY_LOCKOUT", r.detail)
+        self.assertFalse(ce.check(_bare_snap(equity=9990)).passed)  # locked rest of day
+
+    def test_compliance_kill_switch_latches(self):
+        ce = ComplianceEngine()
+        ce.check(_bare_snap(equity=10000))
+        r = ce.check(_bare_snap(equity=8900))   # 11% total DD > 10%
+        self.assertFalse(r.passed)
+        self.assertIn("KILL_SWITCH", r.detail)
+        self.assertFalse(ce.check(_bare_snap(equity=10000)).passed)  # permanent
+
+    def test_compliance_legacy_fallback_unchanged(self):
+        ce = ComplianceEngine()
+        self.assertTrue(ce.check(_bare_snap(account_drawdown_pct=0.0)).passed)
+
+    # FIX 5 — symbol-aware spread
+    def test_symbol_aware_spread(self):
+        g = Guards()
+        # 0.02 on USDJPY == 2 points (pip 0.01) -> ok; on EURUSD == 200 points -> block
+        self.assertTrue(g.spread(_bare_snap(symbol="USDJPY")).passed)
+        jpy_wide = MarketSnapshot("USDJPY", NOW, {}, spread=0.05)  # 5 points > 3
+        self.assertFalse(g.spread(jpy_wide).passed)
+
+    # FIX 6 — non-FX news exposure map
+    def test_news_map_covers_non_fx(self):
+        g = Guards()
+        self.assertIn("USD", g._symbol_currencies("US30"))
+        self.assertIn("USD", g._symbol_currencies("XAUUSD"))
+
+    # FIX 7 — insufficient data state
+    def test_insufficient_data_flag_and_cap(self):
+        snap = approve_long_snapshot()
+        snap.candles = {"M15": snap.candles["M15"][:10]}  # starve every timeframe
+        res = Scanner().scan_symbol(snap)
+        self.assertTrue(res.data_quality_flag)
+        self.assertLessEqual(res.total, 55.0)
+        self.assertNotEqual(res.decision, Decision.APPROVE)
+
+    # FIX 8 — memory cleanup
+    def test_orb_prune_removes_stale_state(self):
+        eng = ORBEngine()
+        old = (NOW - timedelta(days=10)).date().isoformat()
+        eng._ranges["EURUSD:NEWYORK:" + old] = ORBRange(
+            "EURUSD", "NEWYORK", old, 1.1, 1.09, NOW, NOW, True)
+        eng._confirmed_sessions.add(("EURUSD", "NEWYORK", old))
+        eng._processed_signal_ids["sig"] = old
+        eng._prune(NOW)
+        self.assertEqual(eng._ranges, {})
+        self.assertEqual(eng._confirmed_sessions, set())
+        self.assertEqual(eng._processed_signal_ids, {})
+
+    # FIX 9 — thread safety (concurrent scan + status, no dict-race crash)
+    def test_thread_safety_scan_and_status(self):
+        app = create_app()
+        errors = []
+
+        def worker(n):
+            try:
+                for i in range(40):
+                    snap = MarketSnapshot(f"SYM{n}{i%5}", NOW,
+                                          strong_approve_snapshot().candles, spread=0.00008)
+                    app.scan_symbol(snap)
+                    app.orb.status(NOW)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        ts = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errors, [])
 
 
 class TestApi(unittest.TestCase):

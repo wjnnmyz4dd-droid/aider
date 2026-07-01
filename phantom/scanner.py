@@ -73,6 +73,7 @@ class Scanner:
             "capped_at": result.capped_at,
             "strategy_impact": result.strategies["net_score"] if result.strategies else 0.0,
             "conflict": result.strategies["conflict"] if result.strategies else False,
+            "data_quality_flag": result.data_quality_flag,
             "thesis": result.thesis,
         })
         return result

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import time
-from typing import Dict
+from typing import Dict, List
 
 
 @dataclass(frozen=True)
@@ -116,9 +116,38 @@ class StrategyParams:
 
 
 @dataclass(frozen=True)
+class SymbolProfile:
+    """Per-symbol microstructure. ``max_spread_points`` is in the symbol's own
+    points (spread / pip_size), so one profile works across pairs, JPY, metals
+    and indices."""
+
+    pip_size: float
+    max_spread_points: float
+
+
+def _default_symbol_profiles() -> Dict[str, "SymbolProfile"]:
+    return {
+        # FX majors: pip = 0.0001, ~3 point cap (== the legacy 0.0003 abs cap).
+        "EURUSD": SymbolProfile(0.0001, 3.0),
+        "GBPUSD": SymbolProfile(0.0001, 3.0),
+        "AUDUSD": SymbolProfile(0.0001, 3.0),
+        "NZDUSD": SymbolProfile(0.0001, 3.0),
+        "USDCAD": SymbolProfile(0.0001, 3.0),
+        "USDCHF": SymbolProfile(0.0001, 3.0),
+        # JPY: pip = 0.01.
+        "USDJPY": SymbolProfile(0.01, 3.0),
+        "EURJPY": SymbolProfile(0.01, 3.0),
+        # Metals / indices: wider caps, larger point size.
+        "XAUUSD": SymbolProfile(0.1, 50.0),
+        "US30": SymbolProfile(1.0, 8.0),
+        "NAS100": SymbolProfile(1.0, 5.0),
+    }
+
+
+@dataclass(frozen=True)
 class GuardParams:
-    max_spread: float = 0.0003           # absolute price units (e.g. 3 pips on a 4-dp pair)
-    max_account_drawdown_pct: float = 5.0  # prop daily DD limit
+    max_spread: float = 0.0003           # legacy fallback for symbols without a profile
+    max_account_drawdown_pct: float = 5.0  # legacy scalar daily-DD fallback
     min_rr: float = 2.0                  # RR Validation minimum
     correlation_groups: Dict[str, str] = field(
         default_factory=lambda: {
@@ -133,6 +162,26 @@ class GuardParams:
         }
     )
     max_open_per_bucket: int = 1
+    # FIX 3 — correlation fail-closed for unknown symbols.
+    correlation_fail_closed: bool = True
+    derive_correlation_bucket: bool = False  # if True, derive bucket from FX legs instead
+    # FIX 2 — same-direction stacking / exposure controls.
+    max_positions_per_symbol: int = 1
+    allow_stacking: bool = False
+    max_symbol_exposure_pct: float = 100.0
+    # FIX 4 — prop compliance hardening (used when live equity is supplied).
+    max_daily_dd_pct: float = 5.0
+    max_total_dd_pct: float = 10.0
+    # FIX 5 — symbol-aware spread.
+    symbol_profiles: Dict[str, SymbolProfile] = field(default_factory=_default_symbol_profiles)
+    # FIX 6 — non-FX news exposure map.
+    instrument_exposure_map: Dict[str, List[str]] = field(
+        default_factory=lambda: {
+            "XAUUSD": ["USD"], "XAGUSD": ["USD"],
+            "US30": ["USD"], "NAS100": ["USD"], "SPX500": ["USD"],
+            "BTCUSD": ["USD"], "ETHUSD": ["USD"],
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -146,6 +195,7 @@ class Config:
     guards: GuardParams = field(default_factory=GuardParams)
     score_floor: float = 0.0
     score_ceiling: float = 100.0
+    state_ttl_days: int = 3  # FIX 8 — prune ORB/session state older than this
 
 
 DEFAULT_CONFIG = Config()

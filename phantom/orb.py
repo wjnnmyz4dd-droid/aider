@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional
+import threading
 from zoneinfo import ZoneInfo
 
 from . import indicators as ind
@@ -94,6 +95,21 @@ class ORBEngine:
         }
         self._ranges: Dict[str, ORBRange] = {}
         self._last_decision: Dict[str, ORBDecision] = {}
+        # FIX 1 — idempotency state.
+        self._confirmed_sessions = set()            # (symbol, session, date)
+        self._processed_signal_ids: Dict[str, str] = {}  # signal_id -> date
+        # FIX 9 — guards all mutable state below (reentrant: evaluate holds it
+        # while calling helpers).
+        self._lock = threading.RLock()
+
+    # ---- FIX 8 — TTL pruning of stale state -------------------------------
+    def _prune(self, now: datetime) -> None:
+        cutoff = (now.date() - timedelta(days=self.config.state_ttl_days)).isoformat()
+        self._ranges = {k: v for k, v in self._ranges.items() if v.date >= cutoff}
+        self._confirmed_sessions = {t for t in self._confirmed_sessions if t[2] >= cutoff}
+        self._processed_signal_ids = {k: d for k, d in self._processed_signal_ids.items() if d >= cutoff}
+        self._last_decision = {s: d for s, d in self._last_decision.items()
+                               if d.ts.date().isoformat() >= cutoff}
 
     # ---- session clock ----------------------------------------------------
     def _window(self, session: str, now: datetime):
@@ -158,6 +174,11 @@ class ORBEngine:
 
     # ---- evaluation -------------------------------------------------------
     def evaluate(self, snap: MarketSnapshot, ctx: ORBContext) -> ORBDecision:
+        with self._lock:
+            return self._evaluate_locked(snap, ctx)
+
+    def _evaluate_locked(self, snap: MarketSnapshot, ctx: ORBContext) -> ORBDecision:
+        self._prune(snap.now)
         self.update_ranges(snap)
         rng = self._current_range(snap)
         now = snap.now
@@ -236,6 +257,15 @@ class ORBEngine:
                 why.append("exposure")
             return finish(direction, False, True, 0.0, "blocked: " + ", ".join(why))
 
+        # --- FIX 1 — idempotency: one confirmation per session / signal bar --
+        conf_ts = post[-1].ts if post else snap.tf(tf)[-1].ts
+        signal_id = (f"{snap.symbol.upper()}:{rng.session}:"
+                     f"{rng.high:.5f}:{rng.low:.5f}:{conf_ts.isoformat()}")
+        session_key = (snap.symbol.upper(), rng.session, rng.date)
+        if session_key in self._confirmed_sessions or signal_id in self._processed_signal_ids:
+            return finish(direction, False, False, 0.0,
+                          f"duplicate suppressed (already confirmed {rng.session})")
+
         # --- confirmed: award score ---------------------------------------
         impact = o.score_confirmed
         bits = ["ORB confirmed +%g" % o.score_confirmed]
@@ -245,26 +275,31 @@ class ORBEngine:
         if ctx.bos.get(direction, False):
             impact += o.score_bos
             bits.append("BOS +%g" % o.score_bos)
+        self._confirmed_sessions.add(session_key)
+        self._processed_signal_ids[signal_id] = rng.date
         return finish(direction, True, False, impact, "; ".join(bits))
 
     # ---- introspection for the API ---------------------------------------
     def status(self, now: datetime) -> dict:
-        active = self.active_sessions(now)
-        ranges = []
-        for key, rng in self._ranges.items():
-            _s, _e, trade_end, _d = self._window(rng.session, now)
-            if now <= trade_end:  # still relevant today
-                ranges.append({
-                    "symbol": rng.symbol,
-                    "session": rng.session,
-                    "date": rng.date,
-                    "orb_high": rng.high,
-                    "orb_low": rng.low,
-                    "complete": rng.complete,
-                })
-        return {
-            "now": now.isoformat(),
-            "active_sessions": active,
-            "ranges": ranges,
-            "last_decisions": {s: d.as_dict() for s, d in self._last_decision.items()},
-        }
+        with self._lock:  # FIX 9 — snapshot under lock (no dict-changed-size race)
+            active = self.active_sessions(now)
+            ranges = []
+            for key, rng in list(self._ranges.items()):
+                _s, _e, trade_end, _d = self._window(rng.session, now)
+                if now <= trade_end:  # still relevant today
+                    ranges.append({
+                        "symbol": rng.symbol,
+                        "session": rng.session,
+                        "date": rng.date,
+                        "orb_high": rng.high,
+                        "orb_low": rng.low,
+                        "complete": rng.complete,
+                    })
+            return {
+                "now": now.isoformat(),
+                "active_sessions": active,
+                "ranges": ranges,
+                "last_decisions": {s: d.as_dict() for s, d in self._last_decision.items()},
+                "confirmed_sessions": len(self._confirmed_sessions),
+                "processed_signal_ids": len(self._processed_signal_ids),
+            }

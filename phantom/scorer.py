@@ -265,10 +265,13 @@ class Scorer:
         # --- clamp, cap, decide ---
         total = max(cfg.score_floor, min(total, cfg.score_ceiling))
         capped_at = None
-        if bias == Direction.NONE or regime in (Regime.RANGING, Regime.NEUTRAL):
+        # INSUFFICIENT_DATA is capped exactly like NEUTRAL (warmup is not
+        # tradeable) — behaviour identical to the prior NEUTRAL return.
+        if bias == Direction.NONE or regime in (Regime.RANGING, Regime.NEUTRAL, Regime.INSUFFICIENT_DATA):
             if total > cfg.thresholds.neutral_cap:
                 capped_at = cfg.thresholds.neutral_cap
                 total = cfg.thresholds.neutral_cap
+        data_quality_flag = regime == Regime.INSUFFICIENT_DATA
 
         blocked_by = [c.name for c in comps if c.blocking and c.failed]
         if blocked_by:
@@ -299,6 +302,7 @@ class Scorer:
             orb=orb_decision,
             thesis=thesis,
             strategies=outcome.as_dict(),
+            data_quality_flag=data_quality_flag,
         )
 
     def _build_thesis(self, symbol, bias, decision, total, regime, vh_state,

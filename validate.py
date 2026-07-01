@@ -72,11 +72,13 @@ def check_scanner_regression(results):
             approve_long_snapshot, guard_blocked_snapshot, ranging_snapshot,
             strong_approve_snapshot,
         )
-        s = Scanner()
-        strong = s.scan_symbol(strong_approve_snapshot())
-        moderate = s.scan_symbol(approve_long_snapshot())
-        r = s.scan_symbol(ranging_snapshot())
-        g = s.scan_symbol(guard_blocked_snapshot())
+        # Fresh scanner per fixture: each is an independent session observation
+        # (ORB idempotency suppresses a second confirmation for the same
+        # symbol/session/day, which is correct in production).
+        strong = Scanner().scan_symbol(strong_approve_snapshot())
+        moderate = Scanner().scan_symbol(approve_long_snapshot())
+        r = Scanner().scan_symbol(ranging_snapshot())
+        g = Scanner().scan_symbol(guard_blocked_snapshot())
         assert strong.decision == Decision.APPROVE, f"strong fixture -> {strong.decision}"
         assert strong.direction == Direction.LONG, f"strong dir -> {strong.direction}"
         assert moderate.decision == Decision.WATCHLIST, f"moderate fixture -> {moderate.decision}"
@@ -93,9 +95,8 @@ def check_scoring_regression(results):
         from tests.fixtures import (
             approve_long_snapshot, ranging_snapshot, strong_approve_snapshot,
         )
-        s = Scanner()
-        strong = s.scan_symbol(strong_approve_snapshot())
-        r = s.scan_symbol(ranging_snapshot())
+        strong = Scanner().scan_symbol(strong_approve_snapshot())
+        r = Scanner().scan_symbol(ranging_snapshot())
         assert strong.total >= 72.0, f"strong total {strong.total} < 72"
         assert strong.orb and strong.orb.confirmed and strong.orb.score_impact > 0, "ORB not confirmed"
         if r.capped_at is not None:
@@ -145,6 +146,58 @@ def check_strategy_layer(results):
         results.append((False, _fail("strategy layer", repr(exc))))
 
 
+def check_safety_patch(results):
+    """FIX 1-9 — idempotency, stacking, correlation, compliance, memory, threads."""
+    try:
+        import threading as _th
+        from datetime import timedelta
+        from phantom.guards import ComplianceEngine, Guards
+        from phantom.orb import ORBEngine, ORBRange
+        from phantom.scanner import Scanner
+        from phantom.types import Direction, MarketSnapshot
+        from tests.fixtures import NOW, approve_long_snapshot, strong_approve_snapshot
+        from tests.test_pipeline import _orb_ctx
+
+        def snap(symbol="EURUSD", **kw):
+            return MarketSnapshot(symbol, NOW, {}, spread=0.00008, **kw)
+
+        # FIX 1 idempotency
+        eng = ORBEngine()
+        assert eng.evaluate(approve_long_snapshot(), _orb_ctx()).confirmed
+        assert not eng.evaluate(approve_long_snapshot(), _orb_ctx()).confirmed
+        # FIX 2 stacking blocked
+        assert not Guards().exposure(snap(open_positions={"EURUSD": Direction.LONG}), Direction.LONG).passed
+        # FIX 3 correlation fail-closed
+        assert not Guards().correlation(snap(symbol="EURGBP"), Direction.LONG).passed
+        # FIX 4 compliance kill switch
+        ce = ComplianceEngine(); ce.check(snap(equity=10000))
+        assert not ce.check(snap(equity=8900)).passed
+        assert not ce.check(snap(equity=10000)).passed  # latched
+        # FIX 5 symbol spread
+        assert not Guards().spread(MarketSnapshot("USDJPY", NOW, {}, spread=0.05)).passed
+        # FIX 8 pruning
+        old = (NOW - timedelta(days=10)).date().isoformat()
+        e2 = ORBEngine(); e2._ranges["k"] = ORBRange("X", "NEWYORK", old, 1.1, 1.0, NOW, NOW, True)
+        e2._prune(NOW); assert e2._ranges == {}
+        # FIX 9 thread safety
+        app_errors = []
+        s = Scanner()
+        def w(n):
+            try:
+                for i in range(30):
+                    s.scan_symbol(MarketSnapshot(f"T{n}{i%4}", NOW, strong_approve_snapshot().candles, spread=0.00008))
+                    s.orb.status(NOW)
+            except Exception as exc:
+                app_errors.append(exc)
+        ths = [_th.Thread(target=w, args=(n,)) for n in range(6)]
+        [t.start() for t in ths]; [t.join() for t in ths]
+        assert not app_errors, f"thread errors: {app_errors[:1]}"
+
+        results.append((True, _ok("safety patch — idempotency/exposure/correlation/compliance/memory/threads")))
+    except Exception as exc:
+        results.append((False, _fail("safety patch", repr(exc))))
+
+
 def check_distribution(results):
     """OLD (19-component) vs NEW (18-component) score distribution on identical
     fixture data. OLD values are the recorded pre-refactor baseline."""
@@ -154,15 +207,14 @@ def check_distribution(results):
             approve_long_snapshot, ranging_snapshot, guard_blocked_snapshot,
             strong_approve_snapshot,
         )
-        s = Scanner()
         # Only the moderate-long OLD score was recorded pre-refactor; others
         # were BLOCK either way, so their totals are not asserted here.
         old = {"moderate-long": (75.01, "APPROVE")}
-        new = {
-            "moderate-long": s.scan_symbol(approve_long_snapshot()),
-            "ranging": s.scan_symbol(ranging_snapshot()),
-            "guard-blocked": s.scan_symbol(guard_blocked_snapshot()),
-            "strong-long": s.scan_symbol(strong_approve_snapshot()),
+        new = {  # fresh scanner per fixture (independent session observations)
+            "moderate-long": Scanner().scan_symbol(approve_long_snapshot()),
+            "ranging": Scanner().scan_symbol(ranging_snapshot()),
+            "guard-blocked": Scanner().scan_symbol(guard_blocked_snapshot()),
+            "strong-long": Scanner().scan_symbol(strong_approve_snapshot()),
         }
         print("\n  OLD vs NEW score distribution (identical data):")
         print(f"    {'fixture':16} {'OLD':>16}   {'NEW':>16}")
@@ -220,6 +272,7 @@ def main():
     check_scanner_regression(results)
     check_scoring_regression(results)
     check_strategy_layer(results)
+    check_safety_patch(results)
     check_distribution(results)
     check_endpoints(results)
     for _passed, line in results:

@@ -30,7 +30,8 @@ class RegimeEngine:
         candles = snap.tf(timeframe)
         ip = self.config.indicators
         if len(candles) < ip.atr_baseline_period + 1:
-            return RegimeReading(Regime.NEUTRAL, 1.0, 0.0)
+            # FIX 7 — warmup is its own state, not a tradeable NEUTRAL regime.
+            return RegimeReading(Regime.INSUFFICIENT_DATA, 1.0, 0.0)
 
         closes = [c.close for c in candles]
         ema_fast = ind.ema(closes, 20) or closes[-1]
