@@ -1,18 +1,24 @@
 """The scorer — the single place where the composite score is assembled.
 
-It computes the 19 keep-list components, folds in the ORB confirmation layer,
+It computes the 18 keep-list components, folds in the ORB confirmation layer,
 applies the NEUTRAL cap, and maps the total onto APPROVE / WATCHLIST / BLOCK.
 
 Component list (order preserved):
-  1 H4 Trend Alignment      8 RSI Confirmation     15 Correlation Guard*
-  2 D1 Trend Alignment      9 ATR                  16 Exposure Guard*
-  3 BOS                    10 Volatility Ratio      17 RR Validation*
-  4 CHOCH                  11 Session Filter        18 Prop Compliance*
-  5 Liquidity Sweep        12 News Filter*          19 AI Meta Filter
-  6 FVG                    13 Market Regime
-  7 Order Block            14 Spread Filter*
-  (* = blocking guard; ORB is an additive confirmation layer, not a component
-   in its own right — it can raise, lower, or block the score.)
+  1 H4 Trend Alignment      7 Order Block          13 Spread Filter*
+  2 D1 Trend Alignment      8 RSI Confirmation      14 Correlation Guard*
+  3 BOS                     9 Volatility Health     15 Exposure Guard*
+  4 CHOCH                  10 Session Filter         16 RR Validation*
+  5 Liquidity Sweep        11 News Filter*          17 Prop Compliance*
+  6 FVG                    12 Market Regime          18 ORB Confirmation
+  (* = blocking guard. ORB Confirmation is an additive layer that can raise,
+   lower, or block the score but NEVER opens a trade.)
+
+Changes vs the previous 19-component model:
+  - AI Meta Filter REMOVED (it re-scored trend/structure/momentum → inflation).
+    Replaced by an informational Trade Thesis Summary (never scored).
+  - ATR + Volatility Ratio MERGED into Volatility Health (state-based).
+  - Market Regime RE-SCOPED to environment classification (no longer duplicates
+    H4/D1 trend alignment); weight reduced 10 → 5.
 """
 
 from __future__ import annotations
@@ -81,6 +87,32 @@ class Scorer:
         risk = abs(price - stop)
         reward = abs(target - price)
         return reward / risk if risk > 0 else None
+
+    # -- Volatility Health (merged ATR acceleration + Volatility Ratio) -----
+    def _volatility_health(self, exec_candles, atr: float, vr: float):
+        vp = self.config.volatility
+        w = self.config.weights.volatility_health
+        ip = self.config.indicators
+        atr_prev = ind.atr(exec_candles[:-3], ip.atr_period) if len(exec_candles) > ip.atr_period + 4 else None
+        accel = atr_prev is not None and atr > atr_prev
+        atr_base = ind.atr(exec_candles, ip.atr_baseline_period)
+        ratio = atr / atr_base if atr_base else 1.0
+        expanding = ratio >= vp.expansion_ratio
+        compressing = ratio <= vp.compression_ratio
+
+        if vr >= vp.extreme_ratio:
+            state, points = "Extreme", -w          # blow-off -> -5
+        elif vr >= vp.elevated_ratio:
+            state, points = "Elevated", w * 0.6    # +3
+        elif vr >= vp.healthy_low:
+            state, points = "Healthy", w           # +5
+        else:
+            state, points = "Compressed", 0.0
+
+        tags = [t for t, on in (("accel", accel), ("expanding", expanding),
+                                ("compressing", compressing)) if on]
+        detail = f"{state} vr={vr:.2f}" + (f" [{','.join(tags)}]" if tags else "")
+        return points, state, detail
 
     # -- main ---------------------------------------------------------------
     def score(self, snap: MarketSnapshot) -> ScoreResult:
@@ -153,57 +185,52 @@ class Scorer:
                 rsi_pts = w.rsi_confirmation * (1 - abs(rsi - 40) / 10)
         add("RSI Confirmation", max(rsi_pts, 0.0), rsi_detail)
 
-        # 9 ATR (acceleration)
-        atr_prev = ind.atr(exec_candles[:-3], cfg.indicators.atr_period) if len(exec_candles) > cfg.indicators.atr_period + 4 else None
-        atr_pts = w.atr if (atr_prev is not None and atr > atr_prev) else 0.0
-        add("ATR", atr_pts, f"atr={atr:.5f} accel={'+' if atr_pts else '0'}")
-
-        # 10 Volatility Ratio + 13 Market Regime share one regime reading
+        # regime reading — shared by Volatility Health (#9) and Market Regime (#12)
         reading = self.regime_engine.classify(snap, "H1" if snap.tf("H1") else exec_tf)
         regime = reading.regime
         vr = reading.volatility_ratio
-        vr_pts = w.volatility_ratio if 0.8 <= vr <= 1.6 else 0.0
-        add("Volatility Ratio", vr_pts, f"ratio={vr:.2f} ({'healthy' if vr_pts else 'off-band'})")
 
-        # 11 Session Filter
+        # 9 Volatility Health (merged ATR acceleration + Volatility Ratio)
+        vh_pts, vh_state, vh_detail = self._volatility_health(exec_candles, atr, vr)
+        add("Volatility Health", vh_pts, vh_detail)
+
+        # 10 Session Filter
         in_session = self.guards.in_active_session(snap.now)
         add("Session Filter", w.session_filter if in_session else 0.0, "active" if in_session else "off-hours")
 
-        # 12 News Filter (blocking)
+        # 11 News Filter (blocking)
         news = self.guards.news(snap)
         add("News Filter", 0.0, news.detail, blocking=True, failed=not news.passed)
         news_safe = news.passed
 
-        # 13 Market Regime
-        regime_aligned = (
-            (regime == Regime.TRENDING_UP and bias == Direction.LONG)
-            or (regime == Regime.TRENDING_DOWN and bias == Direction.SHORT)
-            or regime == Regime.BREAKOUT
-        )
-        add("Market Regime", w.market_regime if regime_aligned else 0.0, regime.value)
+        # 12 Market Regime — ENVIRONMENT CLASSIFICATION ONLY (not trend confirmation).
+        #     Rewards a tradeable directional/breakout environment regardless of the
+        #     bias direction, so it no longer duplicates H4/D1 trend alignment.
+        tradeable_env = regime in (Regime.TRENDING_UP, Regime.TRENDING_DOWN, Regime.BREAKOUT)
+        add("Market Regime", w.market_regime if tradeable_env else 0.0, f"env={regime.value}")
 
-        # 14 Spread Filter (blocking)
+        # 13 Spread Filter (blocking)
         spread = self.guards.spread(snap)
         add("Spread Filter", 0.0, spread.detail, blocking=True, failed=not spread.passed)
 
-        # 15 Correlation Guard (blocking)
+        # 14 Correlation Guard (blocking)
         corr = self.guards.correlation(snap, bias)
         add("Correlation Guard", 0.0, corr.detail, blocking=True, failed=not corr.passed)
 
-        # 16 Exposure Guard (blocking)
+        # 15 Exposure Guard (blocking)
         expo = self.guards.exposure(snap, bias) if bias != Direction.NONE else self.guards.exposure(snap, Direction.LONG)
         add("Exposure Guard", 0.0, expo.detail, blocking=True, failed=not expo.passed)
 
-        # 17 RR Validation (blocking)
+        # 16 RR Validation (blocking)
         rr = self._planned_rr(exec_candles, bias, atr)
         rrg = self.guards.rr_validation(rr)
         add("RR Validation", 0.0, rrg.detail, blocking=True, failed=not rrg.passed)
 
-        # 18 Prop Compliance (blocking)
+        # 17 Prop Compliance (blocking)
         prop = self.guards.prop_compliance(snap)
         add("Prop Compliance", 0.0, prop.detail, blocking=True, failed=not prop.passed)
 
-        # --- ORB confirmation layer ---
+        # 18 ORB Confirmation layer (additive; never opens a trade)
         exposure_safe = {
             Direction.LONG: self.guards.exposure(snap, Direction.LONG).passed,
             Direction.SHORT: self.guards.exposure(snap, Direction.SHORT).passed,
@@ -223,6 +250,7 @@ class Scorer:
             news_safe=news_safe,
             spread_safe=spread.passed,
             exposure_safe=exposure_safe,
+            correlation_safe=corr.passed,
             atr=atr,
         )
         orb_decision: ORBDecision = self.orb.evaluate(snap, orb_ctx)
@@ -234,11 +262,6 @@ class Scorer:
         # An ORB-confirmed breakout can resolve an otherwise-NEUTRAL bias.
         if bias == Direction.NONE and orb_decision.confirmed:
             bias = orb_decision.breakout_direction
-
-        # 19 AI Meta Filter — coherence of the directional thesis.
-        coherence = self._meta_coherence(bias, h4_dir, d1_dir, regime, rsi, [bos, choch, sweep, fvg, ob])
-        ai_pts = 5.0 * coherence
-        add("AI Meta Filter", ai_pts, f"coherence={coherence:.2f}")
 
         # --- clamp, cap, decide ---
         total = max(cfg.score_floor, min(total, cfg.score_ceiling))
@@ -258,6 +281,13 @@ class Scorer:
         else:
             decision = Decision.BLOCK
 
+        # Trade Thesis Summary — informational only, NEVER added to the score.
+        thesis = self._build_thesis(
+            snap.symbol.upper(), bias, decision, total, regime, vh_state,
+            [bos, choch, sweep, fvg, ob], rsi, orb_decision, h4_dir, d1_dir,
+            blocked_by,
+        )
+
         return ScoreResult(
             symbol=snap.symbol.upper(),
             total=total,
@@ -266,7 +296,32 @@ class Scorer:
             components=comps,
             capped_at=capped_at,
             orb=orb_decision,
+            thesis=thesis,
         )
+
+    def _build_thesis(self, symbol, bias, decision, total, regime, vh_state,
+                      structures, rsi, orb_decision, h4_dir, d1_dir, blocked_by) -> str:
+        """Human-readable summary of the setup. Display/logging only."""
+        fired = [s.detail.split(" ")[0] if s.detail else "sig"
+                 for s in structures if s.found and s.direction == bias and bias != Direction.NONE]
+        struct = ",".join(n for n, s in zip(
+            ["BOS", "CHOCH", "Sweep", "FVG", "OB"], structures)
+            if s.found and s.direction == bias and bias != Direction.NONE) or "none"
+        confidence = self._meta_coherence(bias, h4_dir, d1_dir, regime, rsi, structures)
+        parts = [
+            f"{symbol} {bias.value}",
+            f"{decision.value} {total:.1f}",
+            f"regime={regime.value} vol={vh_state}",
+            f"structure: {struct}",
+            f"RSI {rsi:.1f}" if rsi is not None else "RSI n/a",
+        ]
+        if orb_decision is not None and orb_decision.session != "-":
+            state = "confirmed" if orb_decision.confirmed else ("blocked" if orb_decision.blocked else "none")
+            parts.append(f"ORB {orb_decision.session} {state}({orb_decision.score_impact:+.0f})")
+        if blocked_by:
+            parts.append("blocked_by: " + ",".join(blocked_by))
+        parts.append(f"confidence {confidence:.2f}")
+        return " | ".join(parts)
 
     @staticmethod
     def _meta_coherence(bias, h4_dir, d1_dir, regime, rsi, structures) -> float:

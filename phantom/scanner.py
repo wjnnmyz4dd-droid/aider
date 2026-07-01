@@ -47,7 +47,8 @@ class Scanner:
                 "reason": o.reason,
             })
 
-        # Scan log line.
+        # Scan log line. The Trade Thesis Summary is informational only and has
+        # no bearing on the score or decision.
         self.sink.log_scan({
             "symbol": result.symbol,
             "decision": result.decision.value,
@@ -55,6 +56,7 @@ class Scanner:
             "score": round(result.total, 2),
             "capped_at": result.capped_at,
             "orb_impact": round(result.orb.score_impact, 2) if result.orb else 0.0,
+            "thesis": result.thesis,
         })
         return result
 

@@ -30,11 +30,12 @@ class ComponentWeights:
     fvg: float = 7.0
     order_block: float = 7.0
     rsi_confirmation: float = 8.0
-    atr: float = 5.0
-    volatility_ratio: float = 5.0
+    volatility_health: float = 5.0   # merged ATR + Volatility Ratio (state-based)
     session_filter: float = 5.0
-    market_regime: float = 10.0  # regime alignment bonus
+    market_regime: float = 5.0       # environment context only, NOT trend confirmation
     # Guards below are pass/fail (blocking) and contribute 0 points when they pass.
+    # AI Meta Filter removed: it re-scored trend/structure/momentum (double-counting).
+    # Additive max (excluding ORB) = 12+10+10+8+8+7+7+8+5+5+5 = 85; ORB adds up to +18.
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,19 @@ class IndicatorParams:
 
 
 @dataclass(frozen=True)
+class VolatilityParams:
+    """Bands for the merged Volatility Health component (uses ATR-vs-baseline
+    ratio plus ATR acceleration/expansion/compression for the descriptor)."""
+
+    extreme_ratio: float = 2.0     # >= -> Extreme (blow-off) -> -5
+    elevated_ratio: float = 1.6    # >= -> Elevated -> +3
+    healthy_low: float = 0.8       # [healthy_low, elevated_ratio) -> Healthy -> +5
+    # < healthy_low -> Compressed -> 0
+    expansion_ratio: float = 1.1   # atr_now/atr_baseline above this = expanding
+    compression_ratio: float = 0.7  # below this = compressing
+
+
+@dataclass(frozen=True)
 class GuardParams:
     max_spread: float = 0.0003           # absolute price units (e.g. 3 pips on a 4-dp pair)
     max_account_drawdown_pct: float = 5.0  # prop daily DD limit
@@ -100,6 +114,7 @@ class Config:
     weights: ComponentWeights = field(default_factory=ComponentWeights)
     orb: ORBParams = field(default_factory=ORBParams)
     indicators: IndicatorParams = field(default_factory=IndicatorParams)
+    volatility: VolatilityParams = field(default_factory=VolatilityParams)
     guards: GuardParams = field(default_factory=GuardParams)
     score_floor: float = 0.0
     score_ceiling: float = 100.0

@@ -88,6 +88,20 @@ def _orb_breakout_tail(prev_close: float, end_ts: datetime, unit: float) -> List
     return [c30, c45, c00]
 
 
+def _orb_ob_tail(prev_close: float, end_ts: datetime, unit: float) -> List[Candle]:
+    """Opening-range bar, a bearish pullback bar (which both cools RSI and sets
+    up a bullish order block), then an impulsive bar that breaks and holds above
+    the range -> confirmed long ORB with BOS + Order Block."""
+    p = prev_close
+    t30 = end_ts - timedelta(minutes=30)
+    t45 = end_ts - timedelta(minutes=15)
+    t00 = end_ts
+    c30 = Candle(t30, p, p + 0.6 * unit, p - 0.6 * unit, p + 0.1 * unit)   # range 1.2u
+    c45 = Candle(t45, p + 0.1 * unit, p + 0.2 * unit, p - 0.5 * unit, p - 0.3 * unit)  # bearish, inside
+    c00 = Candle(t00, p - 0.3 * unit, p + 2.2 * unit, p - 0.4 * unit, p + 2.0 * unit)  # impulse break-up
+    return [c30, c45, c00]
+
+
 def uptrend_candles() -> Dict[str, List[Candle]]:
     u = BASE * 0.0005
     # Body length chosen so the final body bar lands on an up-leg peak (index
@@ -104,11 +118,48 @@ def uptrend_candles() -> Dict[str, List[Candle]]:
 
 
 def approve_long_snapshot() -> MarketSnapshot:
-    """A clean multi-timeframe uptrend with an NY ORB breakout -> APPROVE/LONG."""
+    """A clean multi-timeframe uptrend with an NY ORB breakout.
+
+    Under the ORIGINAL 19-component model this scored ~75 (APPROVE). Under the
+    de-duplicated 18-component model it lands ~65 (WATCHLIST) — the intended
+    deflation from removing AI Meta + Market-Regime double-counting. Data is
+    kept unchanged so OLD-vs-NEW is an apples-to-apples comparison.
+    """
     return MarketSnapshot(
         symbol="EURUSD",
         now=NOW,
         candles=uptrend_candles(),
+        spread=0.00008,
+        open_positions={},
+        news_windows=[],
+        account_drawdown_pct=0.0,
+    )
+
+
+def strong_uptrend_candles() -> Dict[str, List[Candle]]:
+    """Maximal-confluence long: steep H4/D1 (full trend strength), an M15
+    breakout that fires BOS + Order Block, and a confirmed ORB. Clears APPROVE
+    even under the leaner model."""
+    htf_u = BASE * 0.0011   # steeper higher-TF trend -> full alignment strength
+    body_u = BASE * 0.0004  # balanced M15 body keeps RSI mid-range (not saturated)
+    tail_u = BASE * 0.0009  # larger breakout unit so the tail makes genuine new highs
+    # up3/down3 body (net-flat on M15) ending on a peak (index 74, 74 % 6 == 2).
+    m15_body = _wavy(15, 75, NOW - timedelta(minutes=45), BASE, body_u, up_leg=3, down_leg=3)
+    m15 = m15_body + _orb_ob_tail(m15_body[-1].close, NOW, tail_u)
+    return {
+        "M15": m15,
+        "H1": _wavy(60, 60, NOW, BASE, htf_u),
+        "H4": _wavy(240, 60, NOW.replace(minute=0), BASE, htf_u),
+        "D1": _wavy(1440, 60, NOW.replace(hour=0, minute=0), BASE, htf_u),
+    }
+
+
+def strong_approve_snapshot() -> MarketSnapshot:
+    """Genuine high-confluence setup -> APPROVE/LONG under the 18-component model."""
+    return MarketSnapshot(
+        symbol="EURUSD",
+        now=NOW,
+        candles=strong_uptrend_candles(),
         spread=0.00008,
         open_positions={},
         news_windows=[],

@@ -30,6 +30,7 @@ class ORBContext:
     news_safe: bool
     spread_safe: bool
     exposure_safe: Dict[Direction, bool]
+    correlation_safe: bool
     atr: float
 
 
@@ -201,6 +202,8 @@ class ORBEngine:
             return finish(Direction.NONE, False, True, 0.0, "blocked: RANGING without breakout")
         if not ctx.news_safe:
             return finish(Direction.NONE, False, True, 0.0, "blocked: news danger window")
+        if not ctx.correlation_safe:
+            return finish(Direction.NONE, False, True, 0.0, "blocked: correlation conflict")
         if ctx.atr > 0:
             if rng.size < o.min_range_atr_mult * ctx.atr:
                 return finish(Direction.NONE, False, True, 0.0, "blocked: range too small")

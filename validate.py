@@ -27,6 +27,21 @@ def _fail(label: str, detail: str) -> str:
     return f"  FAIL  {label} :: {detail}"
 
 
+def check_compile(results):
+    import compileall
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ok = compileall.compile_dir("phantom", quiet=1, force=True)
+        ok = compileall.compile_file("validate.py", quiet=1, force=True) and ok
+        ok = compileall.compile_dir("tests", quiet=1, force=True) and ok
+    if ok:
+        results.append((True, _ok("compile check — phantom/ tests/ validate.py compile clean")))
+    else:
+        results.append((False, _fail("compile check", buf.getvalue().strip() or "compile error")))
+
+
 def check_imports(results):
     try:
         import phantom  # noqa
@@ -55,16 +70,19 @@ def check_scanner_regression(results):
         from phantom.types import Decision, Direction
         from tests.fixtures import (
             approve_long_snapshot, guard_blocked_snapshot, ranging_snapshot,
+            strong_approve_snapshot,
         )
         s = Scanner()
-        a = s.scan_symbol(approve_long_snapshot())
+        strong = s.scan_symbol(strong_approve_snapshot())
+        moderate = s.scan_symbol(approve_long_snapshot())
         r = s.scan_symbol(ranging_snapshot())
         g = s.scan_symbol(guard_blocked_snapshot())
-        assert a.decision == Decision.APPROVE, f"approve fixture -> {a.decision}"
-        assert a.direction == Direction.LONG, f"approve dir -> {a.direction}"
+        assert strong.decision == Decision.APPROVE, f"strong fixture -> {strong.decision}"
+        assert strong.direction == Direction.LONG, f"strong dir -> {strong.direction}"
+        assert moderate.decision == Decision.WATCHLIST, f"moderate fixture -> {moderate.decision}"
         assert r.decision != Decision.APPROVE, f"ranging fixture -> {r.decision}"
         assert g.decision == Decision.BLOCK, f"guard fixture -> {g.decision}"
-        results.append((True, _ok("scanner regression — 3 fixtures stable")))
+        results.append((True, _ok("scanner regression — 4 fixtures stable")))
     except Exception as exc:
         results.append((False, _fail("scanner regression", repr(exc))))
 
@@ -72,19 +90,58 @@ def check_scanner_regression(results):
 def check_scoring_regression(results):
     try:
         from phantom.scanner import Scanner
-        from tests.fixtures import approve_long_snapshot, ranging_snapshot
+        from tests.fixtures import (
+            approve_long_snapshot, ranging_snapshot, strong_approve_snapshot,
+        )
         s = Scanner()
-        a = s.scan_symbol(approve_long_snapshot())
+        strong = s.scan_symbol(strong_approve_snapshot())
         r = s.scan_symbol(ranging_snapshot())
-        assert a.total >= 72.0, f"approve total {a.total} < 72"
-        assert a.orb and a.orb.confirmed and a.orb.score_impact > 0, "ORB not confirmed"
+        assert strong.total >= 72.0, f"strong total {strong.total} < 72"
+        assert strong.orb and strong.orb.confirmed and strong.orb.score_impact > 0, "ORB not confirmed"
         if r.capped_at is not None:
             assert r.total <= 55.0, f"ranging total {r.total} > neutral cap"
-        names = {c.name for c in a.components}
-        assert len(names) >= 19, f"only {len(names)} components"
-        results.append((True, _ok("scoring regression — totals & ORB impact correct")))
+        names = [c.name for c in strong.components]
+        assert len(names) == 18, f"expected 18 components, got {len(names)}"
+        assert "AI Meta Filter" not in names, "AI Meta Filter must be removed"
+        assert "Volatility Health" in names, "Volatility Health missing"
+        assert "ATR" not in names and "Volatility Ratio" not in names, "ATR/VolRatio not merged"
+        results.append((True, _ok("scoring regression — 18 components, no double-count")))
     except Exception as exc:
         results.append((False, _fail("scoring regression", repr(exc))))
+
+
+def check_distribution(results):
+    """OLD (19-component) vs NEW (18-component) score distribution on identical
+    fixture data. OLD values are the recorded pre-refactor baseline."""
+    try:
+        from phantom.scanner import Scanner
+        from tests.fixtures import (
+            approve_long_snapshot, ranging_snapshot, guard_blocked_snapshot,
+            strong_approve_snapshot,
+        )
+        s = Scanner()
+        # Only the moderate-long OLD score was recorded pre-refactor; others
+        # were BLOCK either way, so their totals are not asserted here.
+        old = {"moderate-long": (75.01, "APPROVE")}
+        new = {
+            "moderate-long": s.scan_symbol(approve_long_snapshot()),
+            "ranging": s.scan_symbol(ranging_snapshot()),
+            "guard-blocked": s.scan_symbol(guard_blocked_snapshot()),
+            "strong-long": s.scan_symbol(strong_approve_snapshot()),
+        }
+        print("\n  OLD vs NEW score distribution (identical data):")
+        print(f"    {'fixture':16} {'OLD':>16}   {'NEW':>16}")
+        for k, res in new.items():
+            o = old.get(k)
+            o_s = f"{o[0]:.2f} {o[1]}" if o else "-- (not recorded)"
+            print(f"    {k:16} {o_s:>16}   {res.total:6.2f} {res.decision.value:>9}")
+        # Thresholds preserved.
+        from phantom.config import DEFAULT_CONFIG as C
+        assert C.thresholds.approve == 72.0 and C.thresholds.watchlist == 60.0
+        assert C.thresholds.neutral_cap == 55.0
+        results.append((True, _ok("distribution — thresholds preserved (72/60/55), deflation observed")))
+    except Exception as exc:
+        results.append((False, _fail("distribution", repr(exc))))
 
 
 def check_endpoints(results):
@@ -119,10 +176,12 @@ def check_endpoints(results):
 def main():
     results = []
     print("Phantom — Part 5 validation\n" + "=" * 40)
+    check_compile(results)
     check_imports(results)
     check_startup(results)
     check_scanner_regression(results)
     check_scoring_regression(results)
+    check_distribution(results)
     check_endpoints(results)
     for _passed, line in results:
         print(line)

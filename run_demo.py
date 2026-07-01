@@ -7,12 +7,12 @@ from __future__ import annotations
 import json
 
 from phantom.app import create_app
-from tests.fixtures import NOW, approve_long_snapshot
+from tests.fixtures import NOW, strong_approve_snapshot
 
 
 def main():
     app = create_app()
-    result = app.scan_symbol(approve_long_snapshot())
+    result = app.scan_symbol(strong_approve_snapshot())
 
     print("=== SCAN RESULT ===")
     print(json.dumps({
@@ -23,11 +23,14 @@ def main():
         "capped_at": result.capped_at,
     }, indent=2))
 
-    print("\n=== COMPONENTS ===")
+    print("\n=== COMPONENTS (18) ===")
     for c in result.components:
         tag = " [BLOCK]" if c.blocking else ""
         fail = " FAILED" if c.failed else ""
         print(f"  {c.points:6.2f}  {c.name:22}{tag}{fail}  {c.detail}")
+
+    print("\n=== TRADE THESIS SUMMARY (informational only) ===")
+    print(" ", result.thesis)
 
     print("\n=== GET /orb/status ===")
     print(json.dumps(app.orb.status(NOW), indent=2, default=str))

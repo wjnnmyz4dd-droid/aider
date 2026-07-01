@@ -17,15 +17,16 @@ from tests.fixtures import (
     approve_long_snapshot,
     guard_blocked_snapshot,
     ranging_snapshot,
+    strong_approve_snapshot,
 )
 
 
-def _orb_ctx(regime=Regime.TRENDING_UP, news=True, spread=True, atr=0.0005):
+def _orb_ctx(regime=Regime.TRENDING_UP, news=True, spread=True, corr=True, atr=0.0005):
     return ORBContext(
         regime=regime,
         h4d1_aligned={Direction.LONG: True, Direction.SHORT: False},
         bos={Direction.LONG: True, Direction.SHORT: False},
-        news_safe=news, spread_safe=spread,
+        news_safe=news, spread_safe=spread, correlation_safe=corr,
         exposure_safe={Direction.LONG: True, Direction.SHORT: True}, atr=atr,
     )
 
@@ -34,11 +35,18 @@ class TestScoring(unittest.TestCase):
     def setUp(self):
         self.scanner = Scanner()
 
-    def test_approve_long(self):
-        res = self.scanner.scan_symbol(approve_long_snapshot())
+    def test_strong_setup_approves(self):
+        res = self.scanner.scan_symbol(strong_approve_snapshot())
         self.assertEqual(res.decision, Decision.APPROVE)
         self.assertEqual(res.direction, Direction.LONG)
         self.assertGreaterEqual(res.total, 72.0)
+
+    def test_moderate_setup_deflates_to_watchlist(self):
+        # Same data that scored ~75 (APPROVE) under the old 19-component model
+        # now lands in WATCHLIST after de-duplication — the intended deflation.
+        res = self.scanner.scan_symbol(approve_long_snapshot())
+        self.assertEqual(res.decision, Decision.WATCHLIST)
+        self.assertLess(res.total, 72.0)
 
     def test_orb_confirmed_and_scores(self):
         res = self.scanner.scan_symbol(approve_long_snapshot())
@@ -65,18 +73,34 @@ class TestScoring(unittest.TestCase):
         failed = [c.name for c in res.components if c.blocking and c.failed]
         self.assertIn("Spread Filter", failed)
 
-    def test_component_count(self):
+    def test_component_list_is_the_18(self):
         res = self.scanner.scan_symbol(approve_long_snapshot())
         names = [c.name for c in res.components]
-        for required in [
+        expected = [
             "H4 Trend Alignment", "D1 Trend Alignment", "BOS", "CHOCH",
             "Liquidity Sweep", "FVG", "Order Block", "RSI Confirmation",
-            "ATR", "Volatility Ratio", "Session Filter", "News Filter",
+            "Volatility Health", "Session Filter", "News Filter",
             "Market Regime", "Spread Filter", "Correlation Guard",
             "Exposure Guard", "RR Validation", "Prop Compliance",
-            "AI Meta Filter", "ORB Confirmation",
-        ]:
+            "ORB Confirmation",
+        ]
+        for required in expected:
             self.assertIn(required, names)
+        self.assertEqual(len(names), 18)
+
+    def test_removed_and_merged_components_absent(self):
+        names = [c.name for c in self.scanner.scan_symbol(approve_long_snapshot()).components]
+        for gone in ("AI Meta Filter", "ATR", "Volatility Ratio"):
+            self.assertNotIn(gone, names)
+
+    def test_thesis_is_informational_only(self):
+        res = self.scanner.scan_symbol(strong_approve_snapshot())
+        self.assertTrue(res.thesis)
+        # Thesis text must not be a scored component.
+        self.assertNotIn("thesis", [c.name.lower() for c in res.components])
+        # Sum of component points equals the (pre-cap) total; thesis adds nothing.
+        additive = sum(c.points for c in res.components if not c.blocking)
+        self.assertAlmostEqual(min(additive, 100.0), res.total, places=6)
 
 
 class TestOrbBlocks(unittest.TestCase):

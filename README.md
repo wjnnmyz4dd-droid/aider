@@ -38,13 +38,24 @@ Composite score is 0–100.
 * **Blocking guards** (News, Spread, Correlation, Exposure, RR, Prop
   Compliance) force `BLOCK` when they fail, regardless of the total.
 
-### 19 components
+### 18 components
 1. H4 Trend Alignment · 2. D1 Trend Alignment · 3. BOS · 4. CHOCH ·
-5. Liquidity Sweep · 6. FVG · 7. Order Block · 8. RSI Confirmation · 9. ATR ·
-10. Volatility Ratio · 11. Session Filter · 12. News Filter\* ·
-13. Market Regime · 14. Spread Filter\* · 15. Correlation Guard\* ·
-16. Exposure Guard\* · 17. RR Validation\* · 18. Prop Compliance\* ·
-19. AI Meta Filter   (\* = blocking guard)
+5. Liquidity Sweep · 6. FVG · 7. Order Block · 8. RSI Confirmation ·
+9. Volatility Health · 10. Session Filter · 11. News Filter\* ·
+12. Market Regime · 13. Spread Filter\* · 14. Correlation Guard\* ·
+15. Exposure Guard\* · 16. RR Validation\* · 17. Prop Compliance\* ·
+18. ORB Confirmation   (\* = blocking guard)
+
+**De-duplication (vs the earlier 19-component model):**
+* **AI Meta Filter removed** — it re-scored trend/structure/momentum already
+  counted elsewhere (score inflation). Replaced by an informational **Trade
+  Thesis Summary** (`ScoreResult.thesis`) that is logged/displayed but **never
+  scored**.
+* **ATR + Volatility Ratio → Volatility Health**, a single state-based score:
+  `Healthy +5`, `Elevated +3`, `Compressed 0`, `Extreme −5`.
+* **Market Regime re-scoped** to *environment classification* (rewards a
+  tradeable directional/breakout environment, not the bias direction) so it no
+  longer duplicates H4/D1 trend. Weight reduced 10 → 5.
 
 ## ORB — confirmation layer only
 
@@ -60,7 +71,7 @@ open a trade** — it only nudges or blocks the score:
 | … and H4/D1 trend aligned | **+5** |
 | … and BOS aligned | **+5** |
 | False breakout (broke then closed back inside) | **−10** |
-| HIGH_VOLATILITY / RANGING w/o breakout / news / range too large or small | **blocked (0)** |
+| HIGH_VOLATILITY / news / spread / exposure / **correlation** / range too large or small | **blocked (0)** |
 
 ## Run
 
