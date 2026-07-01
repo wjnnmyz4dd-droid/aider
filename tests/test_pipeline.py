@@ -360,6 +360,48 @@ class TestApi(unittest.TestCase):
         routes = registered_routes()
         self.assertIn("GET /orb/status", routes)
         self.assertIn("GET /strategies/performance", routes)
+        self.assertIn("GET /metrics", routes)
+
+    def test_metrics_endpoint_prometheus_format(self):
+        app = create_app()
+        app.scan_symbol(strong_approve_snapshot())
+        app.record_trade("ORB", 50.0)
+        server = serve(app, host="127.0.0.1", port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics") as r:
+                self.assertEqual(r.status, 200)
+                self.assertTrue(r.headers["Content-Type"].startswith("text/plain"))
+                self.assertIn("version=0.0.4", r.headers["Content-Type"])
+                body = r.read().decode()
+        finally:
+            server.shutdown()
+            server.server_close()
+        # Existing dashboard metrics are present.
+        for name in ("phantom_up", "phantom_scans_total", "phantom_strategy_trades",
+                     "phantom_strategy_profit_factor", "phantom_orb_active_sessions",
+                     "phantom_strategy_win_rate", "phantom_strategy_pl"):
+            self.assertIn(name, body)
+        # Well-formed exposition: every non-comment line is "name[{labels}] value".
+        for line in body.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            self.assertRegex(line, r'^[a-zA-Z_:][\w:]*(\{.*\})? \S+$')
+
+    def test_metrics_counters_increment_on_scan(self):
+        app = create_app()
+        app.scan_symbol(strong_approve_snapshot())
+        counters, _gauges = app.metrics.snapshot()
+        total = sum(v for (name, _l), v in counters.items() if name == "phantom_scans_total")
+        self.assertEqual(total, 1.0)
+
+    def test_bare_scanner_has_no_metrics(self):
+        # Backward compatibility: Scanner() without a registry is unaffected.
+        s = Scanner()
+        self.assertIsNone(s.metrics)
+        s.scan_symbol(strong_approve_snapshot())  # must not raise
 
     def test_strategies_performance_endpoint(self):
         app = create_app()

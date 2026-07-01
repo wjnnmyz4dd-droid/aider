@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 from .config import Config, DEFAULT_CONFIG
 from .logging_sink import LogSink
+from .metrics import MetricsRegistry
 from .orb import ORBEngine
 from .scorer import Scorer
 from .strategies import StrategyEngine
@@ -25,12 +26,14 @@ class Scanner:
         sink: Optional[LogSink] = None,
         orb_engine: Optional[ORBEngine] = None,
         strategy_engine: Optional[StrategyEngine] = None,
+        metrics: Optional[MetricsRegistry] = None,
     ):
         self.config = config
         self.sink = sink or LogSink()
         self.strategies = strategy_engine or StrategyEngine(config, orb_engine=orb_engine)
         self.orb = self.strategies.orb_engine  # backward-compatible reference
         self.scorer = Scorer(config, strategy_engine=self.strategies)
+        self.metrics = metrics  # optional; export-only, no effect on decisions
 
     def scan_symbol(self, snap: MarketSnapshot) -> ScoreResult:
         result = self.scorer.score(snap)
@@ -76,7 +79,39 @@ class Scanner:
             "data_quality_flag": result.data_quality_flag,
             "thesis": result.thesis,
         })
+
+        # Metrics export (additive; computed AFTER the decision, changes nothing).
+        self._export_metrics(result)
         return result
+
+    def _export_metrics(self, result: ScoreResult) -> None:
+        m = self.metrics
+        if m is None:
+            return
+        m.inc("phantom_scans_total",
+              {"decision": result.decision.value, "direction": result.direction.value})
+        m.set_gauge("phantom_last_score", {"symbol": result.symbol}, round(result.total, 2))
+        if result.data_quality_flag:
+            m.inc("phantom_warmup_total")
+        for c in result.components:
+            if c.blocking and c.failed:
+                m.inc("phantom_guard_blocks_total", {"guard": c.name})
+        if result.strategies is not None:
+            if result.strategies["conflict"]:
+                m.inc("phantom_strategy_conflicts_total")
+            for sig in result.strategies["signals"]:
+                outcome = "confirmed" if sig["confirmed"] else ("blocked" if sig["blocked"] else "none")
+                m.inc("phantom_strategy_signals_total", {"strategy": sig["name"], "outcome": outcome})
+        o = result.orb
+        if o is not None:
+            if o.confirmed:
+                m.inc("phantom_orb_confirmed_total")
+            elif o.false_breakout:
+                m.inc("phantom_orb_false_breakout_total")
+            elif "duplicate" in o.reason:
+                m.inc("phantom_orb_duplicate_suppressed_total")
+            elif o.blocked:
+                m.inc("phantom_orb_blocked_total")
 
     def scan(self, snapshots: List[MarketSnapshot]) -> List[ScoreResult]:
         return [self.scan_symbol(s) for s in snapshots]

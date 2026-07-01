@@ -12,6 +12,8 @@ scan or an order; it reports state the scanner has already produced.
     GET /strategies/performance -> Strategy Performance Panel (per-strategy
                                    trades / win rate / profit factor / P&L,
                                    plus best & worst)
+    GET /metrics                -> Prometheus text exposition of the above
+                                   (scrape target for Grafana). Export only.
 """
 
 from __future__ import annotations
@@ -44,17 +46,23 @@ def _strategies_performance(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     return 200, app.performance.panel()
 
 
+def _metrics(app: PhantomApp, query: dict) -> Tuple[int, str]:
+    from .metrics import render
+    return 200, render(app, datetime.now(timezone.utc))
+
+
 def _health(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     return 200, {"status": "ok", "service": "phantom", "now": datetime.now(timezone.utc).isoformat()}
 
 
 # --- ROUTE REGISTRATION POINT -------------------------------------------------
-_ROUTES: Dict[Tuple[str, str], Callable[[PhantomApp, dict], Tuple[int, dict]]] = {
+_ROUTES: Dict[Tuple[str, str], Callable[[PhantomApp, dict], Tuple[int, object]]] = {
     ("GET", "/health"): _health,
     ("GET", "/orb/status"): _orb_status,
     ("GET", "/orb/log"): _orb_log,
     ("GET", "/scan/log"): _scan_log,
     ("GET", "/strategies/performance"): _strategies_performance,
+    ("GET", "/metrics"): _metrics,
 }
 
 
@@ -81,10 +89,15 @@ def make_handler(app: PhantomApp):
         def do_GET(self):
             self._dispatch()
 
-        def _send(self, status: int, body: dict):
-            payload = json.dumps(body, default=str).encode("utf-8")
+        def _send(self, status: int, body):
+            if isinstance(body, str):  # Prometheus exposition (text/plain)
+                payload = body.encode("utf-8")
+                ctype = "text/plain; version=0.0.4; charset=utf-8"
+            else:
+                payload = json.dumps(body, default=str).encode("utf-8")
+                ctype = "application/json"
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)

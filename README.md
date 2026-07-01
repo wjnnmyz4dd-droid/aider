@@ -85,6 +85,12 @@ Analytics: `GET /strategies/performance` returns per-strategy Trades / Win Rate 
 Profit Factor / P&L plus best & worst, computed from **real recorded trades
 only** (`app.record_trade(strategy, pnl)` — fed by the execution layer).
 
+Metrics: `GET /metrics` exposes the same dashboard data in **Prometheus text
+exposition format** (v0.0.4) for Grafana — gauges (per-strategy performance, ORB
+status, last score) plus counters (scans by decision, strategy signals/conflicts,
+ORB confirmed/false-breakout/duplicate-suppressed, guard blocks). Export only —
+counters are incremented after each decision and change nothing in the pipeline.
+
 ## ORB — opening-range engine
 
 The ORB layer (`phantom/orb.py`) tracks the first 15 minutes after the **London**

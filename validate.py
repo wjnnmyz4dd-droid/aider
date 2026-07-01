@@ -249,6 +249,12 @@ def check_endpoints(results):
                     assert resp.status == 200, f"{path} -> {resp.status}"
                     body = json.loads(resp.read())
                 assert isinstance(body, dict)
+            # Prometheus /metrics — text exposition, export only.
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics") as resp:
+                assert resp.status == 200, f"/metrics -> {resp.status}"
+                assert resp.headers["Content-Type"].startswith("text/plain")
+                metrics_body = resp.read().decode()
+            assert "phantom_up 1" in metrics_body and "phantom_scans_total" in metrics_body
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/orb/status") as resp:
                 status = json.loads(resp.read())
             assert "active_sessions" in status and "ranges" in status

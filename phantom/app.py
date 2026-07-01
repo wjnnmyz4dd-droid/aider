@@ -12,6 +12,7 @@ from typing import Optional
 from .analytics import StrategyPerformanceTracker
 from .config import Config, DEFAULT_CONFIG
 from .logging_sink import LogSink
+from .metrics import MetricsRegistry
 from .scanner import Scanner
 from .strategies import StrategyEngine
 
@@ -23,7 +24,9 @@ class PhantomApp:
         self.strategies = StrategyEngine(config)
         self.orb = self.strategies.orb_engine  # backward-compatible reference
         self.performance = StrategyPerformanceTracker()
-        self.scanner = Scanner(config, sink=self.sink, strategy_engine=self.strategies)
+        self.metrics = MetricsRegistry()
+        self.scanner = Scanner(config, sink=self.sink, strategy_engine=self.strategies,
+                               metrics=self.metrics)
 
     def scan(self, snapshots):
         return self.scanner.scan(snapshots)
