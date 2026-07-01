@@ -355,12 +355,103 @@ class TestSafetyPatch(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class TestRiskEngine(unittest.TestCase):
+    def _eng(self):
+        from phantom.risk import RiskIntelligenceEngine
+        return RiskIntelligenceEngine()
+
+    def test_tiers(self):
+        from phantom.risk import RiskMode
+        e = self._eng()
+        self.assertEqual(e.evaluate(0.0).mode, RiskMode.DEFENSIVE)  # cold start = conservative
+        for _ in range(30):
+            e.record_trade(100)
+        s = e.evaluate(0.0)
+        self.assertEqual(s.mode, RiskMode.AGGRESSIVE)
+        self.assertEqual(s.risk_pct, 0.75)
+        e2 = self._eng()
+        for _ in range(10):
+            e2.record_trade(-50)
+        self.assertEqual(e2.evaluate(0.0).mode, RiskMode.DEFENSIVE)
+
+    def test_progressive_drawdown_levels(self):
+        e = self._eng()
+        for _ in range(30):
+            e.record_trade(100)  # would be AGGRESSIVE absent DD
+        self.assertEqual(e.evaluate(2.5).dd_level, 1)
+        self.assertEqual(e.evaluate(3.5).risk_pct, 0.25)
+        self.assertTrue(e.evaluate(4.5).pause_until_next_session)
+        self.assertFalse(e.evaluate(4.5).trading_allowed)
+        s5 = e.evaluate(5.5)
+        self.assertTrue(s5.lockout)
+        self.assertFalse(s5.trading_allowed)
+
+    def test_risk_always_within_band(self):
+        e = self._eng()
+        for dd in (0, 1, 2, 3, 4, 5, 6, 99):
+            r = e.evaluate(float(dd)).risk_pct
+            self.assertGreaterEqual(r, 0.25)
+            self.assertLessEqual(r, 1.00)
+
+    def test_fail_safe_never_raises_or_increases(self):
+        from phantom.risk import RiskMode
+        e = self._eng()
+        e._base_tier = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        s = e.evaluate(0.0)  # must not raise
+        self.assertEqual(s.mode, RiskMode.DEFENSIVE)
+        self.assertEqual(s.risk_pct, 0.25)
+
+    def test_analytics_keys(self):
+        e = self._eng()
+        a = e.analytics("OK", 1.0, 2.0)
+        for k in ("current_risk_mode", "current_risk_pct", "expected_monthly_risk_pct",
+                  "rolling_win_rate", "rolling_expectancy", "rolling_profit_factor",
+                  "risk_adjustments_today", "compliance_status",
+                  "current_drawdown_pct", "peak_drawdown_pct"):
+            self.assertIn(k, a)
+
+    def test_metrics_telemetry_present_and_failsafe(self):
+        from datetime import datetime, timezone
+        from phantom.metrics import render
+        app = create_app()
+        app.scan_symbol(strong_approve_snapshot())
+        app.update_account(equity=100000, balance=100000, positions_open=2, regime="TRENDING_UP")
+        body = render(app, datetime.now(timezone.utc))
+        for name in ("phantom_risk_mode", "phantom_current_risk_pct", "phantom_compliance_score",
+                     "phantom_trading_allowed", "phantom_regime_state"):
+            self.assertIn(name, body)
+        # Telemetry failure must not break existing metrics (Phase 5).
+        app.risk.telemetry = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        body2 = render(app, datetime.now(timezone.utc))
+        self.assertIn("phantom_up 1", body2)
+        self.assertNotIn("phantom_risk_mode", body2)
+
+
 class TestApi(unittest.TestCase):
     def test_routes_registered(self):
         routes = registered_routes()
         self.assertIn("GET /orb/status", routes)
         self.assertIn("GET /strategies/performance", routes)
         self.assertIn("GET /metrics", routes)
+        self.assertIn("GET /risk/status", routes)
+        self.assertIn("GET /risk/analytics", routes)
+
+    def test_risk_endpoints(self):
+        app = create_app()
+        app.scan_symbol(strong_approve_snapshot())
+        server = serve(app, host="127.0.0.1", port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            for path, key in (("/risk/status", "risk_pct"), ("/risk/analytics", "current_risk_mode")):
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as r:
+                    self.assertEqual(r.status, 200)
+                    body = json.loads(r.read())
+                self.assertIn(key, body)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_metrics_endpoint_prometheus_format(self):
         app = create_app()

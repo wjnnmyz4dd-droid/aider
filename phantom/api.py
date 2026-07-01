@@ -51,6 +51,26 @@ def _metrics(app: PhantomApp, query: dict) -> Tuple[int, str]:
     return 200, render(app, datetime.now(timezone.utc))
 
 
+def _compliance_view(app: PhantomApp):
+    cs = app.compliance.state()
+    status = "KILL_SWITCH" if cs["killswitch_active"] else ("LOCKED" if cs["locked_day"] else "OK")
+    return cs, status
+
+
+def _risk_status(app: PhantomApp, query: dict) -> Tuple[int, dict]:
+    cs, _status = _compliance_view(app)
+    return 200, app.risk.evaluate(current_dd_pct=cs["total_dd_pct"]).as_dict()
+
+
+def _risk_analytics(app: PhantomApp, query: dict) -> Tuple[int, dict]:
+    cs, status = _compliance_view(app)
+    return 200, app.risk.analytics(
+        compliance_status=status,
+        current_dd_pct=cs["total_dd_pct"],
+        peak_dd_pct=cs["total_dd_pct"],
+    )
+
+
 def _health(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     return 200, {"status": "ok", "service": "phantom", "now": datetime.now(timezone.utc).isoformat()}
 
@@ -63,6 +83,8 @@ _ROUTES: Dict[Tuple[str, str], Callable[[PhantomApp, dict], Tuple[int, object]]]
     ("GET", "/scan/log"): _scan_log,
     ("GET", "/strategies/performance"): _strategies_performance,
     ("GET", "/metrics"): _metrics,
+    ("GET", "/risk/status"): _risk_status,
+    ("GET", "/risk/analytics"): _risk_analytics,
 }
 
 

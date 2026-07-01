@@ -198,6 +198,29 @@ def check_safety_patch(results):
         results.append((False, _fail("safety patch", repr(exc))))
 
 
+def check_risk_engine(results):
+    """Phase 1-5 — tiers, progressive DD, band, fail-safe, telemetry."""
+    try:
+        from phantom.risk import RiskIntelligenceEngine, RiskMode
+        e = RiskIntelligenceEngine()
+        for _ in range(30):
+            e.record_trade(100)
+        assert e.evaluate(0.0).mode == RiskMode.AGGRESSIVE, "aggressive tier"
+        assert e.evaluate(3.5).risk_pct == 0.25, "DD>3 -> min risk"
+        assert not e.evaluate(4.5).trading_allowed, "DD>4 -> pause"
+        assert e.evaluate(5.5).lockout, "DD>5 -> lockout"
+        for dd in (0, 2, 3, 4, 5, 50):
+            r = e.evaluate(float(dd)).risk_pct
+            assert 0.25 <= r <= 1.00, f"risk {r} out of band"
+        # fail-safe
+        e._base_tier = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        fs = e.evaluate(0.0)
+        assert fs.mode == RiskMode.DEFENSIVE and fs.risk_pct == 0.25, "fail-safe"
+        results.append((True, _ok("risk engine — tiers/DD-levels/band/fail-safe")))
+    except Exception as exc:
+        results.append((False, _fail("risk engine", repr(exc))))
+
+
 def check_distribution(results):
     """OLD (19-component) vs NEW (18-component) score distribution on identical
     fixture data. OLD values are the recorded pre-refactor baseline."""
@@ -255,6 +278,12 @@ def check_endpoints(results):
                 assert resp.headers["Content-Type"].startswith("text/plain")
                 metrics_body = resp.read().decode()
             assert "phantom_up 1" in metrics_body and "phantom_scans_total" in metrics_body
+            assert "phantom_risk_mode" in metrics_body and "phantom_compliance_score" in metrics_body
+            # New risk routes respond.
+            for path in ("/risk/status", "/risk/analytics"):
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as resp:
+                    assert resp.status == 200, f"{path} -> {resp.status}"
+                    assert isinstance(json.loads(resp.read()), dict)
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/orb/status") as resp:
                 status = json.loads(resp.read())
             assert "active_sessions" in status and "ranges" in status
@@ -279,6 +308,7 @@ def main():
     check_scoring_regression(results)
     check_strategy_layer(results)
     check_safety_patch(results)
+    check_risk_engine(results)
     check_distribution(results)
     check_endpoints(results)
     for _passed, line in results:

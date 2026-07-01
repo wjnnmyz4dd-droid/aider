@@ -42,6 +42,7 @@ class ComplianceEngine:
         self._daily_peak: Optional[float] = None
         self._killed = False          # permanent (total-DD breach)
         self._locked_day: Optional[str] = None  # daily lockout marker
+        self._equity: Optional[float] = None     # last observed equity (telemetry)
 
     def check(self, snap: MarketSnapshot) -> GuardResult:
         g = self.config.guards
@@ -52,6 +53,7 @@ class ComplianceEngine:
 
         day = snap.now.astimezone().date().isoformat()
         with self._lock:
+            self._equity = snap.equity  # telemetry only; no effect on the check
             if self._peak_equity is None:
                 self._peak_equity = snap.equity
             if self._day != day:
@@ -74,6 +76,21 @@ class ComplianceEngine:
                 self._locked_day = day
                 return GuardResult(False, f"DAILY_LOCKOUT: daily_dd={daily_dd:.2f}% >= {g.max_daily_dd_pct:.2f}%")
             return GuardResult(True, f"daily_dd={daily_dd:.2f}% total_dd={total_dd:.2f}% ok")
+
+    def state(self) -> dict:
+        """Read-only snapshot for telemetry (no effect on protection logic)."""
+        with self._lock:
+            eq, peak, dpeak = self._equity, self._peak_equity, self._daily_peak
+            total_dd = (peak - eq) / peak * 100 if (peak and eq is not None) else 0.0
+            daily_dd = (dpeak - eq) / dpeak * 100 if (dpeak and eq is not None) else 0.0
+            return {
+                "equity": eq,
+                "peak_equity": peak,
+                "daily_dd_pct": round(daily_dd, 4),
+                "total_dd_pct": round(total_dd, 4),
+                "killswitch_active": self._killed,
+                "locked_day": self._locked_day,
+            }
 
 
 class Guards:

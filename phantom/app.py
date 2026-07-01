@@ -13,6 +13,7 @@ from .analytics import StrategyPerformanceTracker
 from .config import Config, DEFAULT_CONFIG
 from .logging_sink import LogSink
 from .metrics import MetricsRegistry
+from .risk import RiskIntelligenceEngine
 from .scanner import Scanner
 from .strategies import StrategyEngine
 
@@ -25,8 +26,14 @@ class PhantomApp:
         self.orb = self.strategies.orb_engine  # backward-compatible reference
         self.performance = StrategyPerformanceTracker()
         self.metrics = MetricsRegistry()
+        self.risk = RiskIntelligenceEngine(config)
         self.scanner = Scanner(config, sink=self.sink, strategy_engine=self.strategies,
                                metrics=self.metrics)
+
+    @property
+    def compliance(self):
+        """Read-only reference to the live ComplianceEngine (telemetry only)."""
+        return self.scanner.scorer.guards.compliance
 
     def scan(self, snapshots):
         return self.scanner.scan(snapshots)
@@ -37,6 +44,12 @@ class PhantomApp:
     def record_trade(self, strategy: str, pnl: float) -> None:
         """Feed a closed-trade result from the execution layer into analytics."""
         self.performance.record(strategy, pnl)
+        self.risk.record_trade(pnl)  # additive: rolling stats for risk intelligence
+
+    def update_account(self, **kw) -> None:
+        """Feed live account telemetry (equity/balance/positions/news/regime/DD)
+        into the Risk Intelligence Engine. Advisory only."""
+        self.risk.update_account(**kw)
 
 
 def create_app(config: Config = DEFAULT_CONFIG, log_path: Optional[str] = None) -> PhantomApp:

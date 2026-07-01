@@ -91,6 +91,16 @@ status, last score) plus counters (scans by decision, strategy signals/conflicts
 ORB confirmed/false-breakout/duplicate-suppressed, guard blocks). Export only —
 counters are incremented after each decision and change nothing in the pipeline.
 
+Risk intelligence (advisory, additive): `phantom/risk.py` adapts per-trade risk %
+(DEFENSIVE 0.25 / NORMAL 0.50 / AGGRESSIVE 0.75, band [0.25, 1.00]) from rolling
+win rate / profit factor / sample and progressive drawdown levels (DD>2 reduce
+tier, >3 min, >4 pause, >5 lockout). It never executes and never loosens a
+protection — the ComplianceEngine remains authoritative. Fail-safe: any error →
+DEFENSIVE/min, risk never auto-increased. Feed live state via
+`app.update_account(...)` and `app.record_trade(strategy, pnl)`. Endpoints:
+`GET /risk/status`, `GET /risk/analytics`; telemetry in `/metrics`
+(`phantom_risk_mode`, `phantom_current_risk_pct`, `phantom_compliance_score`, …).
+
 ## ORB — opening-range engine
 
 The ORB layer (`phantom/orb.py`) tracks the first 15 minutes after the **London**

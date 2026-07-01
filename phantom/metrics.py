@@ -34,6 +34,19 @@ _META: Dict[str, Tuple[str, str]] = {
     "phantom_orb_ranges_tracked": ("gauge", "ORB ranges currently tracked."),
     "phantom_orb_confirmed_sessions": ("gauge", "Confirmed ORB sessions retained (idempotency)."),
     "phantom_orb_processed_signal_ids": ("gauge", "Processed ORB signal ids retained (idempotency)."),
+    # Phase 3 — compliance telemetry.
+    "phantom_account_equity": ("gauge", "Live account equity."),
+    "phantom_account_balance": ("gauge", "Account balance."),
+    "phantom_daily_drawdown_pct": ("gauge", "Daily drawdown percent."),
+    "phantom_total_drawdown_pct": ("gauge", "Total drawdown percent."),
+    "phantom_risk_mode": ("gauge", "Active risk mode (1 for the current mode)."),
+    "phantom_current_risk_pct": ("gauge", "Current advised risk percent per trade."),
+    "phantom_trading_allowed": ("gauge", "1 if the risk engine permits trading."),
+    "phantom_killswitch_active": ("gauge", "1 if the compliance kill-switch is latched."),
+    "phantom_news_block_active": ("gauge", "1 if a news block is active."),
+    "phantom_positions_open": ("gauge", "Open positions reported to the risk engine."),
+    "phantom_regime_state": ("gauge", "Current market regime (1 for the current state)."),
+    "phantom_compliance_score": ("gauge", "Composite compliance health 0..100."),
 }
 
 # A metric sample: (labels-as-sorted-tuple, value).
@@ -136,6 +149,34 @@ def render(app, now) -> str:
     add("phantom_orb_ranges_tracked", "gauge", (), len(status["ranges"]))
     add("phantom_orb_confirmed_sessions", "gauge", (), status["confirmed_sessions"])
     add("phantom_orb_processed_signal_ids", "gauge", (), status["processed_signal_ids"])
+
+    # --- Phase 3: compliance telemetry (additive; fail-safe per Phase 5) ---
+    try:
+        rt = app.risk.telemetry()
+        cs = app.compliance.state()
+        acc = rt["account"]
+        equity = cs["equity"] if cs["equity"] is not None else acc.get("equity")
+        add("phantom_account_equity", "gauge", (), equity if equity is not None else 0)
+        add("phantom_account_balance", "gauge", (), acc.get("balance") if acc.get("balance") is not None else 0)
+        add("phantom_daily_drawdown_pct", "gauge", (), cs["daily_dd_pct"])
+        add("phantom_total_drawdown_pct", "gauge", (), cs["total_dd_pct"])
+        add("phantom_risk_mode", "gauge", (("mode", rt["risk_mode"]),), 1)
+        add("phantom_current_risk_pct", "gauge", (), rt["current_risk_pct"])
+        add("phantom_trading_allowed", "gauge", (), 1 if rt["trading_allowed"] else 0)
+        add("phantom_killswitch_active", "gauge", (), 1 if cs["killswitch_active"] else 0)
+        add("phantom_news_block_active", "gauge", (), 1 if acc.get("news_block") else 0)
+        add("phantom_positions_open", "gauge", (), acc.get("positions_open") or 0)
+        add("phantom_regime_state", "gauge", (("state", acc.get("regime", "UNKNOWN")),), 1)
+        score = 100.0 - cs["total_dd_pct"] * 10.0
+        if cs["killswitch_active"]:
+            score -= 50
+        if rt["lockout"]:
+            score -= 25
+        if rt["pause_until_next_session"]:
+            score -= 20
+        add("phantom_compliance_score", "gauge", (), max(0.0, min(100.0, round(score, 2))))
+    except Exception:
+        pass  # telemetry failure must not break existing metrics
 
     # --- emit ---
     lines: List[str] = []

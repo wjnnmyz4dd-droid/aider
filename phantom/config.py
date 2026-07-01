@@ -185,6 +185,33 @@ class GuardParams:
 
 
 @dataclass(frozen=True)
+class RiskParams:
+    """Statistical Risk Intelligence (additive, advisory). Percentages are
+    percent-of-account risk-per-trade; drawdown thresholds are percent."""
+
+    window: int = 50                 # rolling trade window
+    risk_defensive: float = 0.25
+    risk_normal: float = 0.50
+    risk_aggressive: float = 0.75
+    risk_max: float = 1.00
+    risk_min: float = 0.25
+    # DEFENSIVE triggers (any one)
+    def_dd_pct: float = 2.0
+    def_profit_factor: float = 1.10
+    def_win_rate: float = 0.45
+    # AGGRESSIVE triggers (all)
+    agg_profit_factor: float = 1.75
+    agg_win_rate: float = 0.60
+    agg_min_trades: int = 30
+    # Progressive drawdown levels (percent)
+    dd_level1: float = 2.0   # reduce tier by one
+    dd_level2: float = 3.0   # risk to minimum
+    dd_level3: float = 4.0   # pause until next session
+    dd_level4: float = 5.0   # compliance lockout
+    expected_trades_per_month: int = 20  # for monthly-exposure estimate
+
+
+@dataclass(frozen=True)
 class Config:
     thresholds: Thresholds = field(default_factory=Thresholds)
     weights: ComponentWeights = field(default_factory=ComponentWeights)
@@ -193,6 +220,7 @@ class Config:
     volatility: VolatilityParams = field(default_factory=VolatilityParams)
     strategies: StrategyParams = field(default_factory=StrategyParams)
     guards: GuardParams = field(default_factory=GuardParams)
+    risk: RiskParams = field(default_factory=RiskParams)
     score_floor: float = 0.0
     score_ceiling: float = 100.0
     state_ttl_days: int = 3  # FIX 8 — prune ORB/session state older than this
