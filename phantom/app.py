@@ -16,6 +16,7 @@ from .metrics import MetricsRegistry
 from .risk import RiskIntelligenceEngine
 from .scanner import Scanner
 from .strategies import StrategyEngine
+from .trade_router import TradeRouter
 
 
 class PhantomApp:
@@ -29,6 +30,8 @@ class PhantomApp:
         self.risk = RiskIntelligenceEngine(config)
         self.scanner = Scanner(config, sink=self.sink, strategy_engine=self.strategies,
                                metrics=self.metrics)
+        # Advisory position sizing: compliance final, risk engine may only reduce.
+        self.router = TradeRouter(config, self.risk, self.compliance)
 
     @property
     def compliance(self):
@@ -50,6 +53,11 @@ class PhantomApp:
         """Feed live account telemetry (equity/balance/positions/news/regime/DD)
         into the Risk Intelligence Engine. Advisory only."""
         self.risk.update_account(**kw)
+
+    def size_trade(self, symbol: str, equity: float, stop_distance: float,
+                   current_dd_pct=None):
+        """Advisory position size for a trade intent. Does not execute."""
+        return self.router.size(symbol, equity, stop_distance, current_dd_pct)
 
 
 def create_app(config: Config = DEFAULT_CONFIG, log_path: Optional[str] = None) -> PhantomApp:

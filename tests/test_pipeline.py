@@ -427,6 +427,75 @@ class TestRiskEngine(unittest.TestCase):
         self.assertNotIn("phantom_risk_mode", body2)
 
 
+class TestTradeRouter(unittest.TestCase):
+    def _aggressive_app(self):
+        app = create_app()
+        for _ in range(30):
+            app.record_trade("ORB", 100)  # engine -> AGGRESSIVE (0.75)
+        return app
+
+    def test_risk_engine_can_reduce_below_config(self):
+        app = create_app()  # cold start -> DEFENSIVE
+        d = app.size_trade("EURUSD", 100000, 0.0010)
+        self.assertTrue(d.allowed)
+        self.assertEqual(d.risk_pct, 0.25)  # reduced below config 0.50
+
+    def test_risk_engine_never_exceeds_config(self):
+        app = self._aggressive_app()  # engine wants 0.75
+        d = app.size_trade("EURUSD", 100000, 0.0010)
+        self.assertEqual(d.risk_pct, 0.50)  # capped at config base, not raised
+
+    def test_never_exceeds_config_over_sweep(self):
+        base = DEFAULT_CONFIG.risk.base_risk_pct
+        for wins in (0, 5, 30):
+            app = create_app()
+            for _ in range(wins):
+                app.record_trade("ORB", 100)
+            for dd in (0.0, 1.0, 2.0, 3.0):
+                d = app.router.size("EURUSD", 100000, 0.0010, current_dd_pct=dd)
+                if d.allowed:
+                    self.assertLessEqual(d.risk_pct, base)
+                    self.assertGreaterEqual(d.risk_pct, DEFAULT_CONFIG.risk.risk_min)
+
+    def test_lot_sizing_math(self):
+        app = self._aggressive_app()
+        d = app.size_trade("EURUSD", 100000, 0.0010)  # 0.50% of 100k = 500 risk
+        self.assertAlmostEqual(d.risk_amount, 500.0)
+        self.assertAlmostEqual(d.units, 500000.0)       # 500 / 0.0010
+        self.assertAlmostEqual(d.lots, 5.0)             # / 100000 contract
+
+    def test_dd_pause_and_lockout_halt_sizing(self):
+        app = self._aggressive_app()
+        self.assertFalse(app.router.size("EURUSD", 100000, 0.0010, current_dd_pct=4.5).allowed)
+        self.assertFalse(app.router.size("EURUSD", 100000, 0.0010, current_dd_pct=5.5).allowed)
+
+    def test_compliance_killswitch_is_final_authority(self):
+        app = self._aggressive_app()
+        app.compliance.check(_bare_snap(equity=100000))
+        app.compliance.check(_bare_snap(equity=88000))  # 12% total DD -> kill-switch
+        d = app.size_trade("EURUSD", 100000, 0.0010)
+        self.assertFalse(d.allowed)
+        self.assertIn("kill-switch", d.reason)
+
+    def test_failsafe_defaults_to_minimum_risk(self):
+        app = self._aggressive_app()
+        app.router.risk_engine.evaluate = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        d = app.size_trade("EURUSD", 100000, 0.0010)
+        self.assertTrue(d.allowed)
+        self.assertEqual(d.risk_pct, 0.25)  # minimum, never more
+
+    def test_invalid_inputs_refuse(self):
+        app = create_app()
+        self.assertFalse(app.size_trade("EURUSD", 0, 0.0010).allowed)
+        self.assertFalse(app.size_trade("EURUSD", 100000, 0).allowed)
+
+    def test_fixtures_unchanged_by_sizing(self):
+        # Sizing must not affect scoring — fixtures score exactly as before.
+        s = Scanner()
+        self.assertAlmostEqual(s.scan_symbol(strong_approve_snapshot()).total, 75.28, places=2)
+        self.assertAlmostEqual(Scanner().scan_symbol(approve_long_snapshot()).total, 65.01, places=2)
+
+
 class TestApi(unittest.TestCase):
     def test_routes_registered(self):
         routes = registered_routes()
@@ -435,6 +504,24 @@ class TestApi(unittest.TestCase):
         self.assertIn("GET /metrics", routes)
         self.assertIn("GET /risk/status", routes)
         self.assertIn("GET /risk/analytics", routes)
+        self.assertIn("GET /risk/sizing", routes)
+
+    def test_sizing_endpoint(self):
+        app = create_app()
+        server = serve(app, host="127.0.0.1", port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/risk/sizing?symbol=EURUSD&equity=100000&stop=0.001") as r:
+                self.assertEqual(r.status, 200)
+                body = json.loads(r.read())
+            self.assertIn("risk_pct", body)
+            self.assertLessEqual(body["risk_pct"], DEFAULT_CONFIG.risk.base_risk_pct)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_risk_endpoints(self):
         app = create_app()

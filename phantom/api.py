@@ -71,6 +71,16 @@ def _risk_analytics(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     )
 
 
+def _risk_sizing(app: PhantomApp, query: dict) -> Tuple[int, dict]:
+    try:
+        symbol = query.get("symbol", ["EURUSD"])[0]
+        equity = float(query.get("equity", ["0"])[0])
+        stop = float(query.get("stop", ["0"])[0])
+    except (ValueError, IndexError):
+        return 400, {"error": "equity and stop must be numbers"}
+    return 200, app.size_trade(symbol, equity, stop).as_dict()
+
+
 def _health(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     return 200, {"status": "ok", "service": "phantom", "now": datetime.now(timezone.utc).isoformat()}
 
@@ -85,6 +95,7 @@ _ROUTES: Dict[Tuple[str, str], Callable[[PhantomApp, dict], Tuple[int, object]]]
     ("GET", "/metrics"): _metrics,
     ("GET", "/risk/status"): _risk_status,
     ("GET", "/risk/analytics"): _risk_analytics,
+    ("GET", "/risk/sizing"): _risk_sizing,
 }
 
 

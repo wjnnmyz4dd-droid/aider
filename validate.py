@@ -221,6 +221,59 @@ def check_risk_engine(results):
         results.append((False, _fail("risk engine", repr(exc))))
 
 
+def check_position_sizing(results):
+    """TradeRouter — risk can reduce but never exceed config/compliance."""
+    try:
+        from phantom.app import create_app
+        from phantom.config import DEFAULT_CONFIG as C
+        from tests.test_pipeline import _bare_snap
+        base = C.risk.base_risk_pct
+
+        cold = create_app().size_trade("EURUSD", 100000, 0.0010)
+        assert cold.allowed and cold.risk_pct == C.risk.risk_min, "cold start not reduced to min"
+
+        agg = create_app()
+        for _ in range(30):
+            agg.record_trade("ORB", 100)
+        d = agg.size_trade("EURUSD", 100000, 0.0010)
+        assert d.risk_pct == base, f"engine exceeded config: {d.risk_pct} != {base}"
+        assert abs(d.risk_amount - 500.0) < 1e-6 and abs(d.lots - 5.0) < 1e-6, "lot math"
+
+        assert not agg.router.size("EURUSD", 100000, 0.0010, current_dd_pct=4.5).allowed, "DD pause"
+        assert not agg.router.size("EURUSD", 100000, 0.0010, current_dd_pct=5.5).allowed, "DD lockout"
+
+        # compliance kill-switch is final authority
+        agg.compliance.check(_bare_snap(equity=100000))
+        agg.compliance.check(_bare_snap(equity=88000))
+        assert not agg.size_trade("EURUSD", 100000, 0.0010).allowed, "kill-switch not final"
+
+        # fail-safe -> minimum risk, never more
+        fs = create_app()
+        for _ in range(30):
+            fs.record_trade("ORB", 100)
+        fs.router.risk_engine.evaluate = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        f = fs.size_trade("EURUSD", 100000, 0.0010)
+        assert f.allowed and f.risk_pct == C.risk.risk_min, "fail-safe not min risk"
+
+        results.append((True, _ok("position sizing — reduces, never exceeds config/compliance, fail-safe")))
+    except Exception as exc:
+        results.append((False, _fail("position sizing", repr(exc))))
+
+
+def check_fixtures_unchanged(results):
+    """Fixtures must score identically after the sizing wire-up."""
+    try:
+        from phantom.scanner import Scanner
+        from tests.fixtures import approve_long_snapshot, strong_approve_snapshot
+        strong = Scanner().scan_symbol(strong_approve_snapshot()).total
+        moderate = Scanner().scan_symbol(approve_long_snapshot()).total
+        assert abs(strong - 75.28) < 0.01, f"strong changed: {strong}"
+        assert abs(moderate - 65.01) < 0.01, f"moderate changed: {moderate}"
+        results.append((True, _ok("fixtures unchanged — strong 75.28 / moderate 65.01")))
+    except Exception as exc:
+        results.append((False, _fail("fixtures unchanged", repr(exc))))
+
+
 def check_distribution(results):
     """OLD (19-component) vs NEW (18-component) score distribution on identical
     fixture data. OLD values are the recorded pre-refactor baseline."""
@@ -280,7 +333,7 @@ def check_endpoints(results):
             assert "phantom_up 1" in metrics_body and "phantom_scans_total" in metrics_body
             assert "phantom_risk_mode" in metrics_body and "phantom_compliance_score" in metrics_body
             # New risk routes respond.
-            for path in ("/risk/status", "/risk/analytics"):
+            for path in ("/risk/status", "/risk/analytics", "/risk/sizing?equity=100000&stop=0.001"):
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as resp:
                     assert resp.status == 200, f"{path} -> {resp.status}"
                     assert isinstance(json.loads(resp.read()), dict)
@@ -309,6 +362,8 @@ def main():
     check_strategy_layer(results)
     check_safety_patch(results)
     check_risk_engine(results)
+    check_position_sizing(results)
+    check_fixtures_unchanged(results)
     check_distribution(results)
     check_endpoints(results)
     for _passed, line in results:

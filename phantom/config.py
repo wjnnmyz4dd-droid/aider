@@ -209,6 +209,10 @@ class RiskParams:
     dd_level3: float = 4.0   # pause until next session
     dd_level4: float = 5.0   # compliance lockout
     expected_trades_per_month: int = 20  # for monthly-exposure estimate
+    # Position sizing (TradeRouter). base_risk_pct is the statically configured
+    # per-trade ceiling; the risk engine may only reduce/cap below it.
+    base_risk_pct: float = 0.50
+    contract_size: float = 100000.0  # units per standard lot (FX)
 
 
 @dataclass(frozen=True)

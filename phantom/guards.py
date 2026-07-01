@@ -77,12 +77,18 @@ class ComplianceEngine:
                 return GuardResult(False, f"DAILY_LOCKOUT: daily_dd={daily_dd:.2f}% >= {g.max_daily_dd_pct:.2f}%")
             return GuardResult(True, f"daily_dd={daily_dd:.2f}% total_dd={total_dd:.2f}% ok")
 
-    def state(self) -> dict:
-        """Read-only snapshot for telemetry (no effect on protection logic)."""
+    def state(self, now=None) -> dict:
+        """Read-only snapshot for telemetry (no effect on protection logic).
+        When ``now`` is given, ``daily_lockout`` reflects whether the lockout is
+        in effect for that day."""
         with self._lock:
             eq, peak, dpeak = self._equity, self._peak_equity, self._daily_peak
             total_dd = (peak - eq) / peak * 100 if (peak and eq is not None) else 0.0
             daily_dd = (dpeak - eq) / dpeak * 100 if (dpeak and eq is not None) else 0.0
+            daily_lockout = bool(
+                now is not None and self._locked_day is not None
+                and self._locked_day == now.astimezone().date().isoformat()
+            )
             return {
                 "equity": eq,
                 "peak_equity": peak,
@@ -90,6 +96,7 @@ class ComplianceEngine:
                 "total_dd_pct": round(total_dd, 4),
                 "killswitch_active": self._killed,
                 "locked_day": self._locked_day,
+                "daily_lockout": daily_lockout,
             }
 
 
