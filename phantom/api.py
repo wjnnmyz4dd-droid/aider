@@ -4,11 +4,14 @@ Routes are registered in an explicit table (``_ROUTES``) so the registration
 point is unambiguous. Everything here is read-only — the API never triggers a
 scan or an order; it reports state the scanner has already produced.
 
-    GET /health        -> liveness
-    GET /orb/status    -> active ORB sessions, ORB high/low per pair, breakout
-                          status, last ORB decision
-    GET /orb/log       -> recent ORB decision log records
-    GET /scan/log      -> recent scan decision log records
+    GET /health                 -> liveness
+    GET /orb/status             -> active ORB sessions, ORB high/low per pair,
+                                   breakout status, last ORB decision
+    GET /orb/log                -> recent ORB decision log records
+    GET /scan/log               -> recent scan decision log records
+    GET /strategies/performance -> Strategy Performance Panel (per-strategy
+                                   trades / win rate / profit factor / P&L,
+                                   plus best & worst)
 """
 
 from __future__ import annotations
@@ -37,6 +40,10 @@ def _scan_log(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     return 200, {"records": app.sink.recent("scan", limit)}
 
 
+def _strategies_performance(app: PhantomApp, query: dict) -> Tuple[int, dict]:
+    return 200, app.performance.panel()
+
+
 def _health(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     return 200, {"status": "ok", "service": "phantom", "now": datetime.now(timezone.utc).isoformat()}
 
@@ -47,6 +54,7 @@ _ROUTES: Dict[Tuple[str, str], Callable[[PhantomApp, dict], Tuple[int, dict]]] =
     ("GET", "/orb/status"): _orb_status,
     ("GET", "/orb/log"): _orb_log,
     ("GET", "/scan/log"): _scan_log,
+    ("GET", "/strategies/performance"): _strategies_performance,
 }
 
 

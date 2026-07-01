@@ -21,8 +21,10 @@ market data ─► regime ─► structure ─► guards ─► ORB ─► score
 | Regime engine    | `phantom/regime.py`       | TRENDING/BREAKOUT/RANGING/HIGH_VOLATILITY |
 | Structure        | `phantom/structure.py`    | BOS, CHOCH, liquidity sweep, FVG, order block |
 | Guards           | `phantom/guards.py`       | News, spread, correlation, exposure, prop, RR, session |
-| **ORB**          | `phantom/orb.py`          | **Opening-range breakout confirmation layer** |
-| Scorer           | `phantom/scorer.py`       | Assembles the 19 components + ORB, applies caps |
+| **ORB**          | `phantom/orb.py`          | **Opening-range breakout engine (+ `/orb/status`)** |
+| **Strategies**   | `phantom/strategies/`     | **ORB · Liquidity Reversal · Session Breakout + conflict engine** |
+| Analytics        | `phantom/analytics.py`    | Per-strategy performance (real trades only) |
+| Scorer           | `phantom/scorer.py`       | Assembles the 18 components, applies caps |
 | Scanner          | `phantom/scanner.py`      | Orchestrates, logs, returns the decision |
 | Logging sink     | `phantom/logging_sink.py` | JSONL append-only + in-memory recent buffer |
 | API              | `phantom/api.py`          | Read-only HTTP; route table incl. `GET /orb/status` |
@@ -57,7 +59,33 @@ Composite score is 0–100.
   tradeable directional/breakout environment, not the bias direction) so it no
   longer duplicates H4/D1 trend. Weight reduced 10 → 5.
 
-## ORB — confirmation layer only
+## Strategy layer — signal contributors only
+
+Three institutional-style strategies live under `phantom/strategies/`. **None
+opens a trade**; each returns a score influence that the `StrategyEngine`
+consolidates into the single **Strategy Confirmation** component (#18).
+
+| Strategy | Fires on | Scoring |
+|----------|----------|---------|
+| **ORB** (`orb_strategy.py`) | London/NY opening-range breakout + BOS + H4/D1 + regime | +8 / +5 trend / +5 BOS · −10 false breakout |
+| **Liquidity Reversal** (`liquidity_reversal.py`) | Sweep beyond swing + rejection wick + CHOCH (regime≠HIGH_VOL, news safe) | Sweep+CHOCH +10 · +OB 5 · +FVG 5 |
+| **Session Breakout** (`session_breakout.py`) | Asia-range breakout + BOS + H4 trend + regime | +8 / +5 trend / +5 BOS |
+
+**Consolidation (anti-inflation by construction):**
+* Agreeing strategies use `max(score) + small capped confluence bonus` — never a
+  raw sum, so shared BOS/trend inputs can't double-count.
+* Opposing strategies **cancel to their difference, then dampen** (×0.5) and set
+  a `conflict` flag — a conflict can never raise the score.
+* The layer's positive contribution is **hard-capped at +18** (the prior ORB
+  max), so it can never inflate the score above the previous model.
+* Every strategy is **gated behind News / Exposure / Correlation** in the engine
+  — no strategy can bypass a protection.
+
+Analytics: `GET /strategies/performance` returns per-strategy Trades / Win Rate /
+Profit Factor / P&L plus best & worst, computed from **real recorded trades
+only** (`app.record_trade(strategy, pnl)` — fed by the execution layer).
+
+## ORB — opening-range engine
 
 The ORB layer (`phantom/orb.py`) tracks the first 15 minutes after the **London**
 (08:00 Europe/London) and **New York** (09:30 America/New_York) opens, records

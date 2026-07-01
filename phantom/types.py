@@ -114,6 +114,7 @@ class ScoreResult:
     capped_at: Optional[float] = None
     orb: Optional["ORBDecision"] = None
     thesis: str = ""  # Trade Thesis Summary — informational only, never scored
+    strategies: Optional[dict] = None  # consolidated multi-strategy breakdown
 
     def as_dict(self) -> dict:
         return {
@@ -125,6 +126,7 @@ class ScoreResult:
             "components": [c.as_dict() for c in self.components],
             "orb": self.orb.as_dict() if self.orb else None,
             "thesis": self.thesis,
+            "strategies": self.strategies,
         }
 
 

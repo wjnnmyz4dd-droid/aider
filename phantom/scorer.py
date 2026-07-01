@@ -9,9 +9,10 @@ Component list (order preserved):
   3 BOS                     9 Volatility Health     15 Exposure Guard*
   4 CHOCH                  10 Session Filter         16 RR Validation*
   5 Liquidity Sweep        11 News Filter*          17 Prop Compliance*
-  6 FVG                    12 Market Regime          18 ORB Confirmation
-  (* = blocking guard. ORB Confirmation is an additive layer that can raise,
-   lower, or block the score but NEVER opens a trade.)
+  6 FVG                    12 Market Regime          18 Strategy Confirmation
+  (* = blocking guard. Strategy Confirmation is the consolidated multi-strategy
+   layer — ORB + Liquidity Reversal + Session Breakout — an additive, capped
+   contribution that NEVER opens a trade.)
 
 Changes vs the previous 19-component model:
   - AI Meta Filter REMOVED (it re-scored trend/structure/momentum → inflation).
@@ -28,8 +29,9 @@ from typing import Dict, List, Optional, Tuple
 from . import indicators as ind
 from .config import Config, DEFAULT_CONFIG
 from .guards import Guards
-from .orb import ORBContext, ORBDecision, ORBEngine
+from .orb import ORBEngine
 from .regime import RegimeEngine
+from .strategies import StrategyContext, StrategyEngine
 from .structure import StructureAnalyzer
 from .types import (
     Candle,
@@ -60,12 +62,15 @@ def _trend_direction(candles: List[Candle]) -> Tuple[Direction, float]:
 
 
 class Scorer:
-    def __init__(self, config: Config = DEFAULT_CONFIG, orb_engine: Optional[ORBEngine] = None):
+    def __init__(self, config: Config = DEFAULT_CONFIG,
+                 orb_engine: Optional[ORBEngine] = None,
+                 strategy_engine: Optional[StrategyEngine] = None):
         self.config = config
         self.regime_engine = RegimeEngine(config)
         self.structure = StructureAnalyzer(config)
         self.guards = Guards(config)
-        self.orb = orb_engine or ORBEngine(config)
+        self.strategies = strategy_engine or StrategyEngine(config, orb_engine=orb_engine)
+        self.orb = self.strategies.orb_engine  # backward-compatible reference
 
     # -- RR helper ----------------------------------------------------------
     def _planned_rr(self, candles: List[Candle], direction: Direction, atr: float) -> Optional[float]:
@@ -230,38 +235,32 @@ class Scorer:
         prop = self.guards.prop_compliance(snap)
         add("Prop Compliance", 0.0, prop.detail, blocking=True, failed=not prop.passed)
 
-        # 18 ORB Confirmation layer (additive; never opens a trade)
+        # 18 Strategy Confirmation layer — ORB + Liquidity Reversal + Session
+        #    Breakout, consolidated with conflict resolution and a hard cap.
+        #    Additive-only; no strategy can open a trade and the layer cannot
+        #    inflate the score above the prior single-ORB maximum.
         exposure_safe = {
             Direction.LONG: self.guards.exposure(snap, Direction.LONG).passed,
             Direction.SHORT: self.guards.exposure(snap, Direction.SHORT).passed,
         }
-        h4d1_aligned = {
-            Direction.LONG: h4_dir == Direction.LONG and d1_dir == Direction.LONG,
-            Direction.SHORT: h4_dir == Direction.SHORT and d1_dir == Direction.SHORT,
-        }
-        bos_dir = {
-            Direction.LONG: bos.found and bos.direction == Direction.LONG,
-            Direction.SHORT: bos.found and bos.direction == Direction.SHORT,
-        }
-        orb_ctx = ORBContext(
-            regime=regime,
-            h4d1_aligned=h4d1_aligned,
-            bos=bos_dir,
-            news_safe=news_safe,
-            spread_safe=spread.passed,
-            exposure_safe=exposure_safe,
-            correlation_safe=corr.passed,
-            atr=atr,
+        strat_ctx = StrategyContext(
+            regime=regime, h4_dir=h4_dir, d1_dir=d1_dir, bias=bias,
+            bos=bos, choch=choch, sweep=sweep, fvg=fvg, ob=ob,
+            news_safe=news_safe, spread_safe=spread.passed,
+            correlation_safe=corr.passed, exposure_safe=exposure_safe,
+            atr=atr, exec_candles=exec_candles,
         )
-        orb_decision: ORBDecision = self.orb.evaluate(snap, orb_ctx)
-        total += orb_decision.score_impact
+        outcome = self.strategies.evaluate(snap, strat_ctx)
+        total += outcome.net_score
         comps.append(ScoreComponent(
-            "ORB Confirmation", orb_decision.score_impact,
-            orb_decision.reason, blocking=False,
+            "Strategy Confirmation", outcome.net_score,
+            outcome.detail + (" [CONFLICT]" if outcome.conflict else ""),
+            blocking=False,
         ))
-        # An ORB-confirmed breakout can resolve an otherwise-NEUTRAL bias.
-        if bias == Direction.NONE and orb_decision.confirmed:
-            bias = orb_decision.breakout_direction
+        orb_decision = outcome.orb_decision
+        # A confirmed, unconflicted strategy can resolve an otherwise-NEUTRAL bias.
+        if bias == Direction.NONE and outcome.direction != Direction.NONE and not outcome.conflict:
+            bias = outcome.direction
 
         # --- clamp, cap, decide ---
         total = max(cfg.score_floor, min(total, cfg.score_ceiling))
@@ -287,6 +286,8 @@ class Scorer:
             [bos, choch, sweep, fvg, ob], rsi, orb_decision, h4_dir, d1_dir,
             blocked_by,
         )
+        if outcome.conflict:
+            thesis += " | STRATEGY CONFLICT"
 
         return ScoreResult(
             symbol=snap.symbol.upper(),
@@ -297,6 +298,7 @@ class Scorer:
             capped_at=capped_at,
             orb=orb_decision,
             thesis=thesis,
+            strategies=outcome.as_dict(),
         )
 
     def _build_thesis(self, symbol, bias, decision, total, regime, vh_state,

@@ -105,9 +105,44 @@ def check_scoring_regression(results):
         assert "AI Meta Filter" not in names, "AI Meta Filter must be removed"
         assert "Volatility Health" in names, "Volatility Health missing"
         assert "ATR" not in names and "Volatility Ratio" not in names, "ATR/VolRatio not merged"
+        assert "Strategy Confirmation" in names, "Strategy Confirmation missing"
         results.append((True, _ok("scoring regression — 18 components, no double-count")))
     except Exception as exc:
         results.append((False, _fail("scoring regression", repr(exc))))
+
+
+def check_strategy_layer(results):
+    """No duplicate signals / no inflation / conflict handling on the strategy
+    layer."""
+    try:
+        from phantom.config import DEFAULT_CONFIG as C
+        from phantom.scanner import Scanner
+        from phantom.strategies.engine import StrategyEngine
+        from phantom.strategies.base import StrategySignal
+        from phantom.types import Direction
+        from tests.fixtures import strong_approve_snapshot
+
+        # Strategy layer never exceeds the hard cap, even with full agreement.
+        res = Scanner().scan_symbol(strong_approve_snapshot())
+        net = res.strategies["net_score"]
+        assert net <= C.strategies.layer_cap, f"layer net {net} > cap (inflation)"
+
+        eng = StrategyEngine()
+        # Two agreeing strategies do NOT sum (no duplicate-signal inflation).
+        agree = eng.resolve([
+            StrategySignal("ORB", Direction.LONG, score=18.0, confirmed=True),
+            StrategySignal("Session Breakout", Direction.LONG, score=18.0, confirmed=True),
+        ])
+        assert agree.net_score <= C.strategies.layer_cap and not agree.conflict, "agreement inflated"
+        # Conflicting strategies cannot inflate — they cancel and dampen.
+        conf = eng.resolve([
+            StrategySignal("ORB", Direction.LONG, score=18.0, confirmed=True),
+            StrategySignal("Liquidity Reversal", Direction.SHORT, score=10.0, confirmed=True),
+        ])
+        assert conf.conflict and conf.net_score < 18.0, "conflict not handled"
+        results.append((True, _ok("strategy layer — capped, no duplicate/conflict inflation")))
+    except Exception as exc:
+        results.append((False, _fail("strategy layer", repr(exc))))
 
 
 def check_distribution(results):
@@ -157,7 +192,7 @@ def check_endpoints(results):
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
         try:
-            for path in ("/health", "/orb/status"):
+            for path in ("/health", "/orb/status", "/strategies/performance"):
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as resp:
                     assert resp.status == 200, f"{path} -> {resp.status}"
                     body = json.loads(resp.read())
@@ -165,6 +200,9 @@ def check_endpoints(results):
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/orb/status") as resp:
                 status = json.loads(resp.read())
             assert "active_sessions" in status and "ranges" in status
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/strategies/performance") as resp:
+                perf = json.loads(resp.read())
+            assert "strategies" in perf and "best" in perf and "worst" in perf
         finally:
             server.shutdown()
             server.server_close()
@@ -181,6 +219,7 @@ def main():
     check_startup(results)
     check_scanner_regression(results)
     check_scoring_regression(results)
+    check_strategy_layer(results)
     check_distribution(results)
     check_endpoints(results)
     for _passed, line in results:

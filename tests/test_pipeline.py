@@ -82,7 +82,7 @@ class TestScoring(unittest.TestCase):
             "Volatility Health", "Session Filter", "News Filter",
             "Market Regime", "Spread Filter", "Correlation Guard",
             "Exposure Guard", "RR Validation", "Prop Compliance",
-            "ORB Confirmation",
+            "Strategy Confirmation",
         ]
         for required in expected:
             self.assertIn(required, names)
@@ -134,10 +134,126 @@ class TestOrbBlocks(unittest.TestCase):
         self.assertEqual(d.score_impact, -10.0)
 
 
+class TestStrategies(unittest.TestCase):
+    def _ctx(self, **over):
+        from phantom.strategies.base import StrategyContext
+        from phantom.structure import StructureSignal
+        base = dict(
+            regime=Regime.TRENDING_UP, h4_dir=Direction.LONG, d1_dir=Direction.LONG,
+            bias=Direction.LONG, bos=StructureSignal(), choch=StructureSignal(),
+            sweep=StructureSignal(), fvg=StructureSignal(), ob=StructureSignal(),
+            news_safe=True, spread_safe=True, correlation_safe=True,
+            exposure_safe={Direction.LONG: True, Direction.SHORT: True},
+            atr=0.0005, exec_candles=[],
+        )
+        base.update(over)
+        return StrategyContext(**base)
+
+    def test_session_breakout_confirms(self):
+        res = Scanner().scan_symbol(strong_approve_snapshot())
+        sess = [s for s in res.strategies["signals"] if s["name"] == "Session Breakout"][0]
+        self.assertTrue(sess["confirmed"])
+        self.assertEqual(sess["direction"], "LONG")
+
+    def test_liquidity_reversal_fires(self):
+        from phantom.strategies.liquidity_reversal import LiquiditySweepReversal
+        from phantom.structure import StructureSignal
+        # A candle with a long lower wick (rejection of lows).
+        c = Candle(strong_approve_snapshot().now, open=1.10, high=1.101, low=1.090, close=1.1005)
+        ctx = self._ctx(
+            sweep=StructureSignal(True, Direction.LONG, "swept sell-side"),
+            choch=StructureSignal(True, Direction.LONG, "bullish choch"),
+            ob=StructureSignal(True, Direction.LONG, "bullish OB"),
+            exec_candles=[c],
+        )
+        sig = LiquiditySweepReversal().evaluate(strong_approve_snapshot(), ctx)
+        self.assertTrue(sig.confirmed)
+        self.assertEqual(sig.direction, Direction.LONG)
+        self.assertEqual(sig.score, 15.0)  # Sweep+CHOCH 10 + OB 5
+
+    def test_liquidity_reversal_blocked_high_vol(self):
+        from phantom.strategies.liquidity_reversal import LiquiditySweepReversal
+        sig = LiquiditySweepReversal().evaluate(
+            strong_approve_snapshot(), self._ctx(regime=Regime.HIGH_VOLATILITY))
+        self.assertTrue(sig.blocked)
+        self.assertEqual(sig.score, 0.0)
+
+    def test_conflict_dampens_and_flags(self):
+        from phantom.strategies.engine import StrategyEngine
+        from phantom.strategies.base import StrategySignal
+        eng = StrategyEngine()
+        out = eng.resolve([
+            StrategySignal("ORB", Direction.LONG, score=18.0, confirmed=True),
+            StrategySignal("Liquidity Reversal", Direction.SHORT, score=10.0, confirmed=True),
+        ])
+        self.assertTrue(out.conflict)
+        self.assertEqual(out.direction, Direction.LONG)
+        self.assertAlmostEqual(out.net_score, (18.0 - 10.0) * 0.5)  # dampened difference
+
+    def test_agreement_capped_no_inflation(self):
+        from phantom.strategies.engine import StrategyEngine
+        from phantom.strategies.base import StrategySignal
+        out = StrategyEngine().resolve([
+            StrategySignal("ORB", Direction.LONG, score=18.0, confirmed=True),
+            StrategySignal("Session Breakout", Direction.LONG, score=18.0, confirmed=True),
+        ])
+        self.assertFalse(out.conflict)
+        self.assertLessEqual(out.net_score, 18.0)  # hard layer cap
+
+    def test_false_breakout_penalty_applies(self):
+        from phantom.strategies.engine import StrategyEngine
+        from phantom.strategies.base import StrategySignal
+        out = StrategyEngine().resolve([
+            StrategySignal("ORB", Direction.NONE, penalty=-10.0, blocked=True),
+        ])
+        self.assertEqual(out.net_score, -10.0)
+
+
+class TestAnalytics(unittest.TestCase):
+    def test_profit_factor_and_ranking(self):
+        from phantom.analytics import StrategyPerformanceTracker
+        t = StrategyPerformanceTracker()
+        for pnl in (100, -50, 80):      # ORB: gross +180 / -50 -> PF 3.6
+            t.record("ORB", pnl)
+        for pnl in (-30, -20, 10):      # Session: gross +10 / -50 -> PF 0.2
+            t.record("Session Breakout", pnl)
+        panel = t.panel()
+        self.assertEqual(panel["strategies"]["ORB"]["trades"], 3)
+        self.assertAlmostEqual(panel["strategies"]["ORB"]["profit_factor"], 3.6)
+        self.assertEqual(panel["best"], "ORB")
+        self.assertEqual(panel["worst"], "Session Breakout")
+
+    def test_empty_panel_is_zeroed(self):
+        from phantom.analytics import StrategyPerformanceTracker
+        panel = StrategyPerformanceTracker().panel()
+        self.assertIsNone(panel["best"])
+        self.assertEqual(panel["strategies"]["ORB"]["trades"], 0)
+
+
 class TestApi(unittest.TestCase):
     def test_routes_registered(self):
         routes = registered_routes()
         self.assertIn("GET /orb/status", routes)
+        self.assertIn("GET /strategies/performance", routes)
+
+    def test_strategies_performance_endpoint(self):
+        app = create_app()
+        app.record_trade("ORB", 120.0)
+        app.record_trade("ORB", -40.0)
+        server = serve(app, host="127.0.0.1", port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/strategies/performance") as r:
+                self.assertEqual(r.status, 200)
+                body = json.loads(r.read())
+            self.assertIn("strategies", body)
+            self.assertIn("best", body)
+            self.assertEqual(body["strategies"]["ORB"]["trades"], 2)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_orb_status_endpoint(self):
         app = create_app()

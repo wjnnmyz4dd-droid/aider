@@ -89,6 +89,33 @@ class VolatilityParams:
 
 
 @dataclass(frozen=True)
+class StrategyParams:
+    """Multi-strategy signal layer. All values are score contributions; the
+    layer NEVER creates trades."""
+
+    # Liquidity Sweep Reversal
+    sweep_choch: float = 10.0
+    sweep_ob: float = 5.0
+    sweep_fvg: float = 5.0
+    rejection_wick_ratio: float = 0.5  # wick beyond swing >= this * candle range
+
+    # Session Breakout Continuation (Asia range, UTC hours)
+    asia_start_hour: int = 0
+    asia_end_hour: int = 6
+    asia_trade_until_hour: int = 21
+    session_breakout: float = 8.0
+    session_trend: float = 5.0
+    session_bos: float = 5.0
+
+    # Conflict resolution + anti-inflation
+    conflict_dampen: float = 0.5       # opposing sides cancel to their difference * this
+    confluence_bonus_per: float = 3.0  # bonus per extra agreeing strategy
+    confluence_cap: float = 6.0
+    layer_cap: float = 18.0            # max positive strategy-layer contribution
+                                       # (== prior ORB max -> provably no inflation)
+
+
+@dataclass(frozen=True)
 class GuardParams:
     max_spread: float = 0.0003           # absolute price units (e.g. 3 pips on a 4-dp pair)
     max_account_drawdown_pct: float = 5.0  # prop daily DD limit
@@ -115,6 +142,7 @@ class Config:
     orb: ORBParams = field(default_factory=ORBParams)
     indicators: IndicatorParams = field(default_factory=IndicatorParams)
     volatility: VolatilityParams = field(default_factory=VolatilityParams)
+    strategies: StrategyParams = field(default_factory=StrategyParams)
     guards: GuardParams = field(default_factory=GuardParams)
     score_floor: float = 0.0
     score_ceiling: float = 100.0
