@@ -260,6 +260,35 @@ def check_position_sizing(results):
         results.append((False, _fail("position sizing", repr(exc))))
 
 
+def check_account_feed(results):
+    """Live account feed — compliance driven off equity, stale feed blocks sizing."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        from phantom.app import create_app
+        from phantom.metrics import render
+        now = datetime.now(timezone.utc)
+
+        def snap(equity, age_s=0):
+            return {"balance": 100000, "equity": equity, "margin": 0, "free_margin": 100000,
+                    "positions_open": 0, "timestamp": (now - timedelta(seconds=age_s)).isoformat()}
+
+        app = create_app()
+        app.apply_account_snapshot(snap(100000))
+        app.apply_account_snapshot(snap(88000))  # -12% -> kill-switch
+        assert app.compliance.state(now)["killswitch_active"], "snapshot did not drive compliance"
+        assert not app.size_trade("EURUSD", 100000, 0.0010).allowed, "kill-switch did not block sizing"
+
+        stale = create_app()
+        stale.apply_account_snapshot(snap(100000, age_s=120))
+        d = stale.size_trade("EURUSD", 100000, 0.0010)
+        assert not d.allowed and "stale" in d.reason, "stale feed did not block sizing"
+        body = render(stale, now)
+        assert "phantom_account_feed_stale" in body, "feed-stale metric missing"
+        results.append((True, _ok("account feed — compliance live, stale blocks sizing, metric present")))
+    except Exception as exc:
+        results.append((False, _fail("account feed", repr(exc))))
+
+
 def check_fixtures_unchanged(results):
     """Fixtures must score identically after the sizing wire-up."""
     try:
@@ -309,6 +338,7 @@ def check_distribution(results):
 
 def check_endpoints(results):
     try:
+        from datetime import datetime, timezone
         from phantom.app import create_app
         from phantom.api import serve, registered_routes
         from tests.fixtures import approve_long_snapshot
@@ -333,10 +363,20 @@ def check_endpoints(results):
             assert "phantom_up 1" in metrics_body and "phantom_scans_total" in metrics_body
             assert "phantom_risk_mode" in metrics_body and "phantom_compliance_score" in metrics_body
             # New risk routes respond.
-            for path in ("/risk/status", "/risk/analytics", "/risk/sizing?equity=100000&stop=0.001"):
+            for path in ("/risk/status", "/risk/analytics", "/risk/sizing?equity=100000&stop=0.001",
+                         "/account/status"):
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as resp:
                     assert resp.status == 200, f"{path} -> {resp.status}"
                     assert isinstance(json.loads(resp.read()), dict)
+            # POST /account/snapshot round-trip.
+            import urllib.request as _u
+            snap = json.dumps({"balance": 100000, "equity": 100000, "margin": 0,
+                               "free_margin": 100000, "positions_open": 0,
+                               "timestamp": datetime.now(timezone.utc).isoformat()}).encode()
+            req = _u.Request(f"http://127.0.0.1:{port}/account/snapshot", data=snap,
+                             headers={"Content-Type": "application/json"}, method="POST")
+            with _u.urlopen(req) as resp:
+                assert resp.status == 200 and "trading_allowed" in json.loads(resp.read())
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/orb/status") as resp:
                 status = json.loads(resp.read())
             assert "active_sessions" in status and "ranges" in status
@@ -363,6 +403,7 @@ def main():
     check_safety_patch(results)
     check_risk_engine(results)
     check_position_sizing(results)
+    check_account_feed(results)
     check_fixtures_unchanged(results)
     check_distribution(results)
     check_endpoints(results)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -493,6 +494,98 @@ class TestTradeRouter(unittest.TestCase):
         # Sizing must not affect scoring — fixtures score exactly as before.
         s = Scanner()
         self.assertAlmostEqual(s.scan_symbol(strong_approve_snapshot()).total, 75.28, places=2)
+        self.assertAlmostEqual(Scanner().scan_symbol(approve_long_snapshot()).total, 65.01, places=2)
+
+
+class TestAccountFeed(unittest.TestCase):
+    def _now(self):
+        return datetime.now(timezone.utc)
+
+    def _snap(self, equity, balance=100000, positions=0, age_s=0, now=None):
+        now = now or self._now()
+        return {"balance": balance, "equity": equity, "margin": 0.0,
+                "free_margin": balance, "positions_open": positions,
+                "timestamp": (now - timedelta(seconds=age_s)).isoformat()}
+
+    def test_snapshot_updates_compliance(self):
+        app = create_app()
+        now = self._now()
+        app.apply_account_snapshot(self._snap(100000, now=now))   # peak
+        app.apply_account_snapshot(self._snap(95000, now=now))    # -5%
+        cs = app.compliance.state(now)
+        self.assertEqual(cs["equity"], 95000.0)
+        self.assertAlmostEqual(cs["total_dd_pct"], 5.0, places=2)
+
+    def test_drawdown_triggers_killswitch_and_blocks_sizing(self):
+        app = create_app()
+        now = self._now()
+        app.apply_account_snapshot(self._snap(100000, now=now))
+        app.apply_account_snapshot(self._snap(88000, now=now))    # -12% > 10% total
+        self.assertTrue(app.compliance.state(now)["killswitch_active"])
+        d = app.size_trade("EURUSD", 100000, 0.0010)
+        self.assertFalse(d.allowed)
+        self.assertIn("kill-switch", d.reason)
+
+    def test_stale_feed_blocks_sizing(self):
+        app = create_app()
+        app.apply_account_snapshot(self._snap(100000, age_s=120))  # 120s old > 60s TTL
+        d = app.size_trade("EURUSD", 100000, 0.0010)
+        self.assertFalse(d.allowed)
+        self.assertIn("stale", d.reason)
+
+    def test_fresh_feed_allows_sizing(self):
+        app = create_app()
+        app.apply_account_snapshot(self._snap(100000, age_s=0))
+        self.assertTrue(app.size_trade("EURUSD", 100000, 0.0010).allowed)
+
+    def test_metrics_update_from_snapshot(self):
+        from phantom.metrics import render
+        app = create_app()
+        app.apply_account_snapshot(self._snap(100000, age_s=0))
+        body = render(app, self._now())
+        self.assertIn("phantom_account_equity", body)
+        self.assertIn("phantom_account_feed_stale", body)
+        self.assertIn("100000", body)
+
+    def test_account_status_fields(self):
+        app = create_app()
+        app.apply_account_snapshot(self._snap(100000, positions=3, age_s=0))
+        st = app.account_status(self._now())
+        for k in ("balance", "equity", "daily_drawdown_pct", "total_drawdown_pct",
+                  "trading_allowed", "killswitch_active", "daily_lockout",
+                  "positions_open", "last_update_age_seconds", "account_feed_stale"):
+            self.assertIn(k, st)
+        self.assertEqual(st["positions_open"], 3)
+
+    def test_snapshot_and_status_over_http(self):
+        app = create_app()
+        server = serve(app, host="127.0.0.1", port=0)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        base = f"http://127.0.0.1:{port}"
+        try:
+            payload = json.dumps(self._snap(100000, age_s=0)).encode()
+            req = urllib.request.Request(base + "/account/snapshot", data=payload,
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req) as r:
+                self.assertEqual(r.status, 200)
+                self.assertIn("trading_allowed", json.loads(r.read()))
+            with urllib.request.urlopen(base + "/account/status") as r:
+                self.assertEqual(r.status, 200)
+                self.assertIn("equity", json.loads(r.read()))
+            # Missing required field -> 400.
+            bad = urllib.request.Request(base + "/account/snapshot", data=b'{"balance":1}',
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(bad)
+            self.assertEqual(ctx.exception.code, 400)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_fixtures_unchanged(self):
+        self.assertAlmostEqual(Scanner().scan_symbol(strong_approve_snapshot()).total, 75.28, places=2)
         self.assertAlmostEqual(Scanner().scan_symbol(approve_long_snapshot()).total, 65.01, places=2)
 
 

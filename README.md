@@ -101,6 +101,14 @@ DEFENSIVE/min, risk never auto-increased. Feed live state via
 `GET /risk/status`, `GET /risk/analytics`; telemetry in `/metrics`
 (`phantom_risk_mode`, `phantom_current_risk_pct`, `phantom_compliance_score`, …).
 
+Live account feed: `POST /account/snapshot` (`balance/equity/margin/free_margin/
+positions_open/timestamp`) drives the ComplianceEngine off **live equity**,
+updates risk telemetry, and refreshes gauges; `GET /account/status` returns
+balance/equity/daily+total DD/trading_allowed/killswitch/daily_lockout/positions/
+`last_update_age_seconds`. Fail-safe: once the feed is active, a snapshot older
+than `account_feed_ttl_seconds` (60s) marks it stale (`phantom_account_feed_stale`
+= 1) and `TradeRouter` **refuses to size**. Compliance stays final authority.
+
 ## ORB — opening-range engine
 
 The ORB layer (`phantom/orb.py`) tracks the first 15 minutes after the **London**

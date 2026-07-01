@@ -47,10 +47,11 @@ class SizingDecision:
 
 
 class TradeRouter:
-    def __init__(self, config: Config, risk_engine, compliance):
+    def __init__(self, config: Config, risk_engine, compliance, account_feed=None):
         self.config = config
         self.risk_engine = risk_engine
         self.compliance = compliance
+        self.account_feed = account_feed  # optional; enforces feed freshness when active
 
     def _refuse(self, reason: str, mode: str = "DEFENSIVE") -> SizingDecision:
         return SizingDecision(False, 0.0, 0.0, 0.0, 0.0, mode, reason)
@@ -71,6 +72,14 @@ class TradeRouter:
              current_dd_pct: Optional[float] = None, now: Optional[datetime] = None) -> SizingDecision:
         r = self.config.risk
         now = now or datetime.now(timezone.utc)
+
+        # 0) Live account feed freshness — once active, a stale feed refuses.
+        if self.account_feed is not None and self.account_feed.is_active():
+            try:
+                if self.account_feed.is_stale(now):
+                    return self._refuse("stale account feed")
+            except Exception:
+                return self._refuse("account-feed-error (fail-closed)")
 
         # 1) Compliance is final authority — fail-closed.
         try:

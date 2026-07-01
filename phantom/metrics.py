@@ -47,6 +47,7 @@ _META: Dict[str, Tuple[str, str]] = {
     "phantom_positions_open": ("gauge", "Open positions reported to the risk engine."),
     "phantom_regime_state": ("gauge", "Current market regime (1 for the current state)."),
     "phantom_compliance_score": ("gauge", "Composite compliance health 0..100."),
+    "phantom_account_feed_stale": ("gauge", "1 if the live account feed is active but stale."),
 }
 
 # A metric sample: (labels-as-sorted-tuple, value).
@@ -175,6 +176,9 @@ def render(app, now) -> str:
         if rt["pause_until_next_session"]:
             score -= 20
         add("phantom_compliance_score", "gauge", (), max(0.0, min(100.0, round(score, 2))))
+        feed = getattr(app, "account", None)
+        if feed is not None:
+            add("phantom_account_feed_stale", "gauge", (), 1 if feed.is_stale(now) else 0)
     except Exception:
         pass  # telemetry failure must not break existing metrics
 

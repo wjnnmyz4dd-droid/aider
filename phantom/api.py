@@ -71,6 +71,22 @@ def _risk_analytics(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     )
 
 
+def _account_snapshot(app: PhantomApp, query: dict, body: dict) -> Tuple[int, dict]:
+    if not isinstance(body, dict):
+        return 400, {"error": "JSON object required"}
+    for req in ("balance", "equity"):
+        if req not in body:
+            return 400, {"error": f"missing required field: {req}"}
+    try:
+        return 200, app.apply_account_snapshot(body)
+    except (ValueError, TypeError, KeyError) as exc:
+        return 400, {"error": f"invalid payload: {exc}"}
+
+
+def _account_status(app: PhantomApp, query: dict) -> Tuple[int, dict]:
+    return 200, app.account_status(datetime.now(timezone.utc))
+
+
 def _risk_sizing(app: PhantomApp, query: dict) -> Tuple[int, dict]:
     try:
         symbol = query.get("symbol", ["EURUSD"])[0]
@@ -96,6 +112,8 @@ _ROUTES: Dict[Tuple[str, str], Callable[[PhantomApp, dict], Tuple[int, object]]]
     ("GET", "/risk/status"): _risk_status,
     ("GET", "/risk/analytics"): _risk_analytics,
     ("GET", "/risk/sizing"): _risk_sizing,
+    ("GET", "/account/status"): _account_status,
+    ("POST", "/account/snapshot"): _account_snapshot,
 }
 
 
@@ -113,13 +131,26 @@ def make_handler(app: PhantomApp):
                 self._send(404, {"error": "not found", "path": parsed.path})
                 return
             try:
-                status, body = handler(app, parse_qs(parsed.query))
+                if self.command == "POST":
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                    raw = self.rfile.read(length) if length else b""
+                    try:
+                        payload = json.loads(raw.decode("utf-8") or "{}")
+                    except (ValueError, UnicodeDecodeError):
+                        self._send(400, {"error": "invalid JSON body"})
+                        return
+                    status, body = handler(app, parse_qs(parsed.query), payload)
+                else:
+                    status, body = handler(app, parse_qs(parsed.query))
             except Exception as exc:  # pragma: no cover - defensive
                 self._send(500, {"error": str(exc)})
                 return
             self._send(status, body)
 
         def do_GET(self):
+            self._dispatch()
+
+        def do_POST(self):
             self._dispatch()
 
         def _send(self, status: int, body):

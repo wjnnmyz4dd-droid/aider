@@ -225,6 +225,7 @@ class Config:
     strategies: StrategyParams = field(default_factory=StrategyParams)
     guards: GuardParams = field(default_factory=GuardParams)
     risk: RiskParams = field(default_factory=RiskParams)
+    account_feed_ttl_seconds: int = 60  # sizing refuses if the live feed is older
     score_floor: float = 0.0
     score_ceiling: float = 100.0
     state_ttl_days: int = 3  # FIX 8 — prune ORB/session state older than this
