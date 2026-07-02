@@ -6074,11 +6074,11 @@ def feedback():
             )
         # Daily target check — alert when cumulative session profit looks strong
         session_profit_today = sum(
-            t["profit"] for t in trade_history[-20:]
+            t["profit"] for t in list(trade_history)[-20:]
             if t.get("ts", "")[:10] == datetime.utcnow().strftime("%Y-%m-%d")
         )
         if session_profit_today > 0 and won:
-            trades_today_list = [t for t in trade_history[-20:]
+            trades_today_list = [t for t in list(trade_history)[-20:]
                                  if t.get("ts", "")[:10] == datetime.utcnow().strftime("%Y-%m-%d")]
             if len(trades_today_list) >= 2 and session_profit_today >= 1000:
                 send_telegram(
