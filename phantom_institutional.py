@@ -42,7 +42,7 @@ python phantom_institutional.py
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import numpy as np
-import json, csv, os, sys, logging, threading, time, math, random, traceback
+import json, csv, os, sys, uuid, logging, threading, time, math, random, traceback
 from logging.handlers import RotatingFileHandler                              # [IMP-2]
 
 class _SafeRotatingFileHandler(RotatingFileHandler):
@@ -5602,6 +5602,47 @@ def _append_csv(filepath, row):
             w.writeheader()
         w.writerow(row)
 
+# Canonical trade-journal schema. Original 6 columns kept first (same order)
+# for backward compatibility; analytics fields appended after.
+JOURNAL_FIELDS = [
+    "won", "profit", "session", "setup", "symbol", "ts",
+    "score", "regime", "r_multiple",
+    "entry_price", "stop_loss", "take_profit", "direction", "trade_id",
+]
+
+def _append_journal(row):
+    """Append one completed trade with the canonical schema. Backward
+    compatible: an older journal (fewer columns) is migrated in place to the
+    full header, backfilling new columns as blank. Missing values are stored
+    blank (never estimated). Journal-only; no effect on trading logic."""
+    fields = JOURNAL_FIELDS
+    out = {k: ("" if row.get(k) is None else row.get(k)) for k in fields}
+    if not os.path.isfile(JOURNAL_FILE) or os.path.getsize(JOURNAL_FILE) == 0:
+        with open(JOURNAL_FILE, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+            w.writeheader(); w.writerow(out)
+        return
+    try:
+        with open(JOURNAL_FILE, newline="") as f:
+            header = next(csv.reader(f), [])
+    except Exception:
+        header = []
+    if header != fields:
+        try:
+            with open(JOURNAL_FILE, newline="") as f:
+                old_rows = list(csv.DictReader(f))
+            with open(JOURNAL_FILE, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                w.writeheader()
+                for o in old_rows:
+                    w.writerow({k: o.get(k, "") for k in fields})
+            log.info("[JOURNAL] migrated journal to %d-column schema", len(fields))
+        except Exception as e:
+            log.warning("[JOURNAL] header migration skipped: %s", e)
+    with open(JOURNAL_FILE, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writerow(out)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # API ENDPOINTS
@@ -5980,16 +6021,35 @@ def feedback():
             "breakout": setup == "BOS", "structure": setup == "FVG",
         })
         ai_model.record(features, won, profit)
-        trade_history.append({
+        # --- analytics journal fields (journal-only; null when not supplied,
+        #     never estimated) ---
+        def _jnum(*keys):
+            for k in keys:
+                if k in data and data[k] is not None:
+                    try:
+                        return float(data[k])
+                    except (TypeError, ValueError):
+                        return None
+            return None
+        _j_ts       = datetime.utcnow().isoformat()
+        _j_score    = _jnum("score", "score_used")
+        _j_regime   = data.get("regime") or None
+        _j_rmult    = _jnum("r_multiple", "rr_achieved")
+        _j_entry    = _jnum("entry_price", "entry")
+        _j_sl       = _jnum("stop_loss", "sl_price")
+        _j_tp       = _jnum("take_profit", "tp_price")
+        _j_dir      = data.get("direction")
+        _j_dir      = None if _j_dir is None else str(_j_dir)
+        _j_tradeid  = str(data.get("trade_id") or data.get("ticket") or uuid.uuid4())
+        _journal_rec = {
             "won": won, "profit": profit, "session": session,
-            "setup": setup, "symbol": symbol,
-            "ts": datetime.utcnow().isoformat()
-        })
-        _append_csv(JOURNAL_FILE, {
-            "won": won, "profit": profit, "session": session,
-            "setup": setup, "symbol": symbol,
-            "ts": datetime.utcnow().isoformat()
-        })
+            "setup": setup, "symbol": symbol, "ts": _j_ts,
+            "score": _j_score, "regime": _j_regime, "r_multiple": _j_rmult,
+            "entry_price": _j_entry, "stop_loss": _j_sl, "take_profit": _j_tp,
+            "direction": _j_dir, "trade_id": _j_tradeid,
+        }
+        trade_history.append(dict(_journal_rec))
+        _append_journal(_journal_rec)
         log.info(f"FEEDBACK | {'WIN' if won else 'LOSS'} {profit:.2f} "
                  f"session={session} setup={setup}")
         rr_achieved  = float(data.get("rr_achieved",  0.0))
