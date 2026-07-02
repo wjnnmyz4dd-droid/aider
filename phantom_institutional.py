@@ -6169,6 +6169,94 @@ def accounts_status():
     return jsonify(orchestrator.get_portfolio_summary())
 
 
+# ══════════════════════════════════════════════════════════════════════
+# ACCOUNT SNAPSHOT TELEMETRY (additive; telemetry only)
+# EA posts a live account snapshot; /account/status returns it with age.
+# Does NOT touch scoring, thresholds, approval, execution, or risk rules —
+# the snapshot is stored for observability only and never mutates risk state.
+# ══════════════════════════════════════════════════════════════════════
+_account_snapshot_lock = threading.Lock()
+_account_snapshot = {
+    "balance": None, "equity": None, "margin": None, "free_margin": None,
+    "positions_open": None, "timestamp": None, "received_at": None,
+}
+
+
+def _risk_engine_present():
+    """True if the portfolio risk/compliance engine is loadable in this
+    deployment. Used ONLY to report integration status — the snapshot is
+    stored as telemetry and never feeds risk decisions (no risk-rule change)."""
+    try:
+        return _load_portfolio_engine() is not None
+    except Exception:
+        return False
+
+
+@app.route("/account/snapshot", methods=["POST"])
+def account_snapshot():
+    """Store a live account telemetry snapshot from the EA.
+    Body: {balance, equity, margin, free_margin, positions_open, timestamp?}
+    Telemetry only — no effect on scoring, approval, or risk rules."""
+    try:
+        data = request.get_json(force=True) or {}
+
+        def _num(*keys):
+            for k in keys:
+                if k in data and data[k] is not None:
+                    try:
+                        return float(data[k])
+                    except (TypeError, ValueError):
+                        return None
+            return None
+
+        _pos = _num("positions_open", "positionsOpen", "positions")
+        with _account_snapshot_lock:
+            _account_snapshot.update({
+                "balance":        _num("balance"),
+                "equity":         _num("equity"),
+                "margin":         _num("margin"),
+                "free_margin":    _num("free_margin", "freeMargin"),
+                "positions_open": int(_pos) if _pos is not None else None,
+                "timestamp":      data.get("timestamp"),
+                "received_at":    time.time(),
+            })
+        return jsonify({
+            "status":           "ok",
+            "risk_integration": "present" if _risk_engine_present() else "absent",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/account/status", methods=["GET"])
+def account_status():
+    """Return the last account snapshot plus its age in seconds.
+    Reports whether a risk/compliance engine is present; the snapshot is
+    telemetry only and is not wired into risk decisions (no risk-rule change)."""
+    with _account_snapshot_lock:
+        snap = dict(_account_snapshot)
+    received     = snap.pop("received_at", None)
+    has_snapshot = received is not None
+    age          = (time.time() - received) if received is not None else None
+    present      = _risk_engine_present()
+    return jsonify({
+        "has_snapshot":     has_snapshot,
+        "balance":          snap["balance"],
+        "equity":           snap["equity"],
+        "margin":           snap["margin"],
+        "free_margin":      snap["free_margin"],
+        "positions_open":   snap["positions_open"],
+        "timestamp":        snap["timestamp"],
+        "age_seconds":      round(age, 3) if age is not None else None,
+        "risk_engine":      "present" if present else "absent",
+        "risk_integration": "telemetry_only" if present else "absent",
+        "note": ("snapshot stored as telemetry; not wired into risk decisions "
+                 "(no risk-rule change)") if present else
+                ("risk/compliance engine not present in this deployment — "
+                 "snapshot stored only"),
+    })
+
+
 @app.route("/monte_carlo", methods=["GET"])
 def monte_carlo_endpoint():
     try:
