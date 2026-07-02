@@ -5715,6 +5715,32 @@ def _push_live_score(result: dict, data: dict):
         pass
 
 
+def _parse_signal_direction(sig):
+    """Map a /score 'signal' value to trade direction: +1 (buy) / -1 (sell).
+
+    Accepts the numeric contract the scoring path enforces (int/float 1/-1, or
+    numeric strings "1"/"-1") and, defensively, the BUY/SELL words. Returns
+    (direction, None) on success or (None, error_message) on invalid input so
+    the caller can respond HTTP 400. NOTE: score_trade() coerces signal via
+    int() upstream (~L4147), so a non-numeric word ("BUY") is rejected there
+    first — the word branch here is forward-compatibility, not a live path."""
+    if sig is None or isinstance(sig, bool):
+        return None, "missing or non-scalar 'signal'"
+    if isinstance(sig, (int, float)):
+        return (1 if int(sig) == 1 else -1), None
+    if isinstance(sig, str):
+        s = sig.strip().upper()
+        if s == "BUY":
+            return 1, None
+        if s == "SELL":
+            return -1, None
+        try:
+            return (1 if int(float(s)) == 1 else -1), None
+        except (ValueError, TypeError):
+            return None, "invalid 'signal' string: %r" % sig
+    return None, "invalid 'signal' type: %s" % type(sig).__name__
+
+
 @app.route("/score", methods=["POST"])
 def score_endpoint():
     try:
@@ -5742,7 +5768,17 @@ def score_endpoint():
         # Record approval so the correlation agent can gate subsequent correlated trades
         if result.get("approved"):
             _sym = data.get("symbol", "")
-            _dir = 1 if int(data.get("signal", 0) or 0) == 1 else -1
+            _dir, _sig_err = _parse_signal_direction(data.get("signal"))
+            if _sig_err is not None:
+                return jsonify({
+                    "approved": False, "error": True,
+                    "error_type": "ValidationError", "error_message": _sig_err,
+                    "block_reason": "INVALID_SIGNAL",
+                    "score": result.get("score", 0), "risk_multiplier": 1.0,
+                    "confidence": 0.0, "regime": "unknown", "recommended_rr": 2.0,
+                    "ml_win_prob": 0.5, "ml_active": False,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }), 400
             correlation_agent.record_approval(_sym, _dir, result["score"])
         threading.Thread(target=_push_reasoning,  args=(result, data), daemon=True).start()
         threading.Thread(target=_push_live_score, args=(result, data), daemon=True).start()
