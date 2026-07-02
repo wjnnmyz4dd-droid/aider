@@ -42,7 +42,7 @@ python phantom_institutional.py
 
 from flask import Flask, request, jsonify, render_template_string, Response
 import numpy as np
-import json, csv, os, logging, threading, time, math, random, traceback
+import json, csv, os, sys, logging, threading, time, math, random, traceback
 from logging.handlers import RotatingFileHandler                              # [IMP-2]
 
 class _SafeRotatingFileHandler(RotatingFileHandler):
@@ -5742,7 +5742,7 @@ def score_endpoint():
         # Record approval so the correlation agent can gate subsequent correlated trades
         if result.get("approved"):
             _sym = data.get("symbol", "")
-            _dir = 1 if data.get("signal", "").upper() == "BUY" else -1
+            _dir = 1 if int(data.get("signal", 0) or 0) == 1 else -1
             correlation_agent.record_approval(_sym, _dir, result["score"])
         threading.Thread(target=_push_reasoning,  args=(result, data), daemon=True).start()
         threading.Thread(target=_push_live_score, args=(result, data), daemon=True).start()
@@ -6349,7 +6349,6 @@ def best_signal_endpoint():
 # REGIME V2 ENDPOINTS (Task #23)
 # ══════════════════════════════════════════════════════════════════════
 
-@app.route("/trade_opened", methods=["POST"])
 def trade_opened_endpoint():
     """Stub — accepts EA trade-open notifications and forwards to dashboard so
     the alert center / Telegram webhook can surface them. Best-effort, never errors."""
@@ -8700,7 +8699,6 @@ def _get_research_score_fn():
         return lambda data: float(data.get("score", 0.0))
 
 
-@app.route("/research/backtest", methods=["POST"])
 def research_backtest_route():
     """
     Phase 6: Real OHLC-replay backtest using research_engine.run_backtest().
@@ -8731,7 +8729,6 @@ def research_backtest_route():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/research/walk-forward", methods=["POST"])
 def research_walk_forward_route():
     """
     Phase 6: Walk-forward validation (no future leak, parameter frozen per fold).
@@ -8759,7 +8756,6 @@ def research_walk_forward_route():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/research/monte-carlo", methods=["POST"])
 def research_monte_carlo_route():
     """
     Phase 6: Monte Carlo simulation using research_engine.monte_carlo_v2().
@@ -8785,7 +8781,6 @@ def research_monte_carlo_route():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/research/factor-attribution", methods=["POST"])
 def research_factor_attribution_route():
     """
     Phase 6: Per-factor win-rate attribution across a trade list.
@@ -9961,6 +9956,7 @@ def ml_rollback_route():
         return jsonify({"error": str(_e)}), 500
 
 
-print(f"[STARTUP] HOST={HOST}  PORT={PORT}  bind=http://{HOST}:{PORT}/")
-print(f"[STARTUP] Set PHANTOM_HOST env var to override bind address.")
-app.run(host=HOST, port=PORT, debug=False, threaded=True)
+if __name__ == "__main__":
+    print(f"[STARTUP] HOST={HOST}  PORT={PORT}  bind=http://{HOST}:{PORT}/")
+    print(f"[STARTUP] Set PHANTOM_HOST env var to override bind address.")
+    app.run(host=HOST, port=PORT, debug=False, threaded=True)
