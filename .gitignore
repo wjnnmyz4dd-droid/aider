@@ -3,3 +3,6 @@ __pycache__/
 *.log.jsonl
 phantom.log.jsonl
 .pytest_cache/
+.venv/
+venv/
+
