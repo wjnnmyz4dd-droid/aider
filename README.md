@@ -61,7 +61,7 @@ Composite score is 0–100.
 
 ## Strategy layer — signal contributors only
 
-Three institutional-style strategies live under `phantom/strategies/`. **None
+Five institutional-style strategies live under `phantom/strategies/`. **None
 opens a trade**; each returns a score influence that the `StrategyEngine`
 consolidates into the single **Strategy Confirmation** component (#18).
 
@@ -70,6 +70,8 @@ consolidates into the single **Strategy Confirmation** component (#18).
 | **ORB** (`orb_strategy.py`) | London/NY opening-range breakout + BOS + H4/D1 + regime | +8 / +5 trend / +5 BOS · −10 false breakout |
 | **Liquidity Reversal** (`liquidity_reversal.py`) | Sweep beyond swing + rejection wick + CHOCH (regime≠HIGH_VOL, news safe) | Sweep+CHOCH +10 · +OB 5 · +FVG 5 |
 | **Session Breakout** (`session_breakout.py`) | Asia-range breakout + BOS + H4 trend + regime | +8 / +5 trend / +5 BOS |
+| **Support & Resistance Bounce** (`support_resistance.py`) | Rejection wick at a well-tested S/R zone (≥ min touches) + close back through + H4 trend aligned | +8 / +5 trend / +5 strong zone |
+| **Momentum Continuation** (`momentum_continuation.py`) | Sustained ATR expansion + monotonic closes + BOS in trend direction + regime trending (not ranging) | +8 / +5 BOS / +5 strong expansion |
 
 **Consolidation (anti-inflation by construction):**
 * Agreeing strategies use `max(score) + small capped confluence bonus` — never a
