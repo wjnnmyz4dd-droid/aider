@@ -21,8 +21,10 @@ from ..orb import ORBDecision, ORBEngine
 from ..types import Direction, MarketSnapshot
 from .base import StrategyContext, StrategySignal
 from .liquidity_reversal import LiquiditySweepReversal
+from .momentum_continuation import MomentumContinuation
 from .orb_strategy import ORBStrategy
 from .session_breakout import SessionBreakoutContinuation
+from .support_resistance import SupportResistanceBounce
 
 
 @dataclass
@@ -52,6 +54,8 @@ class StrategyEngine:
             self.orb_strategy,
             LiquiditySweepReversal(config),
             SessionBreakoutContinuation(config),
+            SupportResistanceBounce(config),
+            MomentumContinuation(config),
         ]
 
     @property

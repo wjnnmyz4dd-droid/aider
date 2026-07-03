@@ -8,6 +8,8 @@ the scorer folds the result in.
 
 from .base import Strategy, StrategyContext, StrategySignal
 from .engine import StrategyEngine, StrategyOutcome
+from .momentum_continuation import MomentumContinuation
+from .support_resistance import SupportResistanceBounce
 
 __all__ = [
     "Strategy",
@@ -15,4 +17,6 @@ __all__ = [
     "StrategySignal",
     "StrategyEngine",
     "StrategyOutcome",
+    "SupportResistanceBounce",
+    "MomentumContinuation",
 ]

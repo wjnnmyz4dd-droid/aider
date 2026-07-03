@@ -107,6 +107,27 @@ class StrategyParams:
     session_trend: float = 5.0
     session_bos: float = 5.0
 
+    # Support & Resistance Bounce (Playbook 7) — additive confirmation only.
+    sr_lookback: int = 2                 # fractal lookback for swing pivots
+    sr_zone_atr_mult: float = 0.5        # swings within this * ATR merge into one zone
+    sr_min_touches: int = 2              # >= this many reactions = significant zone
+    sr_strong_touches: int = 3           # >= this many reactions = strong zone (bonus)
+    sr_proximity_atr_mult: float = 0.6   # price must be within this * ATR of the zone
+    sr_rejection_wick_ratio: float = 0.5  # rejection wick >= this * candle range
+    sr_bounce: float = 8.0
+    sr_trend: float = 5.0                # higher-timeframe trend alignment (required)
+    sr_strong_zone: float = 5.0          # bonus when the zone is a strong (well-tested) level
+
+    # Momentum Continuation (Playbook 8) — additive confirmation only.
+    mom_bars: int = 3                    # consecutive directional closes required (not a 1-bar spike)
+    mom_atr_short: int = 5               # short ATR window used to measure expansion
+    mom_expansion_ratio: float = 1.2     # atr_short / atr_baseline >= this = expanding
+    mom_strong_expansion_ratio: float = 1.6  # >= this = strong expansion (bonus)
+    mom_min_move_atr: float = 1.0        # cumulative directional move over mom_bars >= this * ATR
+    mom_continuation: float = 8.0
+    mom_structure: float = 5.0           # BOS in the trend direction (required)
+    mom_strong: float = 5.0              # bonus on strong expansion
+
     # Conflict resolution + anti-inflation
     conflict_dampen: float = 0.5       # opposing sides cancel to their difference * this
     confluence_bonus_per: float = 3.0  # bonus per extra agreeing strategy
