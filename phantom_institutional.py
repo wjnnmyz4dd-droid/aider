@@ -183,6 +183,11 @@ SESSION_SLIPPAGE = {
     "OFF":       3.0,
 }
 
+# [AUDIT H-2] Ensure the log/journal directory exists before the rotating file
+# handler opens LOG_FILE — otherwise a fresh host without ~/Documents crashes at
+# import with FileNotFoundError before the server can serve.
+os.makedirs(_DOCS, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -2566,7 +2571,9 @@ class BarStore:
                     total += len(bars)
             log.info(f"[BARSTORE] Restored {total} bars from disk")
         except Exception as e:
-            log.warning(f"[BARSTORE] Load failed: {e}")
+            # [AUDIT M-2] A corrupt cache is a data-loss event (BarStore starts
+            # empty until re-backfilled) — surface it at ERROR, not WARNING.
+            log.error(f"[BARSTORE] Load failed (cache corrupt/unreadable): {e}")
 
     def save_to_disk(self):
         try:
@@ -2574,11 +2581,15 @@ class BarStore:
                 data = {tf: {sym: list(bars)
                              for sym, bars in sym_dict.items()}
                         for tf, sym_dict in self._stores.items()}
-            with open(BARSTORE_CACHE_FILE, "w") as f:
+            # [AUDIT M-2] Atomic write: a crash mid-dump can no longer corrupt the
+            # cache — write a temp file, then swap it in with os.replace().
+            tmp = BARSTORE_CACHE_FILE + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump(data, f)
+            os.replace(tmp, BARSTORE_CACHE_FILE)
             self._dirty = False
         except Exception as e:
-            log.warning(f"[BARSTORE] Save failed: {e}")
+            log.error(f"[BARSTORE] Save failed: {e}")
 
     def _save_loop(self):
         """Background thread: flush to disk every 5 minutes if dirty."""
@@ -5610,38 +5621,49 @@ JOURNAL_FIELDS = [
     "entry_price", "stop_loss", "take_profit", "direction", "trade_id",
 ]
 
+# [AUDIT H-1] Serialize journal writes so concurrent /feedback calls (Flask runs
+# threaded=True) can never interleave a write with the header migration.
+_JOURNAL_LOCK = threading.Lock()
+
 def _append_journal(row):
     """Append one completed trade with the canonical schema. Backward
-    compatible: an older journal (fewer columns) is migrated in place to the
-    full header, backfilling new columns as blank. Missing values are stored
-    blank (never estimated). Journal-only; no effect on trading logic."""
+    compatible: an older journal (fewer columns) is migrated to the full header,
+    backfilling new columns as blank. Missing values are stored blank (never
+    estimated). Journal-only; no effect on trading logic.
+
+    Thread-safe (via _JOURNAL_LOCK) and crash-safe: the migration is written to
+    a temp file and swapped in with os.replace(), so a crash or a concurrent
+    writer can never truncate or corrupt the journal mid-rewrite."""
     fields = JOURNAL_FIELDS
     out = {k: ("" if row.get(k) is None else row.get(k)) for k in fields}
-    if not os.path.isfile(JOURNAL_FILE) or os.path.getsize(JOURNAL_FILE) == 0:
-        with open(JOURNAL_FILE, "a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-            w.writeheader(); w.writerow(out)
-        return
-    try:
-        with open(JOURNAL_FILE, newline="") as f:
-            header = next(csv.reader(f), [])
-    except Exception:
-        header = []
-    if header != fields:
+    with _JOURNAL_LOCK:
+        if not os.path.isfile(JOURNAL_FILE) or os.path.getsize(JOURNAL_FILE) == 0:
+            with open(JOURNAL_FILE, "a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                w.writeheader(); w.writerow(out)
+            return
         try:
             with open(JOURNAL_FILE, newline="") as f:
-                old_rows = list(csv.DictReader(f))
-            with open(JOURNAL_FILE, "w", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-                w.writeheader()
-                for o in old_rows:
-                    w.writerow({k: o.get(k, "") for k in fields})
-            log.info("[JOURNAL] migrated journal to %d-column schema", len(fields))
-        except Exception as e:
-            log.warning("[JOURNAL] header migration skipped: %s", e)
-    with open(JOURNAL_FILE, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-        w.writerow(out)
+                header = next(csv.reader(f), [])
+        except Exception:
+            header = []
+        if header != fields:
+            try:
+                with open(JOURNAL_FILE, newline="") as f:
+                    old_rows = list(csv.DictReader(f))
+                tmp = JOURNAL_FILE + ".tmp"
+                with open(tmp, "w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                    w.writeheader()
+                    for o in old_rows:
+                        w.writerow({k: o.get(k, "") for k in fields})
+                os.replace(tmp, JOURNAL_FILE)  # atomic swap — no truncation window
+                log.info("[JOURNAL] migrated journal to %d-column schema", len(fields))
+            except Exception as e:
+                log.warning("[JOURNAL] header migration skipped: %s", e)
+        with open(JOURNAL_FILE, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+            w.writerow(out)
 
 
 # ══════════════════════════════════════════════════════════════════════
