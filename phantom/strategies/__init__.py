@@ -9,6 +9,7 @@ the scorer folds the result in.
 from .base import Strategy, StrategyContext, StrategySignal
 from .engine import StrategyEngine, StrategyOutcome
 from .momentum_continuation import MomentumContinuation
+from .orchestrator import StrategyOrchestrator, discover_strategy_classes
 from .support_resistance import SupportResistanceBounce
 
 __all__ = [
@@ -19,4 +20,6 @@ __all__ = [
     "StrategyOutcome",
     "SupportResistanceBounce",
     "MomentumContinuation",
+    "StrategyOrchestrator",
+    "discover_strategy_classes",
 ]

@@ -135,6 +135,11 @@ class StrategyParams:
     layer_cap: float = 18.0            # max positive strategy-layer contribution
                                        # (== prior ORB max -> provably no inflation)
 
+    # Strategy Orchestrator — per-playbook enable/disable, keyed by strategy
+    # .name. Absent name == enabled, so the default (empty) runs every
+    # discovered playbook and preserves current scoring behaviour exactly.
+    enabled_overrides: Dict[str, bool] = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class SymbolProfile:
