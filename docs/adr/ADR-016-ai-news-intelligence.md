@@ -1,6 +1,6 @@
 # ADR-016 — AI News Intelligence Layer
 
-Status: Proposed
+Status: **Accepted**
 
 Owner: Security Architect (advisory-AI trust boundary is a design-time
 threat-modeling question first, per `.claude/agents/TEAM.md` §4)
@@ -10,6 +10,10 @@ touches Compliance Engine's and Analytics' input surfaces without being
 part of the pipeline itself)
 
 Date: 2026-07-04
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `docs/adr/ADR-015-external-data-sources-api-governance.md` (Proposed)
