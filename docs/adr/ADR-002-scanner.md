@@ -1,10 +1,14 @@
 # ADR-002 — Scanner
 
-Status: Proposed
+Status: **Accepted**
 
 Owner: Software Architect
 
 Date: 2026-07-04
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect, Phantom Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted)
 
