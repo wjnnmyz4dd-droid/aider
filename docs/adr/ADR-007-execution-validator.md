@@ -1,6 +1,10 @@
 # ADR-007 — Execution Validator
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Backend Architect (reliability-pattern precedent from `ADR-005`/
 `ADR-006`)
