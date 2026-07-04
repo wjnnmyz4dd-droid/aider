@@ -12,6 +12,20 @@ Accepted By: Software Architect, Phantom Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted)
 
+**Amendment 1 (2026-07-04):** expanded the market-structure output scope
+(external/internal structure, swing hierarchy, equal highs/lows, range
+structure, accumulation/distribution, trend acceleration/exhaustion,
+market phase, structure confidence) in response to a request for a
+separate "Institutional Market Structure Engine." Resolved as an
+amendment to this ADR rather than a new pipeline stage (which would have
+been proposed as ADR-020), to avoid creating a second authority over
+facts this ADR already owns — see §1's mandate and ADR-001's
+single-authority principle. **Pipeline position is unchanged: no new
+stage was added; Scanner's existing single-stage position is retained and
+its authority is expanded, not divided.** Additions appear in §5, §8, §9,
+§10, §13, §15, §17, and §18, each marked "Amendment 1" so the originally
+Accepted content and this addition remain distinguishable.
+
 ---
 
 # Pipeline position
@@ -154,6 +168,45 @@ Conceptually:
   state, missing-timeframe state, or any other condition under which the
   rest of the observation should be treated as unreliable (§10).
 
+**Amendment 1 (2026-07-04) — expanded market-structure interpretation.**
+The following are additional facts, derived from the same primitive
+structure/trend/volatility computations above, never a second independent
+computation pass (§13):
+
+- **External structure** — the higher-scale structural trend (major swing
+  sequence).
+- **Internal structure** — the lower-scale structural trend (minor swing
+  sequence) within the current external structure.
+- **Swing hierarchy** — the ordered sequence of swing highs/lows that the
+  existing `structure` facts (BOS/CHOCH) are already computed from,
+  exposed directly so downstream consumers never need to re-derive it
+  independently.
+- **Higher Highs / Higher Lows / Lower Highs / Lower Lows** — the
+  classified sequence type of the current swing hierarchy. A factual
+  label, not an interpretation of what to do about it.
+- **Equal highs / equal lows** — a specific swing-equality condition
+  commonly associated with resting liquidity, reported as a fact.
+- **Range structure** — an expansion/compression label, extending the
+  existing volatility state's underlying ratio into an explicit
+  range-structure classification.
+- **Accumulation / distribution** — a phase classification derived from
+  swing hierarchy, volatility, and range behavior. Explicitly a fact
+  about historical price behavior, never an instruction to accumulate or
+  distribute anything.
+- **Trend acceleration / trend exhaustion** — a classified state
+  describing whether the existing trend state's momentum is strengthening
+  or weakening.
+- **Market phase** — the most composite fact, combining the above into a
+  single label (e.g. accumulation / markup / distribution / markdown /
+  undefined). Computed last, from the other structure facts in the same
+  observation — still a descriptive classification, not a decision.
+- **Structure confidence** — a **qualitative label** (e.g. clear /
+  ambiguous / insufficient data), never a numeric confidence score. This
+  applies the same discipline `ADR-016` §4 and `ADR-019` §4 established
+  for their own confidence labels — a qualitative label is far harder to
+  mistake for, or quietly evolve into, an implicit scoring mechanism than
+  a number is.
+
 ---
 
 # 6. Explicit non-responsibilities
@@ -227,6 +280,19 @@ scope):
   criteria (§18) must be able to verify by inspection, not just by
   behavioral testing (see §3, Facts, Never Decisions).
 
+**Amendment 1 (2026-07-04):** additional fields — `external_structure`,
+`internal_structure`, `swing_hierarchy`, `equal_highs`/`equal_lows`,
+`range_structure`, `phase` (accumulation/markup/distribution/markdown/
+undefined), `trend_acceleration`/`trend_exhaustion`, and
+`structure_confidence` (qualitative label, never numeric) — per §5. Same
+type-level guarantee applies: none of these fields may represent a score,
+decision, size, or approval. Future structural concepts (e.g. Volume
+Profile, Market Profile, Order Flow, Footprint, Auction Theory,
+Institutional Flow) are added the same way — as new, additive
+`schema_version`-gated fields, never requiring architectural redesign,
+consistent with the additive-field backward-compatibility rule `ADR-003`
+§4 and `ADR-004` §4 already rely on when consuming `ScannerObservation`.
+
 ---
 
 # 9. Failure modes
@@ -241,6 +307,10 @@ scope):
 - Symbol not recognized by the caller's configuration (session/ORB-window
   definitions absent for it).
 - `market_status` indicating the venue is not currently tradeable.
+- **Amendment 1:** insufficient swing history to classify market phase or
+  structure confidence — distinct from general warm-up, since a symbol
+  can have enough bars for a trend reading but not enough distinct swing
+  points for phase classification.
 
 ---
 
@@ -259,6 +329,13 @@ automatic non-trade signal — that is a contract this ADR establishes for
 the Strategy Engine (ADR-003) to honor, not something the Scanner
 enforces itself (the Scanner has no authority to block anything; it can
 only report honestly).
+
+**Amendment 1:** `market_phase`, `structure_confidence`, and the other
+composite fields introduced in Amendment 1 default to an explicit
+UNKNOWN state under the same discipline — never fabricated, and never
+carried forward from a stale prior scan (the Scanner Purity Principle,
+§2, already forbids depending on "previous scans" for exactly this
+reason).
 
 ---
 
@@ -314,6 +391,14 @@ only report honestly).
   spirit — bounded by symbol count — but any new state must be
   explicitly bounded or TTL-pruned, per the existing `state_ttl_days`
   idea in `phantom/config.py`).
+- **Amendment 1:** every composite field introduced in Amendment 1
+  (external/internal structure, swing hierarchy, equal highs/lows, range
+  structure, accumulation/distribution, trend acceleration/exhaustion,
+  market phase, structure confidence) must be derived from the same
+  single swing-pivot/structure computation already required above —
+  never a second, independent computation pass. This is the same
+  `swing_points()` lesson applied to prevent a new class of duplication
+  this amendment could otherwise introduce.
 
 ---
 
@@ -372,6 +457,15 @@ Elaborated:
 - **A purity test** — assert that mutating or removing any hidden/global
   state the implementation might be tempted to introduce has no effect on
   a call's output, directly enforcing §2's Scanner Purity Principle.
+- **Amendment 1 — a structure-consistency test:** every composite field
+  (market phase, structure confidence, accumulation/distribution, etc.)
+  must be derivable from, and consistent with, the primitive facts (§5's
+  original trend/structure/volatility fields) in the same observation —
+  e.g. `market_phase = accumulation` while the swing hierarchy shows a
+  clear downtrend of lower-highs/lower-lows would be a contradiction, not
+  a valid output, and must fail the test.
+- **Amendment 1 — UNKNOWN handling tests** for the new composite fields,
+  per §10's amended fail-closed behavior.
 
 ---
 
@@ -418,6 +512,14 @@ over it, per ADR-001:
   `docs/research/ECC-EVALUATION.md` — no direct relevance to Scanner
   design; noted for completeness since both are standing reference
   documents.
+- **Amendment 1:** Smart Money Concepts (SMC) / Wyckoff market-phase
+  terminology — external/internal structure, equal highs/lows, and
+  accumulation/distribution/markup/markdown phase labels are established
+  technical-analysis concepts, not proprietary to Phantom. The
+  independent `smartmoneyconcepts` PyPI package (already noted in
+  `docs/research/VIBE-TRADING-EVALUATION.md` §11 as a cross-check
+  reference) is a useful idea-source for this expanded scope's
+  terminology and detection shape — not an authority over it.
 
 ---
 
@@ -441,6 +543,18 @@ ADR-002 is satisfied by an implementation that demonstrates all of:
 - ✓ Contains zero playbook-specific logic or state (§6).
 - ✓ Metrics are export-only and additive (§12).
 - ✓ No network egress, no credential or account-data access (§16).
+- ✓ **Amendment 1:** exactly one authoritative source of market structure
+  exists — no downstream stage independently recalculates BOS/CHOCH/swing
+  structure/trend classification (§6, §13).
+- ✓ **Amendment 1:** all composite structure fields (external/internal
+  structure, swing hierarchy, equal highs/lows, range structure,
+  accumulation/distribution, trend acceleration/exhaustion, market phase,
+  structure confidence) are derived from a single computation pass, never
+  duplicated (§13, §15).
+- ✓ **Amendment 1:** structure confidence is a qualitative label, never a
+  numeric score (§5).
 
 Per `ADR-001` and `CLAUDE.md` §1.10, **no implementation begins until this
-ADR's Status changes from Proposed to Accepted.**
+ADR's Status changes from Proposed to Accepted.** (This ADR is already
+Accepted; Amendment 1 is a documentation-only expansion of an Accepted
+ADR's scope, not a reopening of its acceptance status.)

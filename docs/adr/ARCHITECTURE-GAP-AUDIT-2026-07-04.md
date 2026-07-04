@@ -452,3 +452,19 @@ boundary as `ADR-015` §7 / `ADR-016` (§2.7 above) — a distinct capability
 from, and not a replacement for, the still-unaddressed ADR-017/ADR-018
 recommendations. `ADR-001`'s Future ADRs list has been updated to
 reference all three (017, 018, 019).
+
+## Second addendum (2026-07-04, same day)
+
+A request for "ADR-020 — Institutional Market Structure Engine" (richer
+market-structure interpretation: external/internal structure, swing
+hierarchy, equal highs/lows, range structure, accumulation/distribution,
+trend acceleration/exhaustion, market phase, structure confidence) was
+resolved as **Amendment 1 to `ADR-002` (Scanner)**, not a new ADR — this
+is exactly the resolution §2.1 of this audit already recommended for the
+"Market Regime Engine" candidate ("recommend a targeted amendment to
+ADR-002, not a new ADR"). No `ADR-020` file was created. `ADR-002` §5,
+§8, §9, §10, §13, §15, §17, and §18 were amended accordingly, each
+addition clearly marked "Amendment 1" to keep the originally Accepted
+content distinguishable from this later expansion. ADR-017 (Portfolio
+Manager) and ADR-018 (Replay & Certification Engine) remain open,
+undrafted recommendations from this audit.
