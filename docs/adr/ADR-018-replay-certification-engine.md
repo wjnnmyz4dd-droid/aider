@@ -1,6 +1,10 @@
 # ADR-018 — Replay & Certification Engine
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Test Results Analyzer (per the Gap Audit's own recommendation,
 `ARCHITECTURE-GAP-AUDIT-2026-07-04.md` §2.5/§3: "statistical/regression
