@@ -6,7 +6,21 @@ in this directory. Sourced verbatim (unmodified prompts) from
 agent may be added without demonstrating a clear, measurable benefit to a
 Python-based institutional algorithmic trading system (see §6).
 
-Architecture priority order (unchanged, from project instructions):
+**Status note (2026-07-04):** `docs/adr/ADR-001-single-authority-architecture.md`
+is now Accepted and supersedes the priority order below wherever the two
+conflict. `phantom/` and `phantom_institutional.py` are reference-only —
+mined for proven algorithms and safety mechanisms, neither is the
+permanent authority. The roster, workflow, and RACI in this file still
+govern how the Council operates and how reference material is reviewed;
+the actual target pipeline is ADR-001's: **Market Data → Scanner →
+Strategy Engine → Scoring Engine → Risk Engine → Compliance Engine →
+Execution Validator → MT5 Bridge → Position Manager → Analytics**, defined
+stage-by-stage in ADR-002 through ADR-010. `CLAUDE.md` §2 still states the
+line below and has not yet been reconciled with ADR-001 — treat ADR-001 as
+authoritative until it is.
+
+Architecture priority order (original, from project instructions, now
+superseded by ADR-001 above where they conflict):
 **Risk Engine → Execution Safety → MT5 Bridge → Watchdog → Scanner → Scorer
 → Analytics → Dashboard.**
 
@@ -141,6 +155,15 @@ without unnecessary review," not an accident.
 
 ## 5. RACI matrix — Phantom components
 
+**Scope note:** this matrix describes the existing, now-reference-only
+`phantom/` codebase (component names match its actual modules), for the
+purpose of reviewing and mining that reference material. It is not yet the
+RACI for ADR-001's new pipeline stages — each of ADR-002 through ADR-010
+will establish its own RACI as it's accepted, at which point this table
+should be revisited rather than assumed to carry over unchanged (e.g.
+"Strategy Orchestrator" below maps loosely to the new "Strategy Engine"
+stage, but the two are not guaranteed identical in scope).
+
 R = Responsible (does the work) · A = Accountable (owns the outcome, single
 per row by design) · C = Consulted · I = Informed.
 
@@ -242,18 +265,18 @@ order, not a set of edits already made.
   Analyzer.**
 
 ### Conflicting responsibilities
-- **Two parallel scoring/compliance authorities.** `phantom/` (modular,
-  stdlib-only, never executes) and `phantom_institutional.py` (10k-line
-  monolith with its own ML classifier, risk sizing, and compliance gate via
-  `phantom_command_center.py`) both implement independent scoring and
-  compliance logic. If both were ever wired to the same MT5 EA
-  simultaneously, there would be two authorities capable of disagreeing on
-  whether a trade is compliant — unacceptable for a prop-firm system where
-  a single, unambiguous kill-switch is the whole point. **Owner: Software
-  Architect** — this needs an explicit decision (which system is
-  authoritative in production) recorded as an ADR, not left implicit.
-  `AUDIT.md`'s own archive policy already gestures at this; it has not been
-  resolved.
+- **Two parallel scoring/compliance authorities — RESOLVED 2026-07-04 by
+  `ADR-001`.** `phantom/` (modular, stdlib-only, never executes) and
+  `phantom_institutional.py` (10k-line monolith with its own ML classifier,
+  risk sizing, and compliance gate via `phantom_command_center.py`) both
+  implemented independent scoring and compliance logic — if both were ever
+  wired to the same MT5 EA simultaneously, there would have been two
+  authorities capable of disagreeing on whether a trade is compliant.
+  `ADR-001` resolved this: neither becomes the permanent authority; both
+  are retired to reference-only status, and a new single-authority pipeline
+  is designed from first principles via ADR-002 onward. No further action
+  needed on this item specifically — see the priority-order note below for
+  what that changes about the rest of this backlog.
 - Three separate places (`Scanner.__init__`, `Scorer.__init__`,
   `PhantomApp.__init__`) each independently re-derive
   `self.orb = self.strategies.orb_engine` as a "backward-compatible
@@ -315,9 +338,18 @@ order, not a set of edits already made.
   (§ Conflicting responsibilities) rather than carrying two systems
   indefinitely — the single highest-leverage simplification available.
 
-**Priority order for working this backlog**, per the Council's own
-Risk-Engine-first architecture ordering: (1) the two-authority question
-under Conflicting Responsibilities, since it's Risk/Compliance-adjacent;
-(2) the `analytics.STRATEGIES` crash risk under Missing Safety; (3) the
-account-feed observability gap; (4) the `swing_points`/`exposure()`
-duplication cleanup; (5) everything marked "low priority" above.
+**Status of this backlog, updated 2026-07-04.** The two-authority question
+(former item 1) is resolved by `ADR-001` — see above. Per `ADR-001`'s
+Resolution ("no code will be written until each pipeline stage has its own
+accepted ADR"), the remaining items below are **not** live work items to
+fix in place inside `phantom/` under the Council's normal merge pipeline —
+`phantom/` is reference-only now. They are retained here as **known
+defects in the reference material**: things to deliberately not repeat
+when ADR-002 (Scanner) through ADR-010 (Analytics) mine this code for
+proven logic. Re-evaluate each as its corresponding stage ADR is drafted,
+rather than patching `phantom/` directly:
+
+1. The `analytics.STRATEGIES` crash risk (Missing Safety) — relevant to ADR-010 (Analytics) and ADR-003 (Strategy Engine).
+2. The account-feed observability gap (Missing Observability) — relevant to ADR-006 (Compliance Engine) and ADR-011 (Watchdog).
+3. The `swing_points()` / `Guards.exposure()` duplication (Duplicate Logic) — relevant to ADR-002 (Scanner) and ADR-006 (Compliance Engine).
+4. Everything marked "low priority" above — revisit opportunistically, no assigned stage.
