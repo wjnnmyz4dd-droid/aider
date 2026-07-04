@@ -19,12 +19,20 @@ row, not a required reviewer.
 
 Date: 2026-07-04
 
+Amended: 2026-07-04 (Amendment 1 — Position Manager transport support;
+see inline "(Amendment 1)" markers throughout for exactly what changed)
+
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted, including Amendment 1),
 `ADR-003-strategy-engine.md` (Accepted), `ADR-004-scoring-engine.md`
 (Proposed), `ADR-005-risk-engine.md` (Proposed),
 `ADR-006-compliance-engine.md` (Proposed),
-`ADR-007-execution-validator.md` (Accepted)
+`ADR-007-execution-validator.md` (Accepted),
+`ADR-009-position-manager.md` (Proposed — Amendment 1 exists to satisfy
+this ADR's dependency on MT5 Bridge accepting its outputs; this
+dependency is one-directional in review terms only, not in decision
+authority: ADR-009 still depends on this ADR, this ADR does not depend
+on ADR-009 being Accepted for its own correctness)
 
 ---
 
@@ -74,6 +82,13 @@ appear to conflict:
   risk, not compliance, not validation. Translation to an MT5 request is
   a direct, faithful mapping of already-decided fields, never a
   re-derivation.
+- **(Amendment 1) Accept `PositionAdjustmentRequest` and
+  `PositionCloseRequest` only from Position Manager (`ADR-009`).** These
+  are new-trade-submission's counterpart for already-open positions, not
+  a second path to open one — see §4/§7 (Amendment 1). The MT5 Bridge
+  does not decide whether a position should be modified or closed; it
+  transports Position Manager's decision exactly as received, the same
+  translate-only role it already has for `ExecutionDecision`.
 - **If connection fails → no order.** If acknowledgement fails → safe
   timeout. If synchronization fails → safe halt. **Never guess. Never
   retry blindly.**
@@ -100,6 +115,18 @@ The MT5 Bridge SHALL:
 - Receive account updates.
 - Maintain synchronization between Phantom's expectations and MT5's
   actual state.
+- **(Amendment 1) Translate `PositionAdjustmentRequest`** (`ADR-009` §5)
+  **into MT5 modify requests** — a direct field mapping, never a
+  re-derivation, the same translation discipline as for opening trades.
+- **(Amendment 1) Translate `PositionCloseRequest`** (`ADR-009` §5)
+  **into MT5 close requests** — full or partial, exactly as specified,
+  never re-derived.
+- **(Amendment 1) Submit both deterministically** and **return
+  acknowledgements, execution receipts, and broker errors** for them
+  using the same output types (`BrokerAcknowledgement`,
+  `ExecutionReceipt`, `BrokerError`, §5) already defined for opening
+  trades — these types are event-shaped, not opening-trade-shaped, so no
+  new output type is required.
 
 ---
 
@@ -116,9 +143,9 @@ The MT5 Bridge SHALL:
 | Recalculate anything (sizing, SL/TP, scores, risk, compliance, validation) | The stage that already decided it |
 | Approve trades | Execution Validator (`ADR-007`) |
 | Block trades | Compliance Engine (`ADR-006`) |
-| Manage positions | Position Manager (`ADR-009`, not yet drafted) |
-| Close positions | Position Manager (`ADR-009`, not yet drafted) |
-| Change SL/TP | Risk Engine (`ADR-005`) at decision time; no stage may change it post-decision without a fresh pipeline pass |
+| Decide whether to manage a position *(Amendment 1: transports the decision, does not make it)* | Position Manager (`ADR-009`) |
+| Decide whether to close a position *(Amendment 1: transports the decision, does not make it)* | Position Manager (`ADR-009`) |
+| Change SL/TP *by its own decision* — it may only transmit an SL/TP change already decided by Risk Engine (initial) or Position Manager (adjustment, Amendment 1) | Risk Engine (`ADR-005`) at decision time; Position Manager (`ADR-009`) for post-fill adjustments |
 | Generate analytics | Analytics (`ADR-010`, not yet drafted) |
 
 ---
@@ -137,6 +164,13 @@ The MT5 Bridge SHALL:
   currently in (§6).
 - **Configuration** — timeout thresholds, reconnect policy, heartbeat
   interval, symbol/session mapping.
+- **(Amendment 1) `PositionAdjustmentRequest`, `PositionCloseRequest`**
+  (`ADR-009` §5) — accepted **only** from Position Manager, via the
+  position's `trace_id`; read-only, supplying the exact modification/
+  close parameters this stage transmits but never recalculates or
+  second-guesses. A request from any other source is not a valid input —
+  the same closed-source discipline `ExecutionDecision` already has
+  (Hard Rules).
 
 ---
 
@@ -164,6 +198,14 @@ produces several of these over its lifetime, not one combined record):
   reconciliation between Phantom's expected state and MT5's actual state
   (§9); the signal Position Manager (`ADR-009`) is expected to consume
   before acting on positions.
+
+**(Amendment 1)** `BrokerRequest`, `BrokerAcknowledgement`,
+`ExecutionReceipt`, and `BrokerError` are event-shaped, not
+opening-trade-shaped: the same four types now also correlate to a
+`PositionAdjustmentRequest`/`PositionCloseRequest`'s `execution_id`
+(§7) when the originating request came from Position Manager rather than
+Execution Validator. No new output type is introduced for position
+management — the existing types already generalize.
 
 **Type-level guarantee:** none of these output types is structurally
 capable of holding a modified upstream decision field or a new trading
@@ -217,7 +259,11 @@ deliberate: either one failing alone must not produce a duplicate order.
 
 - **Every request must carry a unique execution identifier
   (`execution_id`)**, derived from the `ExecutionDecision`'s `trace_id`,
-  generated once per approved trade before submission.
+  generated once per approved trade before submission. **(Amendment 1)**
+  A `PositionAdjustmentRequest` or `PositionCloseRequest` likewise carries
+  its own `execution_id`, derived from the position's `trace_id`,
+  generated once per request by Position Manager before it reaches this
+  stage — the same discipline, extended to a second request source.
 - **Duplicate order submission** for the same `execution_id` is refused —
   a second submission attempt is rejected before it reaches the broker,
   not merely logged after the fact.
@@ -234,6 +280,16 @@ deliberate: either one failing alone must not produce a duplicate order.
   `ADR-007` §7 established for its own idempotency record — unbounded
   growth here would repeat the same class of defect flagged elsewhere in
   the reference material.
+- **(Amendment 1) Duplicate close prevention** — a second
+  `PositionCloseRequest` for an `execution_id` this stage has already
+  submitted a close for is refused before it reaches the broker, the
+  same duplicate-submission handling opening trades already receive.
+- **(Amendment 1) Duplicate adjustment prevention** — a second
+  `PositionAdjustmentRequest` for an already-submitted `execution_id` is
+  likewise refused; a *new* adjustment (a different `execution_id` for
+  the same `position_id` — e.g. trailing-stop's repeated updates) is not
+  a duplicate and is submitted normally, since each carries its own
+  freshly-generated `execution_id` from Position Manager.
 
 ---
 
@@ -287,6 +343,12 @@ deliberate: either one failing alone must not produce a duplicate order.
   (`ADR-009`) resolves it. This ADR does not define that resolution
   process — only that this stage detects and reports, never silently
   overwrites its own expectations with broker state or vice versa.
+- **(Amendment 1) Synchronization after modification** — following a
+  submitted `PositionAdjustmentRequest` or `PositionCloseRequest`, this
+  stage reconciles the affected position's order/position state against
+  broker-side truth (the same order/position synchronization mechanism
+  above), rather than assuming the modification or close took effect
+  simply because no `BrokerError` was returned.
 
 ---
 
@@ -376,6 +438,23 @@ discipline established at every prior stage.
   upstream decision field or a new trading instruction.
 - **Trace-propagation test** — `trace_id` and `execution_id` are present
   and correct on every logged event and every output object.
+- **(Amendment 1) Position adjustment translation test** — a
+  `PositionAdjustmentRequest` is translated into the correct MT5 modify
+  request, a direct field mapping with no re-derivation.
+- **(Amendment 1) Position close translation test** — a
+  `PositionCloseRequest` (full or partial) is translated into the correct
+  MT5 close request.
+- **(Amendment 1) Duplicate close prevention test** — a repeated
+  `PositionCloseRequest` for an already-submitted `execution_id` is
+  refused (§7).
+- **(Amendment 1) Duplicate adjustment prevention test** — a repeated
+  `PositionAdjustmentRequest` for an already-submitted `execution_id` is
+  refused, while a distinct new adjustment for the same position (a
+  different `execution_id`) is accepted (§7).
+- **(Amendment 1) Synchronization-after-modification test** — following a
+  submitted adjustment or close, a broker-side state query confirms the
+  change was correctly reflected; an injected mismatch produces
+  `SynchronizationStatus` reporting the discrepancy (§9).
 
 ---
 
@@ -385,6 +464,19 @@ discipline established at every prior stage.
 - The MT5 Bridge never changes trading decisions.
 - Broker communication never bypasses the Execution Validator.
 - Every execution is traceable, end to end, by `trace_id`.
+- **(Amendment 1) The two authorization lanes remain distinct and are
+  both preserved by this ADR:**
+  - **Execution Validator** (`ADR-007`) → authorizes **new** trade
+    submission.
+  - **Position Manager** (`ADR-009`) → authorizes management of
+    **existing** positions.
+  - **MT5 Bridge** → transports both types of approved requests,
+    identically in kind: a translate-and-submit role, never a decision
+    role, regardless of which of the two authorizes the request it is
+    carrying.
+  - **The MT5 Bridge never creates decisions** — restated because
+    Amendment 1 adds a second request source without adding any new
+    decision-making authority to this stage.
 
 ---
 
@@ -404,6 +496,10 @@ ADR-008 is acceptable only if it guarantees:
   §2).
 - ✓ Full traceability — every output and every logged event carries
   `trace_id` and `execution_id` (§11, §13).
+- ✓ **(Amendment 1)** `PositionAdjustmentRequest`/`PositionCloseRequest`
+  are accepted only from Position Manager (`ADR-009`), transported
+  without being decided upon, and are subject to the same duplicate-
+  prevention discipline as opening trades (§2, §4, §7, §14).
 
 ---
 
