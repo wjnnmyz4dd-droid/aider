@@ -25,10 +25,10 @@ see inline "(Amendment 1)" markers throughout for exactly what changed)
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted, including Amendment 1),
 `ADR-003-strategy-engine.md` (Accepted), `ADR-004-scoring-engine.md`
-(Proposed), `ADR-005-risk-engine.md` (Proposed),
-`ADR-006-compliance-engine.md` (Proposed),
+(Accepted), `ADR-005-risk-engine.md` (Accepted),
+`ADR-006-compliance-engine.md` (Accepted),
 `ADR-007-execution-validator.md` (Accepted),
-`ADR-009-position-manager.md` (Proposed — Amendment 1 exists to satisfy
+`ADR-009-position-manager.md` (Accepted — Amendment 1 exists to satisfy
 this ADR's dependency on MT5 Bridge accepting its outputs; this
 dependency is one-directional in review terms only, not in decision
 authority: ADR-009 still depends on this ADR, this ADR does not depend

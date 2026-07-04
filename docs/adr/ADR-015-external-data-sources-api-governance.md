@@ -617,9 +617,10 @@ useful it might be.
   this ADR's design.
 - **Compliance Engine's persistent kill-switch/lockout storage** is
   referenced here (§6, Database) as a consideration but is not fully
-  resolved — that resolution belongs to `ADR-006` (Compliance Engine),
-  and this ADR should be cross-checked against it once drafted for
-  consistency.
+  resolved — that resolution belongs to `ADR-006` (Compliance Engine,
+  now Accepted). This ADR has not yet been formally cross-checked
+  against `ADR-006`'s accepted text for consistency; flagged as an open
+  item, not claimed resolved.
 - **PostgreSQL/Secret Manager migrations are unscheduled** — listed as
   future candidates (§15) with no committed timeline; this ADR does not
   presume they will happen, only that they would follow §12 if proposed.

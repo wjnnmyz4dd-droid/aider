@@ -27,10 +27,10 @@ Date: 2026-07-04
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted, including Amendment 1),
 `ADR-003-strategy-engine.md` (Accepted), `ADR-004-scoring-engine.md`
-(Proposed), `ADR-005-risk-engine.md` (Proposed),
-`ADR-006-compliance-engine.md` (Proposed),
+(Accepted), `ADR-005-risk-engine.md` (Accepted),
+`ADR-006-compliance-engine.md` (Accepted),
 `ADR-007-execution-validator.md` (Accepted),
-`ADR-008-mt5-bridge.md` (Accepted)
+`ADR-008-mt5-bridge.md` (Accepted, including Amendment 1)
 
 ---
 

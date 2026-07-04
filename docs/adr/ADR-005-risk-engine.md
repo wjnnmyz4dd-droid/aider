@@ -19,7 +19,7 @@ Date: 2026-07-04
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted, including Amendment 1),
 `ADR-003-strategy-engine.md` (Accepted), `ADR-004-scoring-engine.md`
-(Proposed — status per current repository state)
+(Accepted)
 
 ---
 

@@ -32,7 +32,7 @@ the deterministic trading pipeline (`ADR-001`) and has **zero authority**
 over any trade, any score, any size, or any execution decision.
 
 It is explicitly **not** a replacement for, or an enhancement to,
-Compliance Engine's rule-based news guard (ADR-006, not yet drafted,
+Compliance Engine's rule-based news guard (ADR-006, Accepted,
 conceptually mirroring `phantom/guards.py`'s news-blackout idea per
 `ADR-001`). It is a separate, advisory-only system that happens to look
 at related source material for an entirely different purpose: producing
@@ -46,7 +46,7 @@ readable context for humans, never a blocking input for machines.
   Scoring Engine → Risk Engine → Compliance Engine → Execution Validator
   → MT5 Bridge → Position Manager) remains deterministic and LLM-free.
   This layer has no position in that pipeline at all (§5).
-- **Compliance Engine (ADR-006, forward reference):** its rule-based news
+- **Compliance Engine (ADR-006, Accepted):** its rule-based news
   guard remains the **only** authority for news-based blocking. This
   layer never feeds into, informs, or replaces that guard's logic. A
   human may look at both side by side; the guard's own decision is never

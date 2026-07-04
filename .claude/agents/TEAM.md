@@ -6,7 +6,7 @@ in this directory. Sourced verbatim (unmodified prompts) from
 agent may be added without demonstrating a clear, measurable benefit to a
 Python-based institutional algorithmic trading system (see §6).
 
-**Status note (updated 2026-07-04, RACI reconciliation pass):**
+**Status note (updated 2026-07-04, documentation synchronization pass):**
 `docs/adr/ADR-001-single-authority-architecture.md` is Accepted and
 supersedes the priority order below wherever the two conflict. `phantom/`
 and `phantom_institutional.py` are reference-only — mined for proven
@@ -17,20 +17,19 @@ ADR-001's: **Market Data → Scanner → Strategy Engine → Scoring Engine →
 Risk Engine → Compliance Engine → Execution Validator → MT5 Bridge →
 Position Manager → Analytics**, defined stage-by-stage in ADR-002 through
 ADR-010. `CLAUDE.md` §2 has already been reconciled with ADR-001 (it
-states the same pipeline as authoritative) — the earlier note claiming
-otherwise was stale as of this pass and has been corrected here.
+states the same pipeline as authoritative).
 
-**Per-stage ADR status, as of this pass (not all "ADR-001 through
-ADR-010" are Accepted — verified individually, not assumed):**
+**Per-stage ADR status, as of this pass — the full core pipeline
+(ADR-002 through ADR-010) is now Accepted, stage by stage:**
 
 | Stage | ADR | Status |
 |---|---|---|
 | Architecture | ADR-001 | Accepted |
 | Scanner | ADR-002 (+ Amendment 1) | Accepted |
 | Strategy Engine | ADR-003 | Accepted |
-| Scoring Engine | ADR-004 | **Proposed** |
-| Risk Engine | ADR-005 | **Proposed** |
-| Compliance Engine | ADR-006 | **Proposed** |
+| Scoring Engine | ADR-004 | Accepted |
+| Risk Engine | ADR-005 | Accepted |
+| Compliance Engine | ADR-006 | Accepted |
 | Execution Validator | ADR-007 | Accepted |
 | MT5 Bridge | ADR-008 (+ Amendment 1) | Accepted |
 | Position Manager | ADR-009 | Accepted |
@@ -38,13 +37,11 @@ ADR-010" are Accepted — verified individually, not assumed):**
 | AI News Intelligence | ADR-016 | Accepted (side-ADR, not a pipeline stage) |
 
 §5's RACI table below is updated to name and reflect all ten pipeline
-stages plus AI News regardless of individual status, since the rows
-already existed (or their gap was already flagged) for most of these —
-but per-stage implementation remains gated on that stage's own ADR
-reaching Accepted, per `CLAUDE.md` §1.10. Scoring Engine, Risk Engine, and
-Compliance Engine's RACI entries below describe intended governance for
-when they are accepted; they do not represent that acceptance has already
-happened.
+stages plus AI News. Every stage's ADR is now Accepted; per-stage
+**implementation** still remains gated on `CLAUDE.md` §1.10 separately
+from a stage's ADR being Accepted — Accepted is a precondition for code,
+not code itself. No implementation exists for any pipeline stage as of
+this pass.
 
 Architecture priority order (original, from project instructions, now
 superseded by ADR-001 above where they conflict):
@@ -182,18 +179,16 @@ without unnecessary review," not an accident.
 
 ## 5. RACI matrix — Phantom components
 
-**Scope note (updated 2026-07-04, RACI reconciliation pass):** this
-matrix now names and tracks all ten `ADR-001` pipeline stages
-(Scanner through Analytics) plus `ADR-016`'s AI News Intelligence layer,
+**Scope note (updated 2026-07-04, documentation synchronization pass):**
+this matrix names and tracks all ten `ADR-001` pipeline stages (Scanner
+through Analytics) plus `ADR-016`'s AI News Intelligence layer,
 cross-checked row-by-row against each stage's own ADR "Owner" /
 "Reviewed by" declaration where one exists. Legacy module names
 (`scanner.py`, `scorer.py`, `strategies/`, etc.) are kept in parentheses
 only as a pointer to the reference-only code each stage's ADR mined for
-ideas — they are not the stage's authority. Rows for **Scoring Engine**,
-**Risk Engine**, and **Compliance Engine** describe intended governance
-for stages whose own ADR is still **Proposed**, not Accepted — see the
-per-stage status table above; do not read their presence here as
-acceptance.
+ideas — they are not the stage's authority. **Scoring Engine**, **Risk
+Engine**, and **Compliance Engine** are now Accepted (`ADR-004`/`ADR-005`/
+`ADR-006`) — see the per-stage status table above.
 
 R = Responsible (does the work) · A = Accountable (owns the outcome, single
 per row by design) · C = Consulted · I = Informed.
@@ -206,9 +201,9 @@ except Testing, where the testing agents *are* the doers.
 |---|---|---|---|---|
 | **Scanner** (`ADR-002`, Accepted; ref. `scanner.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Backend Architect | SRE, Test Results Analyzer |
 | **Strategy Engine** (`ADR-003`, Accepted; ref. `strategies/`) | Minimal Change Engineer | Multi-Agent Systems Architect | Software Architect, Test Results Analyzer | Code Reviewer, Backend Architect |
-| **Scoring Engine** (`ADR-004`, **Proposed**; ref. `scorer.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Test Results Analyzer | Code Reviewer, SRE |
-| **Risk Engine** (`ADR-005`, **Proposed**; ref. `risk.py`) | Minimal Change Engineer | Backend Architect | Software Architect, Security Architect, Test Results Analyzer | SRE, Code Reviewer |
-| **Compliance Engine** (`ADR-006`, **Proposed**; ref. `ComplianceEngine`, `guards.py`) | Minimal Change Engineer | Security Architect | Backend Architect, **Software Architect** (moved from I — `ADR-006`'s own "Reviewed by" names Software Architect for cross-module boundary sign-off, the same standing every other stage gives that role when named as a reviewer), AppSec Engineer, Test Results Analyzer | SRE |
+| **Scoring Engine** (`ADR-004`, Accepted; ref. `scorer.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Test Results Analyzer | Code Reviewer, SRE |
+| **Risk Engine** (`ADR-005`, Accepted; ref. `risk.py`) | Minimal Change Engineer | Backend Architect | Software Architect, Security Architect, Test Results Analyzer | SRE, Code Reviewer |
+| **Compliance Engine** (`ADR-006`, Accepted; ref. `ComplianceEngine`, `guards.py`) | Minimal Change Engineer | Security Architect | Backend Architect, **Software Architect** (moved from I — `ADR-006`'s own "Reviewed by" names Software Architect for cross-module boundary sign-off, the same standing every other stage gives that role when named as a reviewer), AppSec Engineer, Test Results Analyzer | SRE |
 | **Execution Validator** (`ADR-007`, Accepted) | Minimal Change Engineer | Backend Architect | **Security Architect (mandatory gate, not just C — `ADR-007`'s own "Reviewed by" states this explicitly, not just this table)**, Software Architect, AppSec Engineer | SRE, everyone |
 | **MT5 Bridge** (`ADR-008` + Amendment 1, Accepted) | Minimal Change Engineer | Backend Architect | Security Architect, SRE | Software Architect |
 | **Position Manager** (`ADR-009`, Accepted) | Minimal Change Engineer | Backend Architect | SRE, Security Architect | Software Architect |
@@ -223,8 +218,8 @@ except Testing, where the testing agents *are* the doers.
 ADR at all yet (`ADR-011`/`ADR-012` are reserved, undrafted) and no source
 code in this repository today — their RACI here is aspirational for
 when/if they're drafted and built, not a description of existing code or
-existing acceptance. Execution Validator, MT5 Bridge, Position Manager,
-and Analytics now have Accepted ADRs but still no implementation, per
+existing acceptance. Every other pipeline stage above (Scanner through
+Analytics) now has an Accepted ADR but still no implementation, per
 `CLAUDE.md` §1.10 (Accepted ADR is a precondition for code, not code
 itself). Execution Validator's mandatory Security Architect gate was
 already flagged in this table before `ADR-007` existed and has since been
@@ -236,9 +231,7 @@ current scope, on purpose:**
   — still **Proposed**, not Accepted. Its own governance (research-lab
   isolation, promotion chain, human-approval gates) is fully specified in
   `ADR-019` itself; adding a Council RACI row here before it's Accepted
-  would overstate its status the same way the per-stage table above is
-  careful not to for Scoring/Risk/Compliance. Revisit when `ADR-019` is
-  accepted.
+  would overstate its status. Revisit when `ADR-019` is accepted.
 - **Data Pipeline** (`ADR-013`) — not yet drafted at all (unlike Watchdog/
   Dashboard, which at least have reserved ADR numbers and an aspirational
   row here already). Nothing exists yet to reconcile a RACI row against;
@@ -407,12 +400,18 @@ logic. Re-evaluated against the now-drafted ADRs:
    (`ADR-003` §3), never a hand-maintained list, explicitly citing this
    defect by name. Remains open only as an implementation task once
    Analytics is actually built.
-2. The account-feed observability gap (Missing Observability) — still
-   open. Relevant to `ADR-006` (Compliance Engine, still **Proposed**)
-   and `ADR-011` (Watchdog, not yet drafted).
+2. The account-feed observability gap (Missing Observability) — status
+   updated only: `ADR-006` (Compliance Engine) is now **Accepted**, not
+   Proposed. Whether its text substantively closes this specific
+   telemetry gap (distinguishing "never connected" from "healthy") was
+   not re-audited in this documentation-only pass — flagged as
+   unverified, not claimed resolved. `ADR-011` (Watchdog) remains not yet
+   drafted.
 3. **The `swing_points()` duplication half (Scanner) — CLOSED at the
    architecture level by `ADR-002` §14/reference material (Accepted).**
-   The `Guards.exposure()` duplication half (Compliance) remains open —
-   `ADR-006` is still **Proposed**; re-evaluate when it's drafted/accepted.
+   The `Guards.exposure()` duplication half (Compliance) — status updated
+   only: `ADR-006` is now **Accepted**; whether its text substantively
+   addresses this duplication was not re-audited in this pass, flagged as
+   unverified rather than claimed resolved.
 4. Everything marked "low priority" above — revisit opportunistically, no
    assigned stage.

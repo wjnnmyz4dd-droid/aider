@@ -18,7 +18,7 @@ Date: 2026-07-04
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted, including Amendment 1),
 `ADR-003-strategy-engine.md` (Accepted), `ADR-004-scoring-engine.md`
-(Proposed), `ADR-005-risk-engine.md` (Proposed),
+(Accepted), `ADR-005-risk-engine.md` (Accepted),
 `docs/adr/ADR-015-external-data-sources-api-governance.md` (Proposed),
 `docs/adr/ADR-016-ai-news-intelligence.md` (Accepted)
 
