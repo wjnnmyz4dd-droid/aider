@@ -1,6 +1,10 @@
 # ADR-017 — Portfolio Manager
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Security Architect (per the Gap Audit's own recommendation,
 `ARCHITECTURE-GAP-AUDIT-2026-07-04.md` §3's Missing Capability Matrix —
