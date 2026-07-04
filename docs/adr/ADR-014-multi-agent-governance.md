@@ -1,6 +1,10 @@
 # ADR-014 — Multi-Agent Governance
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Software Architect (per `TEAM.md` §1's own definition of the
 role: "Cross-module design, dependency direction, ADRs" — this ADR is
