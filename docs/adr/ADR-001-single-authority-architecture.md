@@ -315,6 +315,12 @@ ADR-013 Data Pipeline (Market Data ingestion, feeds Scanner)
 
 ADR-014 Multi-Agent Governance (Engineering Council process itself)
 
+ADR-015 External Data Sources & API Governance (added 2026-07-04 — not
+part of the original per-stage list above; covers every external
+service/API/vendor used anywhere in Phantom, including ones with no
+pipeline stage of their own, e.g. source control, AI development tooling,
+and the VIBE research lab's isolation boundary)
+
 ---
 
 # Resolution (2026-07-04)
