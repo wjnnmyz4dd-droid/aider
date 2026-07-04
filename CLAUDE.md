@@ -14,9 +14,14 @@ When guidance conflicts, higher wins:
 1. **Phantom Protocol rules** (§1)
 2. **Phantom safety architecture** (§2)
 3. **Phantom coding & scoring standards** (§3)
-4. **Minimal Change Engineer philosophy** (§5)
-5. **General engineering behavior** (§6)
+4. **Minimal Change Engineer philosophy** (§6)
+5. **General engineering behavior** (§7)
 6. Claude's own defaults
+
+**Architecture authority:** `docs/adr/ADR-001-single-authority-architecture.md`
+(Accepted) and its per-stage successors (ADR-002 onward) are the single
+source of truth for Phantom's target pipeline and supersede §2's original
+component order wherever the two conflict. See §2.
 
 ---
 
@@ -33,15 +38,37 @@ When guidance conflicts, higher wins:
 7. Every change must compile cleanly and include validation.
 8. Every change must explain why it improves the system.
 9. If uncertain about execution logic, ask before changing it — don't
-   guess (see §6).
+   guess (see §7).
 10. Never modify production code until the relevant architecture has been
-    reviewed.
+    reviewed — concretely, no implementation begins on a pipeline stage
+    until that stage has its own **Accepted** ADR under `docs/adr/` (see
+    §2). A Proposed or superseded ADR does not authorize implementation.
 
 ## 2. Phantom safety architecture
 
-**Component priority order — never violate:**
-Risk Engine → Execution Safety → MT5 Bridge → Watchdog → Scanner → Scorer
-→ Analytics → Dashboard.
+**Current architecture (authoritative — `docs/adr/ADR-001-single-authority-architecture.md`, Accepted 2026-07-04):**
+
+There is exactly one authoritative pipeline, designed from first
+principles and built one accepted ADR per stage — architecture first,
+implementation second, testing third, deployment last:
+
+**Market Data → Scanner → Strategy Engine → Scoring Engine → Risk Engine →
+Compliance Engine → Execution Validator → MT5 Bridge → Position Manager →
+Analytics**
+
+`phantom/` and `phantom_institutional.py` are **reference-only** — mined
+for proven algorithms and safety mechanisms, neither is a running
+authority and neither should be extended as if it were. Per-stage ADRs
+(ADR-002 Scanner through ADR-010 Analytics, plus ADR-011 Watchdog, ADR-012
+Dashboard, ADR-013 Data Pipeline, ADR-014 Multi-Agent Governance) define
+each stage's scope before any code for that stage is written.
+
+**Historical — superseded 2026-07-04 by ADR-001, kept for context only, do
+not use for current sequencing decisions:** the original component
+priority order was Risk Engine → Execution Safety → MT5 Bridge → Watchdog
+→ Scanner → Scorer → Analytics → Dashboard. This described a two-authority
+state (`phantom/` and `phantom_institutional.py` both live) that ADR-001
+explicitly rejected.
 
 **Risk philosophy:**
 - Capital preservation overrides profit.
@@ -56,8 +83,11 @@ Risk Engine → Execution Safety → MT5 Bridge → Watchdog → Scanner → Sco
 **Strategy philosophy:**
 - Strategies may confirm each other; they may never create duplicate
   signals or bypass guards.
-- ORB, Liquidity Reversal, Session Breakout, and every future strategy are
-  confirmation layers only — none may open a trade.
+- Every playbook, current or future, is a confirmation layer only within
+  the Strategy Engine stage — none may decide, size, or execute a trade.
+  (Do not hand-list playbook names here — a hand-maintained list is
+  exactly the drift risk documented as a defect in the reference material;
+  see `.claude/agents/TEAM.md` §8.)
 
 ## 3. Phantom coding & scoring standards
 
@@ -72,18 +102,21 @@ Risk Engine → Execution Safety → MT5 Bridge → Watchdog → Scanner → Sco
 
 **Before:**
 1. Read the affected files and their dependencies.
-2. Check the affected architecture against §2's priority order.
-3. Identify duplicate logic and potential regressions.
-4. Explain the proposed solution before touching code.
+2. Check the affected architecture against §2's current pipeline (ADR-001
+   and its per-stage successors) — not the historical order.
+3. If the change touches a pipeline stage, confirm that stage's ADR is
+   **Accepted**, not merely Proposed, before implementing (§1.10).
+4. Identify duplicate logic and potential regressions.
+5. Explain the proposed solution before touching code.
 
 **During:**
-5. Implement the smallest change that solves the problem (§5).
+6. Implement the smallest change that solves the problem (§6).
 
 **After:**
-6. Validate — compile success, startup success, regression tests, scoring
+7. Validate — compile success, startup success, regression tests, scoring
    distribution, strategy consistency, API endpoints, MT5 compatibility,
    watchdog compatibility, as applicable to what changed.
-7. Produce a change report: **Summary, Files changed, Why, Risks,
+8. Produce a change report: **Summary, Files changed, Why, Risks,
    Validation, Remaining issues, Recommendations.**
 
 ## 5. Engineering Council
