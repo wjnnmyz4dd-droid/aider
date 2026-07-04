@@ -16,6 +16,11 @@ health/heartbeat integration with Watchdog, `ADR-011`)
 
 Date: 2026-07-04
 
+Amended: 2026-07-04 (Amendment 1 — grants Replay & Certification Engine
+(`ADR-018`) read-only `MarketSnapshot` access for shadow-trading
+evaluation only; see inline "(Amendment 1)" markers in §5, §9, §13 for
+exactly what changed)
+
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted —
 this ADR is the formal definition of ADR-001's own first pipeline stage,
 named "Market Data" in its diagram), `ADR-002-scanner.md` (Accepted —
@@ -35,7 +40,12 @@ sources-api-governance.md` (Accepted — owns the MT5 Broker Feed/Calendar
 vendor relationship, the Adapter Forbidden Responsibilities this ADR's
 ingestion adapters must honor, and already states the exact rule this
 ADR restates in §1: "Only the Market Data stage and MT5 Bridge touch the
-MT5 Broker Feed directly")
+MT5 Broker Feed directly"), `docs/adr/ADR-018-replay-certification-
+engine.md` (Proposed — Amendment 1 exists to satisfy its shadow-trading
+`MarketSnapshot` dependency, flagged as an open gap in that ADR's own
+review; this dependency is one-directional in review terms only: ADR-018
+depends on this ADR's granted access, this ADR does not depend on
+ADR-018 being Accepted for its own correctness)
 
 ---
 
@@ -168,7 +178,10 @@ at every prior stage.
   price, current spread, `market_status`, timestamp. This is the object
   Scanner, Compliance Engine, and Execution Validator/MT5 Bridge each
   read on their own cadence — never routed through `ScannerObservation`
-  for the latter two.
+  for the latter two. **(Amendment 1)** Replay & Certification Engine
+  (`ADR-018`) is a fourth, read-only consumer, for shadow-trading
+  evaluation only (§9) — never for any other purpose, and never with
+  write access.
 - **`HistoricalSeries`** — a bounded historical OHLCV series for a
   symbol/timeframe, used for warm-up and backtesting.
 - **`ReplaySeries`** — a captured sequence of historical
@@ -327,6 +340,46 @@ structural analysis remains Scanner's exclusive lane; reading
 `MarketSnapshot` for a live-state check is available to any stage whose
 own Accepted ADR already requires it.
 
+**(Amendment 1) Replay & Certification Engine (`ADR-018`) — a fourth
+`MarketSnapshot` consumer, for shadow trading only.** `ADR-018`'s
+shadow-trading evaluation method requires observing real-time market
+conditions to compare a certification candidate's hypothetical decisions
+against them. This amendment grants exactly that, under the following
+conditions, none of which are negotiable at implementation time:
+
+- **Read-only.** Replay & Certification Engine may read `MarketSnapshot`;
+  it may never write to it, to any other output of this stage, or to any
+  live data anywhere in the pipeline.
+- **Never executes trades.** It holds no order-placement credentials
+  (§13) and has no path to MT5 Bridge.
+- **Never influences live decisions.** Its shadow-trading output
+  (`ReplayResult`/`ReplayMetrics`/`CertificationReport`, `ADR-018` §5) is
+  read by Human Review and stored as certification evidence — it is
+  never an input to Scanner, Strategy Engine, Scoring Engine, Risk
+  Engine, Compliance Engine, the Execution Validator, MT5 Bridge, or
+  Position Manager. None of those stages' own Accepted input contracts
+  (`ADR-002` §4 onward) are changed by this amendment, and none gains a
+  new input source.
+- **Never bypasses any pipeline stage.** Reading `MarketSnapshot`
+  through this stage is the same access model already granted to
+  Compliance Engine and Execution Validator/MT5 Bridge — it opens no
+  second connection to the MT5 Broker Feed and creates no path around
+  Scanner, Strategy Engine, Scoring Engine, Risk Engine, Compliance
+  Engine, the Execution Validator, MT5 Bridge, or Position Manager.
+- **Observational only; produces certification evidence only.** Shadow
+  trading exists exclusively to feed `ADR-018`'s own certification
+  workflow (`EvidencePackage`, `CertificationReport`) — it has no other
+  purpose and no other output consumer.
+
+**This does not create a new live pipeline path, and does not modify the
+deterministic trading pipeline.** `ADR-001`'s pipeline diagram, and
+every stage's own Inputs/Outputs contract from `ADR-002` through
+`ADR-010`, are unchanged. This amendment adds a fourth *read* of an
+existing output object to a stage (`ADR-018`) that this ADR's own
+Pipeline position (§1) already states sits **outside** the live
+pipeline entirely — it is an extension of who may observe, never a
+change to who decides.
+
 ---
 
 # 10. Replay
@@ -413,6 +466,11 @@ stage's own adapters are exactly the adapters it governs.
 - **No network egress beyond the approved sources in §4** — any future
   source requires `ADR-015` §12's four-step gate before this stage may
   connect to it.
+- **(Amendment 1)** Replay & Certification Engine's `MarketSnapshot`
+  access (§9) is read-only, credential-scoped the same way every other
+  consumer's read access already is — it grants no write capability, no
+  order-placement capability, and no new network egress path beyond the
+  `MarketSnapshot` read itself.
 
 ---
 
