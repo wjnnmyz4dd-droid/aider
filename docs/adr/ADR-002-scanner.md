@@ -26,9 +26,11 @@ either neighbor.
 
 The Scanner observes raw market data for one symbol at one instant and
 produces a structured, factual description of current market conditions —
-structure, trend, volatility, session, liquidity, and data quality. It
-answers **"what is the market doing right now"**, never **"what should we
-do about it."** It has no trading authority of any kind. Per ADR-001's
+structure, trend, volatility, session, liquidity, and data quality.
+
+**The Scanner answers exactly one question: "What is the market doing
+right now?" It never answers "What should we do?"** Every requirement in
+this ADR is a consequence of that one-sentence boundary. Per ADR-001's
 Single Sources of Truth, the Scanner's mandate is exactly: signal
 generation, market structure, session detection — this ADR elaborates
 that mandate into a concrete contract.
@@ -40,11 +42,72 @@ structure from insufficient data corrupts everything built on top of it.
 
 ---
 
-# 2. Inputs
+# 2. Scanner Purity Principle
+
+The Scanner must be **referentially transparent**. Given identical:
+
+- market data
+- symbol
+- timeframe
+- configuration
+- timestamp
+
+the Scanner **must always produce the exact same `ScannerObservation`.**
+
+The Scanner may **not** depend on:
+
+- Mutable global state
+- Previous scans
+- Hidden caches
+- Randomness
+- External APIs
+- Strategy state
+- Execution history
+
+The Scanner is a pure observation engine — a function of its declared
+inputs (§4) only, nothing else. This is the single authoritative statement
+of the Scanner's purity requirement; §7's Interface contract and §14's
+Determinism Requirement both build on this principle rather than
+restating it.
+
+---
+
+# 3. Facts, Never Decisions
+
+The Scanner only emits observations — facts about market conditions. It
+never emits:
+
+- BUY / SELL / LONG / SHORT
+- APPROVE / REJECT / BLOCK / WATCHLIST
+- Confidence, score, or probability
+- Position size
+- Stop loss / take profit
+- Execution instructions
+
+Example `ScannerObservation` (illustrative only, not a schema — see §8 for
+the data model):
+
+- Trend = UP
+- Structure = BOS
+- Liquidity Sweep = TRUE
+- Volatility = NORMAL
+- Session = LONDON
+- Spread = ACCEPTABLE
+- Data Quality = GOOD
+
+These are facts only. Interpretation — what these facts mean for a trade —
+belongs entirely to later pipeline stages (Strategy Engine onward). This
+section is the concrete, example-driven illustration of the boundary
+stated abstractly in §6 (Explicit non-responsibilities); the two must be
+read together and must never be allowed to drift apart.
+
+---
+
+# 4. Inputs
 
 Supplied by the Market Data stage (ADR-013); the Scanner does not fetch,
 cache, or validate raw feeds itself — it consumes what it's given and
-fails closed (§8) if what it's given is inadequate.
+fails closed (§10) if what it's given is inadequate.
 
 - **Symbol** — one instrument identifier per observation. The Scanner is
   called once per symbol; it does not itself iterate a universe.
@@ -64,14 +127,14 @@ fails closed (§8) if what it's given is inadequate.
 
 ---
 
-# 3. Outputs — `ScannerObservation`
+# 5. Outputs — `ScannerObservation`
 
-One `ScannerObservation` per symbol per call. See §6 for the data model.
+One `ScannerObservation` per symbol per call. See §8 for the data model.
 Conceptually:
 
 - **Market structure** — presence and direction of structural signals
   (break of structure, change of character, liquidity sweep, fair value
-  gap, order block, or equivalent). Generic, playbook-agnostic — see §4.
+  gap, order block, or equivalent). Generic, playbook-agnostic — see §6.
 - **Trend state** — per-timeframe direction and strength, computed
   independently per timeframe (no cross-timeframe bias resolution — that
   is the Strategy Engine's job, since "bias" is a trading judgment, not a
@@ -85,11 +148,11 @@ Conceptually:
   as facts, not as trade signals.
 - **Data quality flags** — explicit, structured indication of warm-up
   state, missing-timeframe state, or any other condition under which the
-  rest of the observation should be treated as unreliable (§8).
+  rest of the observation should be treated as unreliable (§10).
 
 ---
 
-# 4. Explicit non-responsibilities
+# 6. Explicit non-responsibilities
 
 The Scanner does **not**:
 
@@ -111,27 +174,29 @@ The Scanner does **not**:
 - Maintain any per-strategy state (no idempotency tracking, no
   "confirmed session" bookkeeping — that is Strategy Engine state).
 
+See §3 for the concrete, example-driven illustration of this boundary.
+
 ---
 
-# 5. Interface contract
+# 7. Interface contract
 
 - One entry point: given a symbol and its current market-data snapshot
-  (§2), return exactly one `ScannerObservation` (§6).
-- **Pure with respect to trading state.** The only state the Scanner may
-  hold internally is computational (e.g. a session-window clock), never
-  anything that encodes a trading decision or a strategy's memory. Two
-  calls with identical inputs at the same instant must produce identical
-  output.
+  (§4), return exactly one `ScannerObservation` (§8).
+- **Referentially transparent**, per the Scanner Purity Principle (§2).
+  Two calls with identical inputs must produce identical output; the only
+  state the Scanner may hold internally is computational (e.g. a
+  session-window clock), never anything that encodes a trading decision
+  or a strategy's memory.
 - **No side effects beyond logging and metrics**, both of which are
-  required (§9, §10), not optional instrumentation.
+  required (§11, §12), not optional instrumentation.
 - **No network egress, no file I/O beyond the declared logging sink.**
-- The Scanner must not raise on bad input; every failure mode in §7
+- The Scanner must not raise on bad input; every failure mode in §9
   degrades to a well-formed `ScannerObservation` with `data_quality_flag`
-  set (§8), never an exception that could halt the pipeline.
+  set (§10), never an exception that could halt the pipeline.
 
 ---
 
-# 6. Data model
+# 8. Data model
 
 `ScannerObservation` (conceptual — no implementation code per this ADR's
 scope):
@@ -152,15 +217,15 @@ scope):
 - `liquidity_events` — list of detected events (kind, direction, price
   level where applicable).
 - `data_quality_flag` — boolean or enum (warm-up / stale / missing
-  timeframe / nominal); see §8.
+  timeframe / nominal); see §10.
 - No field in this model may represent a score, a decision, a size, or an
   approval, structurally — this is a type-level guarantee the acceptance
-  criteria (§15) must be able to verify by inspection, not just by
-  behavioral testing.
+  criteria (§18) must be able to verify by inspection, not just by
+  behavioral testing (see §3, Facts, Never Decisions).
 
 ---
 
-# 7. Failure modes
+# 9. Failure modes
 
 - Insufficient bar history for a requested timeframe (warm-up).
 - A requested timeframe missing entirely from the supplied snapshot.
@@ -175,9 +240,9 @@ scope):
 
 ---
 
-# 8. Fail-closed behavior
+# 10. Fail-closed behavior
 
-On any failure mode in §7, the Scanner emits a `ScannerObservation` with
+On any failure mode in §9, the Scanner emits a `ScannerObservation` with
 `data_quality_flag` set to the specific condition, and every other field
 either omitted or set to an explicit "unknown" state — **it never
 fabricates a plausible-looking structure, trend, or volatility reading
@@ -193,7 +258,7 @@ only report honestly).
 
 ---
 
-# 9. Logging requirements
+# 11. Logging requirements
 
 - Structured, one record per `ScannerObservation`, machine-parseable
   (JSONL or equivalent).
@@ -210,12 +275,12 @@ only report honestly).
 
 ---
 
-# 10. Metrics requirements
+# 12. Metrics requirements
 
 - Count of observations, labeled by `data_quality_flag` state (nominal
-  vs. each failure mode in §7) — generalizes the reference material's
+  vs. each failure mode in §9) — generalizes the reference material's
   `phantom_warmup_total` counter to every failure mode, not just warm-up.
-- Per-symbol scan latency (for §11).
+- Per-symbol scan latency (for §13).
 - Counts of structural signals detected, by kind and direction — useful
   denominator for later strategy-layer analytics, without the Scanner
   itself interpreting them.
@@ -225,7 +290,7 @@ only report honestly).
 
 ---
 
-# 11. Performance targets
+# 13. Performance targets
 
 - The Scanner must complete well within the shortest configured
   timeframe's bar interval, so scans cannot stack up under normal load.
@@ -248,7 +313,39 @@ only report honestly).
 
 ---
 
-# 12. Testing strategy
+# 14. Determinism Requirement
+
+Historical replay using identical market data must generate identical
+`ScannerObservation` objects, byte-for-byte. This is mandatory for:
+
+- Regression testing
+- Walk-forward validation
+- Debugging
+- Certification (forward-test / prop-firm audit trail)
+
+This is **replay determinism** specifically — a stronger, time-independent
+extension of the Scanner Purity Principle (§2): not only must a single
+call be a pure function of its declared inputs, but re-running an entire
+historical session's worth of calls must reproduce the exact same
+sequence of observations, with no drift introduced by wall-clock time,
+process restarts, execution order, or any other incidental factor outside
+the declared inputs. §15's testing strategy is how this requirement is
+verified, not where it is defined.
+
+---
+
+# 15. Testing strategy
+
+Dedicated tests must prove, at minimum:
+
+- ✓ Identical input → identical output
+- ✓ No score fields exist
+- ✓ No decision fields exist
+- ✓ No mutable state affects output
+- ✓ All computations occur once per scan
+- ✓ Failures produce `data_quality_flag`s
+
+Elaborated:
 
 - **Fully isolated unit tests** — the Scanner must be testable with fixed
   OHLCV fixtures and no dependency on the Strategy Engine, Scoring
@@ -256,37 +353,41 @@ only report honestly).
 - **Deterministic regression tests** — identical input must produce
   byte-identical output; assert this directly, not just "similar
   decision" the way the reference material's scanner regression check
-  did.
-- **One test per failure mode in §7**, asserting the correct
+  did. This is the test-level verification of §14's Determinism
+  Requirement.
+- **One test per failure mode in §9**, asserting the correct
   `data_quality_flag` and that no fabricated structure/trend/volatility
   is present.
 - **A structural/type-level test** that `ScannerObservation` has no field
   capable of representing a score, decision, size, or approval — enforces
-  §4's boundary at the type level, not just behaviorally.
+  §3 and §6's boundary at the type level, not just behaviorally.
 - **A duplicate-computation test** — assert that each structural
-  computation (§11) executes exactly once per scan (e.g. via a call-count
+  computation (§13) executes exactly once per scan (e.g. via a call-count
   spy in tests), so the swing_points-style regression cannot silently
   reappear.
+- **A purity test** — assert that mutating or removing any hidden/global
+  state the implementation might be tempted to introduce has no effect on
+  a call's output, directly enforcing §2's Scanner Purity Principle.
 
 ---
 
-# 13. Security assumptions
+# 16. Security assumptions
 
-- The Scanner consumes only market-data inputs (§2) — no credentials, no
+- The Scanner consumes only market-data inputs (§4) — no credentials, no
   account/equity data, no broker connection of any kind. Its blast radius
   if compromised or fed adversarial data is bounded to producing bad
   *observations*, never an unauthorized trade, because it has no
   execution capability and no path to one.
 - Input validation must treat all supplied market data as untrusted
   (malformed candles, adversarial gaps, spoofed session/market-status
-  flags) and fail closed per §8 rather than propagate garbage downstream.
+  flags) and fail closed per §10 rather than propagate garbage downstream.
 - No network egress, consistent with `phantom/`'s existing stdlib-only,
   no-third-party-dependency posture — worth preserving as a security
   property, not just a style preference.
 
 ---
 
-# 14. Reference material — ideas only, not authority
+# 17. Reference material — ideas only, not authority
 
 The following inform this design and are explicitly **not** authoritative
 over it, per ADR-001:
@@ -298,15 +399,15 @@ over it, per ADR-001:
 - `phantom/structure.py` — swing-pivot-based BOS/CHOCH/liquidity-sweep/
   FVG/order-block detection shape (`StructureSignal(found, direction,
   detail)`). Useful shape; the repeated `swing_points()` computation
-  pattern is explicitly rejected (§11).
+  pattern is explicitly rejected (§13).
 - `phantom/orb.py` — the idea that a session's opening range is a
   meaningful liquidity/structure fact is useful; its idempotency/
   session-confirmation state is explicitly rejected from the Scanner
-  (§4) and belongs, if kept at all, in the Strategy Engine (ADR-003).
+  (§6) and belongs, if kept at all, in the Strategy Engine (ADR-003).
 - `phantom_institutional.py`'s `LiquidityHeatmap` / `RegimeDetector` /
   `compute_regime_v2` — the idea of reporting nearest liquidity pools and
   a regime read with an "early warning" concept is a useful input to
-  §3's liquidity-events and volatility-state design; none of its specific
+  §5's liquidity-events and volatility-state design; none of its specific
   code, ML dependencies, or thresholds are authoritative, consistent with
   it being reference-only per ADR-001.
 - `docs/research/VIBE-TRADING-EVALUATION.md` and
@@ -316,22 +417,26 @@ over it, per ADR-001:
 
 ---
 
-# 15. Acceptance criteria
+# 18. Acceptance criteria
 
 ADR-002 is satisfied by an implementation that demonstrates all of:
 
-- ✓ Deterministic — identical input produces byte-identical output.
+- ✓ Referentially transparent per the Scanner Purity Principle (§2) —
+  identical input produces byte-identical output.
 - ✓ Testable in complete isolation from every other pipeline stage.
-- ✓ Structurally incapable of representing a score, decision, size, or
-  approval (§6, verified by the type-level test in §12).
-- ✓ Fails closed on every failure mode in §7 with the correct
+- ✓ Emits facts only, never a BUY/SELL/APPROVE/REJECT/score/size/
+  execution-shaped field (§3), structurally guaranteed by the data model
+  (§8) and verified by the type-level test (§15).
+- ✓ Fails closed on every failure mode in §9 with the correct
   `data_quality_flag`, never fabricating a reading from incomplete data.
-- ✓ No structural computation repeated more than once per scan (§11),
+- ✓ No structural computation repeated more than once per scan (§13),
   verified by the duplicate-computation test.
-- ✓ Every logged record carries a `trace_id` (§9).
-- ✓ Contains zero playbook-specific logic or state (§4).
-- ✓ Metrics are export-only and additive (§10).
-- ✓ No network egress, no credential or account-data access (§13).
+- ✓ Passes replay-determinism testing (§14) — identical historical
+  replay reproduces identical observations, byte-for-byte.
+- ✓ Every logged record carries a `trace_id` (§11).
+- ✓ Contains zero playbook-specific logic or state (§6).
+- ✓ Metrics are export-only and additive (§12).
+- ✓ No network egress, no credential or account-data access (§16).
 
 Per `ADR-001` and `CLAUDE.md` §1.10, **no implementation begins until this
 ADR's Status changes from Proposed to Accepted.**
