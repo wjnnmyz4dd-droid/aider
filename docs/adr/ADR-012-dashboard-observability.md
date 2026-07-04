@@ -7,18 +7,30 @@ RACI, Dashboard row; also already named in `ADR-015`'s Grafana section
 as this stage's owner)
 
 Reviewed by: SRE (Consulted per `TEAM.md`'s RACI — "what to surface for
-alerting")
+alerting"), **Security Architect (mandatory, added 2026-07-04 governance
+pass — see note below)**
 
-**Note — flagged, not silently resolved:** this ADR surfaces
-account-sensitive data (trade/performance statistics, position status)
-to a human-facing interface, which is exactly the kind of exposure
-`ADR-015`'s own Grafana section calls out as needing "access control over
-who can view account-sensitive metrics." `TEAM.md`'s Dashboard RACI row
-does not currently name Security Architect as a reviewer (unlike
-Compliance, Execution Validator, or MT5 Bridge). This ADR does not invent
-a mandatory gate `TEAM.md` doesn't establish — it flags the gap here for
-your decision rather than assuming either that no review is needed or
-that one should be added unilaterally.
+**Note — governance gap resolved 2026-07-04:** the prior draft flagged
+that this ADR surfaces account-sensitive data (trade/performance
+statistics, position status) to a human-facing interface — exactly the
+exposure `ADR-015`'s own Grafana section calls out as needing "access
+control over who can view account-sensitive metrics" — while `TEAM.md`'s
+Dashboard RACI row named no Security Architect reviewer. Evaluated
+against: account information exposure, infrastructure visibility,
+operational telemetry, authentication assumptions, authorization
+boundaries, read-only guarantees, and information-disclosure risk.
+**Conclusion: justified, on a different risk axis than Execution
+Validator/MT5 Bridge.** Those stages' mandatory Security Architect gate
+is about write/order-placement blast radius, which the Dashboard
+structurally has none of (§4, §9 — unchanged). The Dashboard's risk is
+**information disclosure**: who may *view* real account/position/
+performance data is a design-time trust-boundary question squarely
+within Security Architect's lane (`TEAM.md` §4's two-tier model —
+design-time trust boundaries are Security Architect's, not Application
+Security Engineer's diff-time SAST/DAST review). The read-only/no-write
+architecture itself (§4, §9) was already sound and is not what this
+review changes — only the reviewer list is updated; see the Deliverable
+report for the full evaluation.
 
 Date: 2026-07-04
 
@@ -255,8 +267,9 @@ number Analytics or Watchdog already own.
   sensitive even though the Dashboard itself has no write capability;
   who may *view* the Dashboard is a distinct security question from
   whether the Dashboard can *act* (`ADR-015`'s own Grafana section
-  already flags this). See the header note on the currently-unassigned
-  Security Architect review for this concern.
+  already flags this). See the header note — this is precisely the
+  concern Security Architect's now-mandatory review (added 2026-07-04)
+  covers.
 - **Internal-only network binding**, mirroring the same requirement
   `ADR-015` places on the Prometheus endpoint it reads from.
 

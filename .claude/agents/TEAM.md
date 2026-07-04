@@ -211,7 +211,7 @@ except Testing, where the testing agents *are* the doers.
 | **AI News Intelligence** (`ADR-016`, Accepted — side-ADR, not a pipeline stage) | Minimal Change Engineer | Security Architect | Software Architect | Backend Architect, SRE |
 | **Watchdog** *(ADR-011, not yet drafted; conceptually SRE's lane)* | Minimal Change Engineer | SRE | Backend Architect, Security Architect | Software Architect |
 | **API** (`api.py`) | Minimal Change Engineer | Backend Architect | Security Architect, AppSec Engineer, API Tester | SRE, Software Architect |
-| **Dashboard** *(ADR-012, not yet drafted)* | Minimal Change Engineer | Backend Architect | SRE (what to surface for alerting) | Software Architect |
+| **Dashboard** *(ADR-012, not yet drafted)* | Minimal Change Engineer | Backend Architect | SRE (what to surface for alerting), **Security Architect (added 2026-07-04 — ADR-012's own governance review found account-sensitive data exposure/access-control a design-time trust-boundary question, per §4's two-tier model)** | Software Architect |
 | **Testing** (`validate.py`, `tests/`) | Test Results Analyzer, API Tester | Software Architect | Minimal Change Engineer, Code Reviewer | SRE, Security Architect |
 
 **Read the parenthetical notes literally.** Watchdog and Dashboard have no
