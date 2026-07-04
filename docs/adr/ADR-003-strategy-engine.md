@@ -1,6 +1,6 @@
 # ADR-003 — Strategy Engine
 
-Status: Proposed
+Status: **Accepted**
 
 Owner: Multi-Agent Systems Architect (per `.claude/agents/TEAM.md` RACI,
 Strategy Orchestrator row — Accountable)
@@ -9,6 +9,10 @@ Reviewed by: Software Architect (cross-module boundary sign-off, per
 `TEAM.md` §2 — any new engine requires this)
 
 Date: 2026-07-04
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted)
@@ -265,6 +269,38 @@ alongside it; they never rewrite it (§18).
   Strategy Engine's own code, the registry's own code, or any other
   playbook.
 
+## Duplicate Strategy ID Handling
+
+- **Every Strategy ID must be globally unique.** Uniqueness is a registry
+  invariant, not a convention.
+- **Duplicate registration is a configuration error**, not a runtime
+  condition the engine tolerates or works around.
+- **Duplicate IDs are detected during registry initialization** — before
+  any playbook runs, not discovered lazily at call time.
+- **Registry initialization fails fast.** A duplicate Strategy ID halts
+  registry startup; it does not proceed with a partially-loaded registry.
+- **The duplicate strategy is never loaded.** Neither conflicting
+  registration is silently activated — detection blocks both, not just
+  the second one seen.
+- **Log a structured error** containing both conflicting Strategy IDs,
+  their names, and their versions — sufficient detail to resolve the
+  conflict without re-deriving it from source.
+- **No automatic replacement.** The registry never silently substitutes
+  one conflicting playbook for another.
+- **No "last one wins" behavior.** Registration order must never
+  determine which playbook survives a conflict — that would make registry
+  behavior depend on incidental load order, violating determinism (§2).
+- **Registry behavior remains deterministic** — the same set of playbook
+  modules, registered in any order, produces the same
+  fails-to-initialize outcome and the same structured error content.
+- **Duplicate IDs require explicit developer resolution** — renaming or
+  removing one of the conflicting playbooks — before the registry, and
+  therefore the Strategy Engine, can start at all.
+
+This closes the gap identified in this ADR's architectural review: prior
+to this addition, §5 and §7 did not define what happens when two
+playbooks register under the same Strategy ID.
+
 ---
 
 # 8. Initial Playbooks — placeholders only, no implementation
@@ -454,6 +490,25 @@ against guessing unverified figures.
 - **Failure isolation tests** — simulate a playbook throwing and assert
   the engine still returns valid `CandidateTrade` objects from every
   other playbook, with the failure logged per §12.
+- **Duplicate Strategy ID detection** — registering two playbooks under
+  the same Strategy ID is detected at registry initialization, per §7's
+  Duplicate Strategy ID Handling subsection.
+- **Registry initialization failure** — a duplicate Strategy ID causes
+  registry startup to fail fast; the registry must not proceed in a
+  partially-loaded state and neither conflicting playbook is loaded.
+- **Deterministic duplicate handling** — the same conflicting playbook
+  set, registered in any order, produces the same fails-to-initialize
+  outcome — proves registration order never determines a "winner."
+- **Structured error logging verification** — the logged error for a
+  duplicate Strategy ID contains both conflicting Strategy IDs, their
+  names, and their versions, per §7.
+- **Reasoning-metadata boundary test** — confirms that reasoning metadata
+  (§3, §6) contains descriptive evidence only: it is not interpreted as a
+  numeric confidence score, and it cannot influence ordering or ranking
+  of `CandidateTrade`s anywhere within the Strategy Engine. This is the
+  test-level enforcement of the boundary flagged in this ADR's
+  architectural review — reasoning metadata must never become an
+  implicit scoring mechanism smuggled in under a different name.
 
 ---
 
@@ -518,6 +573,12 @@ ADR-003 is acceptable only if it guarantees:
 - ✓ Strategy and Scoring responsibilities never overlap (§9, §11, §18).
 - ✓ Pipeline boundaries are explicit and enforceable (§4, §6's type-level
   guarantee).
+- ✓ Strategy ID collisions cannot silently occur — registry
+  initialization fails fast and deterministically on any duplicate (§7
+  Duplicate Strategy ID Handling, §16).
+- ✓ Reasoning metadata cannot become an implicit scoring mechanism — it
+  is descriptive only, never numeric, never influences ordering or
+  ranking (§3, §6, §16).
 
 ---
 
