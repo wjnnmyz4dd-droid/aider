@@ -1,6 +1,10 @@
 # ADR-011 — Watchdog & Recovery
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: SRE (Accountable per `.claude/agents/TEAM.md` §5 RACI, Watchdog
 row — this ADR is that row's own governance, made concrete)
