@@ -321,6 +321,10 @@ service/API/vendor used anywhere in Phantom, including ones with no
 pipeline stage of their own, e.g. source control, AI development tooling,
 and the VIBE research lab's isolation boundary)
 
+ADR-016 AI News Intelligence Layer (added 2026-07-04 — not part of the
+original per-stage list; an advisory-only system running beside the
+pipeline, not inside it, with zero authority over any trade)
+
 ---
 
 # Resolution (2026-07-04)
