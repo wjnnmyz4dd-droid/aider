@@ -1,5 +1,17 @@
 # Phantom
 
+**Status (2026-07-04):** this package (`phantom/`) is **reference material
+only**, per `docs/adr/ADR-001-single-authority-architecture.md` (Accepted).
+It is not a running authority. The new Phantom system is being rebuilt
+from first principles as a single authoritative pipeline (Market Data →
+Scanner → Strategy Engine → Scoring Engine → Risk Engine → Compliance
+Engine → Execution Validator → MT5 Bridge → Position Manager → Analytics),
+one Accepted ADR per stage, starting with ADR-002 (Scanner). Everything
+below describes what this package does today and remains accurate as a
+description of the reference material — it does not describe the current
+authoritative architecture. See `CLAUDE.md` and `.claude/agents/TEAM.md`
+for current governance.
+
 A modular FX **scanning & scoring** engine. Phantom evaluates a symbol across
 multiple timeframes, produces a composite score, and returns a decision —
 `APPROVE` / `WATCHLIST` / `BLOCK`. **It never places orders.** Execution,

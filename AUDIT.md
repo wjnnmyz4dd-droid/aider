@@ -1,5 +1,18 @@
 # Phantom — Production Architecture Audit
 
+**Status (superseded 2026-07-04 by `docs/adr/ADR-001-single-authority-architecture.md`,
+Accepted):** this document was written when `phantom_institutional.py` was
+the live production system. It no longer is. Per ADR-001, `phantom/` and
+`phantom_institutional.py` are both **reference material only** — mined for
+proven algorithms and safety mechanisms, neither is a running authority.
+The new Phantom system is being rebuilt from first principles; no
+implementation begins on a pipeline stage until that stage has its own
+**Accepted** ADR under `docs/adr/`. The technical findings below (runtime
+dependencies, verified evidence, archive candidates) remain accurate and
+useful as reference material for the ADRs that mine this file's subject —
+only the **Status** section's production/forward-test claims are stale;
+see the corrected version at the bottom.
+
 Read-only audit of the minimal production build. Documents the architecture
 exactly as verified against `phantom_institutional.py` (the only source file
 present in this repository). No source code was changed, moved, or deleted.
@@ -123,6 +136,15 @@ confirming they are not imported by `phantom_command_center.py` / `phantom_src/`
 
 ## Status
 
-- **Production Ready**
-- **Forward Test Ready**
-- **No code changes made.**
+**Historical (as of this audit, pre-ADR-001):**
+- Production Ready
+- Forward Test Ready
+- No code changes made.
+
+**Current (superseded 2026-07-04 by ADR-001):**
+- `phantom_institutional.py` is **reference material only** — not
+  production, not running, not the authority for any decision.
+- The forward test referenced in `RELEASE.md` has concluded.
+- ADR-001 is the authoritative architecture going forward. See
+  `docs/adr/ADR-001-single-authority-architecture.md`.
+- No code changes made — this update is documentation only.
