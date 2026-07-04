@@ -1,6 +1,10 @@
 # ADR-013 — Data Pipeline
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Backend Architect (data contracts/reliability — matches the
 ownership `ADR-015` §6 already assigns to the MT5 Broker Feed and
