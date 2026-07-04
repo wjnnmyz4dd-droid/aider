@@ -7,7 +7,18 @@ Owner: Software Architect
 Date: 2026-07-04
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
-`ADR-002-scanner.md` (Accepted)
+`ADR-002-scanner.md` (Accepted), `ADR-006-compliance-engine.md`
+(Accepted — §6's Database entry names Compliance Engine as an approved
+durable-safety-state consumer, and §6's MT5 Calendar entry is restricted
+to Compliance Engine's news guard), `ADR-008-mt5-bridge.md` (Accepted —
+§5's data-flow diagram and the MT5 Broker Feed entry name MT5 Bridge as
+the sole order channel), `ADR-010-analytics-decision-provenance.md`
+(Accepted — §6's Database and Telegram entries name Analytics as an
+approved consumer), `ADR-011-watchdog-recovery.md` (Accepted — §6, §9,
+and §10 extensively define the health signals and alerting channel
+Watchdog consumes), `ADR-012-dashboard-observability.md` (Accepted —
+§6's Grafana entry is written around Dashboard's existence as its sole
+consumer)
 
 Numbering note: this ADR was requested as "ADR-011"; `ADR-001`'s Future
 ADRs list had already assigned ADR-011 to Watchdog. Renumbered to ADR-015
@@ -84,6 +95,39 @@ dependency it silently trusts. Two properties are non-negotiable:
    `ADR-002` §11's "logging is observability, not a gate" — the same
    applies here to Prometheus, Grafana, and Telegram: their failure must
    never block or alter a trading decision.
+
+---
+
+# Adapter Forbidden Responsibilities
+
+This makes structurally explicit what §3.1 already implies, using the
+same "shall never" convention this session's pipeline-stage ADRs
+(`ADR-002` through `ADR-012`) each already establish for their own
+stage. **Adapters translate only.**
+
+An adapter — the thin translation layer at a pipeline boundary (Market
+Data stage, MT5 Bridge, or Watchdog) that converts a vendor's
+request/response shape into Phantom's own internal data model — SHALL
+NEVER contain:
+
+| Forbidden content | Owned instead by |
+|---|---|
+| Business logic | The pipeline stage the adapter feeds |
+| Strategy logic | Strategy Engine (`ADR-003`) |
+| Scoring logic | Scoring Engine (`ADR-004`) |
+| Risk logic | Risk Engine (`ADR-005`) |
+| Compliance logic | Compliance Engine (`ADR-006`) |
+| Execution decisions | Execution Validator (`ADR-007`) |
+| Portfolio decisions | Position Manager (`ADR-009`) / the future Portfolio Manager (`ADR-017`, recommended, not yet drafted) |
+| AI reasoning | Nobody in the live pipeline — excluded by construction per `ADR-001`'s LLM-free decision path and §7's Explicit Prohibitions |
+| Mutation of pipeline objects | Nobody — every pipeline object (`ScannerObservation` through `PositionManagementDecision`) is immutable at its own source stage |
+| Bypass of pipeline stages | Nobody — an adapter feeds exactly one stage's input (§5's data-flow diagram); it has no path around any stage |
+
+This is the same rule §3.1/§3.2 already state in prose, restated here as
+a structural boundary so it can be verified the same way every other
+pipeline-stage ADR's forbidden-actions table is verified — by checking
+that none of these ten things appears in an adapter's actual
+implementation, not by inferring it from "thin adapter" wording alone.
 
 ---
 
@@ -347,10 +391,12 @@ fetch, cache, or validate raw feeds itself."
 ## Visualization — Grafana
 
 - **Purpose:** human-facing dashboarding of Prometheus metrics (maps to
-  the future Dashboard stage, ADR-012).
+  the Dashboard stage, `ADR-012`, now Accepted).
 - **Owner:** Backend Architect (per `TEAM.md` RACI, Dashboard row).
 - **Pipeline stages allowed: none directly.** Grafana reads only from
-  Prometheus; it has no interaction with the trading pipeline itself.
+  Prometheus; it has no interaction with the trading pipeline itself —
+  the same structural read-only model `ADR-012` §4 generalizes from this
+  entry.
 - **Update frequency:** refresh-interval driven, human-facing.
 - **Failure behavior:** zero effect on trading; pure visualization
   convenience.
@@ -358,7 +404,15 @@ fetch, cache, or validate raw feeds itself."
 - **Authentication:** Grafana's own dashboard-user auth; data-source
   credentials to Prometheus should be read-only, least-privilege.
 - **Security considerations:** access control over who can view
-  account-sensitive metrics; internal-only network binding.
+  account-sensitive metrics; internal-only network binding. **This access
+  control now follows `ADR-012`'s own governance: `ADR-012`'s 2026-07-04
+  governance-strengthening pass made Security Architect a mandatory
+  reviewer for exactly this concern** (information disclosure of
+  account/position/performance data to an unauthorized viewer, a
+  design-time trust-boundary question per `TEAM.md` §4's two-tier
+  security model) — this entry's security consideration and `ADR-012`'s
+  mandatory review requirement are the same concern viewed from two
+  ADRs, not two separate requirements.
 - **Backup provider:** N/A.
 - **Replaceability:** fully replaceable by any dashboard tool.
 
