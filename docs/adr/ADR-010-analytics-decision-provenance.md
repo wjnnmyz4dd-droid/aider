@@ -1,6 +1,10 @@
 # ADR-010 — Analytics & Decision Provenance
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Software Architect (cross-cutting record of the entire pipeline —
 no single per-stage owner is appropriate, the same reasoning `TEAM.md`
