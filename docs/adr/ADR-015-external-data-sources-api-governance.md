@@ -1,6 +1,10 @@
 # ADR-015 — External Data Sources & API Governance
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Software Architect
 
