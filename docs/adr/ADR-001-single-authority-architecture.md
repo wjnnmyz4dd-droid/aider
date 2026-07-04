@@ -325,6 +325,20 @@ ADR-016 AI News Intelligence Layer (added 2026-07-04 — not part of the
 original per-stage list; an advisory-only system running beside the
 pipeline, not inside it, with zero authority over any trade)
 
+ADR-017 Portfolio Manager (recommended by
+`ARCHITECTURE-GAP-AUDIT-2026-07-04.md`, not yet drafted — cross-symbol
+exposure/correlation/risk-budgeting, distinct from Position Manager
+(ADR-009)'s single-position lifecycle scope)
+
+ADR-018 Replay & Certification Engine (recommended by
+`ARCHITECTURE-GAP-AUDIT-2026-07-04.md`, not yet drafted — cross-cutting
+historical replay/certification tooling)
+
+ADR-019 Self-Evolving Market Structure Research Agent (added 2026-07-04
+— a research-lab-only hypothesis generator with zero live pipeline
+access, governed by the same AI Research Governance boundary as ADR-015
+§7 and ADR-016)
+
 ---
 
 # Resolution (2026-07-04)

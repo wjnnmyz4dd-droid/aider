@@ -437,3 +437,18 @@ a stage's own ADR is Accepted) already governs this correctly:**
 
 No new ADRs were created by this audit. No implementation code was
 written. No source files were modified.
+
+---
+
+# Addendum (2026-07-04, same day)
+
+`docs/adr/ADR-019-self-evolving-market-structure-research-agent.md` was
+subsequently drafted (Proposed). It was requested as "ADR-017"; to avoid
+colliding with this audit's own ADR-017 (Portfolio Manager) and ADR-018
+(Replay & Certification Engine) recommendations above, it was renumbered
+to ADR-019 per explicit decision before drafting. It is a research-lab
+hypothesis generator, governed by the same AI Research Governance
+boundary as `ADR-015` §7 / `ADR-016` (§2.7 above) — a distinct capability
+from, and not a replacement for, the still-unaddressed ADR-017/ADR-018
+recommendations. `ADR-001`'s Future ADRs list has been updated to
+reference all three (017, 018, 019).
