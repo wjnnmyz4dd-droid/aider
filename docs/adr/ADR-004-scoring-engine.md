@@ -1,6 +1,10 @@
 # ADR-004 — Scoring Engine
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Software Architect (per the reference material's precedent —
 `.claude/agents/TEAM.md`'s "Scorer" row is Software-Architect-accountable

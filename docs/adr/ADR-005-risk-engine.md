@@ -1,6 +1,10 @@
 # ADR-005 — Risk Engine
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Backend Architect (per `.claude/agents/TEAM.md` RACI, Risk Engine
 row — Accountable)

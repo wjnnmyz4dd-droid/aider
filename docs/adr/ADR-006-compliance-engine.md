@@ -1,6 +1,10 @@
 # ADR-006 — Compliance Engine
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Security Architect (per `.claude/agents/TEAM.md` RACI, Compliance
 row — Accountable; this is the system's final, non-bypassable authority
