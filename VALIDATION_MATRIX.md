@@ -155,7 +155,12 @@ traceability; **Amendment 1:** `PositionAdjustmentRequest`/
 `PositionCloseRequest` accepted only from Position Manager, transported
 without being decided upon.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 91 MT5 Bridge tests added
+(`tests/phantom_pipeline/mt5_bridge/`), covering every required test
+above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 722/722 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
