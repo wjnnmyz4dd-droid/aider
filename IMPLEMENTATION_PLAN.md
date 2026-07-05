@@ -61,7 +61,7 @@ listed exit criteria:
 | 6 | Compliance Engine | `ADR-006` | Risk Engine's `RiskDecision`; Data Pipeline's `MarketSnapshot` (live calendar/spread/market_status) | Security Architect | **COMPLETE (Phase 1)** |
 | 7 | Execution Validator | `ADR-007` | Compliance Engine's `ComplianceDecision`; Data Pipeline's `MarketSnapshot` | Backend Architect | **COMPLETE (Phase 1)** |
 | 8 | MT5 Bridge | `ADR-008` (+ Amendment 1) | Execution Validator's `ExecutionDecision`; **must be built to its full Amendment-1 scope, since Position Manager (stage 9) depends on the amended `PositionAdjustmentRequest`/`PositionCloseRequest` input contract** | Backend Architect | **COMPLETE (Phase 1)** |
-| 9 | Position Manager | `ADR-009` | MT5 Bridge's `ExecutionReceipt`/`FillReport`; routes `PositionCloseRequest`/`PositionAdjustmentRequest` back through MT5 Bridge (`ADR-008` Amendment 1) | Backend Architect | **NOT STARTED** |
+| 9 | Position Manager | `ADR-009` | MT5 Bridge's `ExecutionReceipt`/`FillReport`; routes `PositionCloseRequest`/`PositionAdjustmentRequest` back through MT5 Bridge (`ADR-008` Amendment 1) | Backend Architect | **COMPLETE (Phase 1)** |
 | 10 | Analytics | `ADR-010` | Collects outputs from every stage above (`ADR-002`–`ADR-009`) | Software Architect | **NOT STARTED** |
 | 11 | Watchdog | `ADR-011` | Health/metrics signals already exported by every stage above (`ADR-002`–`ADR-010`) | SRE | **NOT STARTED** |
 | 12 | Dashboard | `ADR-012` | Prometheus (via Watchdog/every stage's metrics) and Analytics' read-only query surface only | Backend Architect | **NOT STARTED** |

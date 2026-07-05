@@ -176,7 +176,12 @@ recovery defined; no upstream authority duplicated; no execution
 authority duplicated (all broker communication routes through MT5
 Bridge); no risk authority duplicated.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 97 Position Manager tests added
+(`tests/phantom_pipeline/position_manager/`), covering every required
+test above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 819/819 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
