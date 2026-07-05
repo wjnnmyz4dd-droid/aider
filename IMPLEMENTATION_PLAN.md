@@ -54,10 +54,10 @@ listed exit criteria:
 | Order | Stage | ADR | Depends on | Owner | Status |
 |---|---|---|---|---|---|
 | 1 | Data Pipeline | `ADR-013` | `ADR-001`, `ADR-015` (vendor governance) | Backend Architect | **NOT STARTED** |
-| 2 | Scanner | `ADR-002` | Data Pipeline's `NormalizedBar`/`HistoricalSeries` output contract | Software Architect | **NOT STARTED** |
-| 3 | Strategy Engine | `ADR-003` | Scanner's `ScannerObservation` | Multi-Agent Systems Architect | **NOT STARTED** |
-| 4 | Scoring Engine | `ADR-004` | Strategy Engine's `CandidateTrade` | Software Architect | **NOT STARTED** |
-| 5 | Risk Engine | `ADR-005` | Scoring Engine's `ScoreResult` | Backend Architect | **NOT STARTED** |
+| 2 | Scanner | `ADR-002` | Data Pipeline's `NormalizedBar`/`HistoricalSeries` output contract | Software Architect | **COMPLETE (Phase 1)** |
+| 3 | Strategy Engine | `ADR-003` | Scanner's `ScannerObservation` | Multi-Agent Systems Architect | **COMPLETE (Phase 1)** |
+| 4 | Scoring Engine | `ADR-004` | Strategy Engine's `CandidateTrade` | Software Architect | **COMPLETE (Phase 1)** |
+| 5 | Risk Engine | `ADR-005` | Scoring Engine's `ScoreResult` | Backend Architect | **COMPLETE (Phase 1)** |
 | 6 | Compliance Engine | `ADR-006` | Risk Engine's `RiskDecision`; Data Pipeline's `MarketSnapshot` (live calendar/spread/market_status) | Security Architect | **COMPLETE (Phase 1)** |
 | 7 | Execution Validator | `ADR-007` | Compliance Engine's `ComplianceDecision`; Data Pipeline's `MarketSnapshot` | Backend Architect | **COMPLETE (Phase 1)** |
 | 8 | MT5 Bridge | `ADR-008` (+ Amendment 1) | Execution Validator's `ExecutionDecision`; **must be built to its full Amendment-1 scope, since Position Manager (stage 9) depends on the amended `PositionAdjustmentRequest`/`PositionCloseRequest` input contract** | Backend Architect | **COMPLETE (Phase 1)** |

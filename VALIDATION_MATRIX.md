@@ -43,7 +43,12 @@ playbook-specific logic; metrics export-only; no network egress/
 credential access; exactly one authoritative source of market structure
 (Amendment 1); qualitative structure confidence only (Amendment 1).
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 109 Scanner tests added
+(`tests/phantom_pipeline/scanner/`), covering every required test above.
+Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 885/885 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
@@ -58,7 +63,12 @@ Strategy Registry has no hard-coded playbook list; `CandidateTrade` is
 structurally incapable of a score/decision/size field; conflict
 handling never picks a winner (relocated to Scoring Engine).
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 73 Strategy Engine tests added
+(`tests/phantom_pipeline/strategy_engine/`), covering every required
+test above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 885/885 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
@@ -72,7 +82,12 @@ scores, boundary/type-level test (no compliance/risk/execution field).
 candidate; ranking is read-only and never discards; no compliance, risk,
 or execution logic anywhere in this stage.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 84 Scoring Engine tests added
+(`tests/phantom_pipeline/scoring_engine/`), covering every required test
+above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 885/885 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
@@ -90,7 +105,12 @@ capital-preservation-first fail-closed behavior; never overrides
 Compliance; immutable upstream inputs; complete traceability; no AI/
 learning/self-adjusting risk without versioned configuration.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 77 Risk Engine tests added
+(`tests/phantom_pipeline/risk_engine/`), covering every required test
+above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 885/885 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
