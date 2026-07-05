@@ -58,7 +58,7 @@ listed exit criteria:
 | 3 | Strategy Engine | `ADR-003` | Scanner's `ScannerObservation` | Multi-Agent Systems Architect | **NOT STARTED** |
 | 4 | Scoring Engine | `ADR-004` | Strategy Engine's `CandidateTrade` | Software Architect | **NOT STARTED** |
 | 5 | Risk Engine | `ADR-005` | Scoring Engine's `ScoreResult` | Backend Architect | **NOT STARTED** |
-| 6 | Compliance Engine | `ADR-006` | Risk Engine's `RiskDecision`; Data Pipeline's `MarketSnapshot` (live calendar/spread/market_status) | Security Architect | **NOT STARTED** |
+| 6 | Compliance Engine | `ADR-006` | Risk Engine's `RiskDecision`; Data Pipeline's `MarketSnapshot` (live calendar/spread/market_status) | Security Architect | **COMPLETE (Phase 1)** |
 | 7 | Execution Validator | `ADR-007` | Compliance Engine's `ComplianceDecision`; Data Pipeline's `MarketSnapshot` | Backend Architect | **NOT STARTED** |
 | 8 | MT5 Bridge | `ADR-008` (+ Amendment 1) | Execution Validator's `ExecutionDecision`; **must be built to its full Amendment-1 scope, since Position Manager (stage 9) depends on the amended `PositionAdjustmentRequest`/`PositionCloseRequest` input contract** | Backend Architect | **NOT STARTED** |
 | 9 | Position Manager | `ADR-009` | MT5 Bridge's `ExecutionReceipt`/`FillReport`; routes `PositionCloseRequest`/`PositionAdjustmentRequest` back through MT5 Bridge (`ADR-008` Amendment 1) | Backend Architect | **NOT STARTED** |

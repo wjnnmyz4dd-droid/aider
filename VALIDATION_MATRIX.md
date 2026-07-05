@@ -107,7 +107,12 @@ level test.
 across restarts and is human-clearable only; no duplicate news/exposure
 computation with Risk Engine.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 94 Compliance Engine tests added
+(`tests/phantom_pipeline/compliance_engine/`), covering every required
+test above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 518/518 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
