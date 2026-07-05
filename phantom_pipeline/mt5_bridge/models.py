@@ -10,13 +10,19 @@ module holds no logic capable of computing a new score, size, SL/TP, or
 verdict (ADR-008 Hard Rules, §3).
 
 `PositionAdjustmentRequest`/`PositionCloseRequest` are ADR-009 §5's
-output types, defined here only because Position Manager (ADR-009) has
-not been implemented as code yet and Amendment 1 requires MT5 Bridge to
-accept this input contract now. Ownership of *deciding* to produce one
-remains Position Manager's, once built — MT5 Bridge only ever consumes
-these types, never constructs one on its own account (ADR-008 Hard
-Rules: "Accept `PositionAdjustmentRequest` and `PositionCloseRequest`
-only from Position Manager").
+output types. They were defined provisionally in this module during
+ADR-008 Phase 1 (Position Manager did not yet exist as code, and
+Amendment 1 required MT5 Bridge to accept this input contract
+immediately). Now that ADR-009 is implemented, per its own explicit
+instruction and `INTERFACE_SPECIFICATION.md`'s ownership table
+(attributing both types to `ADR-009` §5), the canonical definitions live
+in `position_manager.models`; this module re-exports the same class
+objects unchanged below — the import path
+`phantom_pipeline.mt5_bridge.models.PositionAdjustmentRequest` still
+resolves, so no ADR-008 call site or test needed to change. MT5 Bridge
+only ever consumes these types, never constructs one on its own account
+(ADR-008 Hard Rules: "Accept `PositionAdjustmentRequest` and
+`PositionCloseRequest` only from Position Manager").
 
 No field anywhere in this module is capable of representing a modified
 upstream decision or a new/re-derived trading instruction (ADR-008 §5's
@@ -30,6 +36,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, Tuple
 
+from ..position_manager.models import PositionAdjustmentRequest, PositionCloseRequest
 from ..scanner.models import Direction
 
 SCHEMA_VERSION = 1
@@ -183,33 +190,17 @@ class SynchronizationStatus:
         object.__setattr__(self, "discrepancies", tuple(self.discrepancies))
 
 
-@dataclass(frozen=True)
-class PositionAdjustmentRequest:
-    """ADR-009 §5's SL/TP-modification request shape (break-even,
-    trailing) — accepted only from Position Manager, defined here
-    provisionally since ADR-009 is not yet implemented as code (see
-    module docstring)."""
-
-    schema_version: int
-    execution_id: str
-    trace_id: str
-    position_id: str
-    new_stop_loss: Optional[float]
-    new_take_profit: Optional[float]
-    timestamp: datetime
-
-
-@dataclass(frozen=True)
-class PositionCloseRequest:
-    """ADR-009 §5's close request shape (full or partial) — accepted
-    only from Position Manager, defined here provisionally since ADR-009
-    is not yet implemented as code (see module docstring).
-    `close_fraction` of `1.0` is a full close; any value in `(0.0, 1.0)`
-    is a partial close."""
-
-    schema_version: int
-    execution_id: str
-    trace_id: str
-    position_id: str
-    close_fraction: float
-    timestamp: datetime
+__all__ = [
+    "SCHEMA_VERSION",
+    "ConnectionState",
+    "RequestKind",
+    "BrokerRequest",
+    "BrokerAcknowledgement",
+    "ExecutionReceipt",
+    "BrokerError",
+    "FillReport",
+    "ConnectionStatus",
+    "SynchronizationStatus",
+    "PositionAdjustmentRequest",
+    "PositionCloseRequest",
+]
