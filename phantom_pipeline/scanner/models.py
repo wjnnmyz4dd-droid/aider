@@ -4,8 +4,8 @@ Every object here is an immutable (frozen) dataclass, carries
 `schema_version`, and — for `ScannerObservation` itself — a deterministic
 `trace_id`. No field anywhere in this module is capable of representing a
 score, decision, size, or approval (ADR-002 §3, §6, §8's type-level
-guarantee) — see tests/phantom_pipeline/scanner/test_boundary.py for the
-enforcement test.
+guarantee) — see tests/phantom_pipeline/scanner/test_scanner.py's
+`TestBoundaryTypeLevel` for the enforcement test.
 """
 
 from __future__ import annotations

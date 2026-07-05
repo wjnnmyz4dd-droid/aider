@@ -67,21 +67,31 @@ def _is_strict_min(value: float, window: Sequence[NormalizedBar], i: int, lo: in
     return all(value < o for o in others)
 
 
+def _opposite_kind(kind: SwingKind) -> SwingKind:
+    return SwingKind.LOW if kind == SwingKind.HIGH else SwingKind.HIGH
+
+
 def _classify_major_minor(
     points: Sequence[SwingPoint],
     atr_value: Optional[float],
     major_swing_atr_multiple: float,
 ) -> Tuple[SwingPoint, ...]:
-    if atr_value is None or atr_value <= 0 or len(points) < 2:
+    if atr_value is None or atr_value <= 0:
         return tuple(points)
 
-    classified = [points[0]]
-    prev = points[0]
-    for point in points[1:]:
-        swing_range = abs(point.price - prev.price)
-        is_major = swing_range >= (major_swing_atr_multiple * atr_value)
+    classified = []
+    last_by_kind = {}
+    for point in points:
+        prev = last_by_kind.get(_opposite_kind(point.kind))
+        if prev is None:
+            # No preceding opposite-kind swing yet — there is no price leg
+            # to measure, so this swing cannot yet be classified major.
+            is_major = False
+        else:
+            swing_range = abs(point.price - prev.price)
+            is_major = swing_range >= (major_swing_atr_multiple * atr_value)
         classified.append(
             SwingPoint(point.index, point.timestamp, point.price, point.kind, is_major)
         )
-        prev = point
+        last_by_kind[point.kind] = point
     return tuple(classified)

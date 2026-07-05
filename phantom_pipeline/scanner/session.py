@@ -5,11 +5,19 @@ Session windows are expressed in UTC-of-day terms (see `config.py`'s
 daylight-saving transitions in a venue's local time; a naive (non-timezone
 -aware) `session_time` is a `quality.py` failure mode (§9's "clock/session
 ambiguity"), not something this module silently guesses through.
+
+`session_time` is normalized to UTC before its hour/minute are read, so
+any valid timezone-aware datetime representing a given instant — not only
+one already expressed in UTC — resolves to the same `SessionState` (ADR-002
+§4 requires only "timezone-aware," not specifically UTC; §2's Purity
+Principle requires the same instant to always classify identically
+regardless of which equivalent tz representation the caller happens to
+supply).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from .config import ScannerConfig, SessionWindow
@@ -45,7 +53,8 @@ def compute_session(session_time: datetime, config: ScannerConfig) -> SessionSta
     if session_time.tzinfo is None:
         return SessionState(active_sessions=(), window_position=None)
 
-    now_minutes = _window_minutes(session_time.hour, session_time.minute)
+    utc_time = session_time.astimezone(timezone.utc)
+    now_minutes = _window_minutes(utc_time.hour, utc_time.minute)
     active: Sequence[SessionWindow] = [
         w for w in config.session_windows if _is_active(now_minutes, w)
     ]
