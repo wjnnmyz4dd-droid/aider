@@ -238,10 +238,17 @@ recovery action is deterministic (as policy); no trading authority
 exists; recovery sequencing documented (bounded attempts, backoff,
 freeze-and-escalate); `SystemHealth` fully defined.
 
-**Status: NOT STARTED.** *(Known limitation carried from acceptance:
-heartbeat coverage is strongest for MT5 Bridge; other components rely on
-operational liveness proxies — not a blocker, tracked for future
-per-stage heartbeat amendments.)*
+**Status: COMPLETE (Phase 1).** 83 Watchdog tests added
+(`tests/phantom_pipeline/watchdog/`), covering every required test
+above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 968/968 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
+
+*(Known limitation carried from acceptance: heartbeat coverage is
+strongest for MT5 Bridge; other components rely on operational liveness
+proxies — not a blocker, tracked for future per-stage heartbeat
+amendments.)*
 
 ---
 

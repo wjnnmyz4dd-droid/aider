@@ -63,7 +63,7 @@ listed exit criteria:
 | 8 | MT5 Bridge | `ADR-008` (+ Amendment 1) | Execution Validator's `ExecutionDecision`; **must be built to its full Amendment-1 scope, since Position Manager (stage 9) depends on the amended `PositionAdjustmentRequest`/`PositionCloseRequest` input contract** | Backend Architect | **COMPLETE (Phase 1)** |
 | 9 | Position Manager | `ADR-009` | MT5 Bridge's `ExecutionReceipt`/`FillReport`; routes `PositionCloseRequest`/`PositionAdjustmentRequest` back through MT5 Bridge (`ADR-008` Amendment 1) | Backend Architect | **COMPLETE (Phase 1)** |
 | 10 | Analytics | `ADR-010` | Collects outputs from every stage above (`ADR-002`–`ADR-009`) | Software Architect | **COMPLETE (Phase 1)** |
-| 11 | Watchdog | `ADR-011` | Health/metrics signals already exported by every stage above (`ADR-002`–`ADR-010`) | SRE | **NOT STARTED** |
+| 11 | Watchdog | `ADR-011` | Health/metrics signals already exported by every stage above (`ADR-002`–`ADR-010`) | SRE | **COMPLETE (Phase 1)** |
 | 12 | Dashboard | `ADR-012` | Prometheus (via Watchdog/every stage's metrics) and Analytics' read-only query surface only | Backend Architect | **NOT STARTED** |
 | 13 | Portfolio Manager | `ADR-017` | Position Manager's/Analytics' current-state view (`ADR-009` §5, `ADR-010` §5); reuses Risk Engine's correlation methodology (`ADR-005` §11) | Security Architect | **NOT STARTED** |
 | 14 | Replay & Certification Engine | `ADR-018` | Data Pipeline's `ReplaySeries` (`ADR-013` §10); Analytics' replay decision inputs (`ADR-010` §8); Data Pipeline's `MarketSnapshot` for shadow trading (`ADR-013` Amendment 1) | Test Results Analyzer | **NOT STARTED** |
