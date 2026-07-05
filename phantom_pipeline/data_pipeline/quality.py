@@ -29,6 +29,13 @@ def compute_quality_report(
     duplicate_count: int,
     out_of_order_count: int,
 ) -> DataQualityReport:
+    """`duplicate_count`/`out_of_order_count` are the ingestor's
+    cumulative, whole-lifetime counters (see `TickIngestor`), not counts
+    scoped to `[window_start, window_end]` — there is currently no
+    per-window duplicate/out-of-order tracking. Callers comparing reports
+    across different windows should read these two fields as
+    "cumulative as of `now`," not "observed in this window."
+    """
     interval = config.interval_seconds_for(timeframe)
     expected_bars = max(
         1, int((window_end - window_start).total_seconds() // interval)

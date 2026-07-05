@@ -27,9 +27,11 @@ from .models import (
     NormalizedBar,
     PipelineHealth,
     SCHEMA_VERSION,
+    tick_price,
 )
 from .quality import compute_quality_report
 from .health import compute_pipeline_health
+from .logging_sink import log_ingestion_event
 from .replay import ReplayRecorder
 from .trace import make_trace_id
 
@@ -55,7 +57,7 @@ class DataPipeline:
     def _recorder_for(self, symbol: str) -> ReplayRecorder:
         recorder = self._recorders.get(symbol)
         if recorder is None:
-            recorder = ReplayRecorder(symbol)
+            recorder = ReplayRecorder(symbol, self.config)
             self._recorders[symbol] = recorder
         return recorder
 
@@ -81,10 +83,9 @@ class DataPipeline:
         tick = result.tick
         self.ticks_processed += 1
         self._recorder_for(tick.symbol).record_tick(tick)
+        log_ingestion_event(tick, level=self.config.log_level)
 
-        price = tick.last if tick.last is not None else (
-            (tick.bid + tick.ask) / 2.0 if tick.bid is not None and tick.ask is not None else None
-        )
+        price = tick_price(tick)
         spread = (
             (tick.ask - tick.bid)
             if tick.bid is not None and tick.ask is not None
@@ -110,6 +111,7 @@ class DataPipeline:
             self._cache.add_bar(finalized)
             self._recorder_for(finalized.symbol).record_bar(finalized)
             self.bars_produced += 1
+            log_ingestion_event(finalized, level=self.config.log_level)
             produced.append(finalized)
         return produced
 
@@ -121,6 +123,7 @@ class DataPipeline:
             self._cache.add_bar(bar)
             self._recorder_for(bar.symbol).record_bar(bar)
             self.bars_produced += 1
+            log_ingestion_event(bar, level=self.config.log_level)
         return bar
 
     def get_snapshot(self, symbol: str) -> Optional[MarketSnapshot]:

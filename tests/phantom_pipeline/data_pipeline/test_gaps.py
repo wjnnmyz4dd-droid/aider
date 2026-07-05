@@ -64,6 +64,11 @@ class TestGapDetection(unittest.TestCase):
     def test_empty_series_has_no_gap(self):
         self.assertEqual(detect_gaps([], self.config), [])
 
+    def test_unsorted_input_raises_rather_than_returning_wrong_results(self):
+        bars = [_bar(2), _bar(0)]  # descending — not ascending
+        with self.assertRaises(ValueError):
+            detect_gaps(bars, self.config)
+
     def test_never_fabricates_a_replacement_bar(self):
         bars = [_bar(0), _bar(2)]
         gaps = detect_gaps(bars, self.config)

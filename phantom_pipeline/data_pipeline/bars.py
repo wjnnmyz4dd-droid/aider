@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence
 
 from .config import PipelineConfig
-from .models import DataQuality, NormalizedBar, NormalizedTick, SCHEMA_VERSION
+from .models import DataQuality, NormalizedBar, NormalizedTick, SCHEMA_VERSION, tick_price
 from .trace import make_trace_id
 
 
@@ -44,17 +44,10 @@ class BarBuilder:
         self._interval = config.interval_seconds_for(timeframe)
         self._in_progress: Dict[str, _InProgressBar] = {}
 
-    def _tick_price(self, tick: NormalizedTick) -> Optional[float]:
-        if tick.last is not None:
-            return tick.last
-        if tick.bid is not None and tick.ask is not None:
-            return (tick.bid + tick.ask) / 2.0
-        return None
-
     def add_tick(self, tick: NormalizedTick) -> Optional[NormalizedBar]:
         """Feed one tick in; returns a finalized bar if this tick started a
         new bucket, else None."""
-        price = self._tick_price(tick)
+        price = tick_price(tick)
         if price is None:
             return None
 

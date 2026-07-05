@@ -5,12 +5,20 @@ tick history and the last-accepted timestamp) — never unbounded growth,
 the same TTL/size-bounded discipline every stateful exception in this
 architecture already follows (ADR-002 §2's session clock, ADR-007/008's
 idempotency records).
+
+Single-threaded execution assumption: `TickIngestor` (and every other
+stateful class in this package — `BarBuilder`, `HistoricalCache`,
+`ReplayRecorder`, `DataPipeline`) holds no locks and is not safe for
+concurrent calls from multiple threads. This is a documented constraint
+of the current implementation, not an architectural requirement — a
+future concurrent caller (e.g. an async ingestion loop) must add its own
+synchronization or serialize calls into a single-threaded worker.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Deque, Dict, Optional, Tuple
 
@@ -22,8 +30,12 @@ from .trace import make_trace_id
 
 @dataclass
 class _SymbolIngestState:
+    # recent_keys has no default: it is always constructed explicitly by
+    # _state_for() with the real, config-driven maxlen. A default here
+    # would be dead code at best and misleading at worst (a reader could
+    # mistake a placeholder maxlen for the real bound).
+    recent_keys: Deque[Tuple]
     last_timestamp: Optional[datetime] = None
-    recent_keys: Deque[Tuple] = field(default_factory=lambda: deque(maxlen=1))
 
 
 class IngestResult:

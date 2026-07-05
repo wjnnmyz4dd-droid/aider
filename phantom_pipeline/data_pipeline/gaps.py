@@ -34,6 +34,10 @@ def detect_gaps(
     bar sequence for one symbol/timeframe.
 
     Never fabricates a replacement bar — a gap is reported, not filled.
+
+    Raises ValueError if `bars` is not sorted ascending by timestamp —
+    every gap computed from unsorted input would be meaningless, so this
+    fails closed rather than silently returning wrong results.
     """
     if len(bars) < 2:
         return []
@@ -43,6 +47,11 @@ def detect_gaps(
 
     gaps: List[GapEvent] = []
     for previous, current in zip(bars, bars[1:]):
+        if current.timestamp < previous.timestamp:
+            raise ValueError(
+                "detect_gaps requires bars sorted ascending by timestamp: "
+                f"{current.timestamp!r} follows {previous.timestamp!r}"
+            )
         delta = current.timestamp - previous.timestamp
         if delta > interval:
             missing = int(delta / interval) - 1

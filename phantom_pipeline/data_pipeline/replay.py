@@ -9,23 +9,39 @@ the same normalization/validation logic live data does (ADR-013 §10).
 Replay never modifies live data: a `ReplaySeries` is an immutable
 snapshot: consuming it never mutates the recorder or any other stage's
 state.
+
+Capture is bounded: `ReplayRecorder` holds at most
+`config.replay_max_ticks_per_symbol` ticks and
+`config.replay_max_bars_per_symbol` bars per symbol, evicting the
+oldest entry first (deterministic FIFO via a fixed-size deque) once
+that bound is reached — the same bounded/TTL-pruned discipline every
+other stateful component in this package already follows (`ADR-002`
+§2's session clock; `HistoricalCache` in historical.py).
 """
 
 from __future__ import annotations
 
-from typing import List
+from collections import deque
+from typing import Deque, List
 
+from .config import PipelineConfig
 from .models import NormalizedBar, NormalizedTick, ReplaySeries, SCHEMA_VERSION
 from .trace import make_trace_id
 
 
 class ReplayRecorder:
-    """Captures ticks and finalized bars for one symbol as they are produced."""
+    """Captures ticks and finalized bars for one symbol as they are produced,
+    bounded by `config.replay_max_ticks_per_symbol` /
+    `replay_max_bars_per_symbol`."""
 
-    def __init__(self, symbol: str):
+    def __init__(self, symbol: str, config: PipelineConfig):
         self.symbol = symbol
-        self._ticks: List[NormalizedTick] = []
-        self._bars: List[NormalizedBar] = []
+        self._ticks: Deque[NormalizedTick] = deque(
+            maxlen=config.replay_max_ticks_per_symbol
+        )
+        self._bars: Deque[NormalizedBar] = deque(
+            maxlen=config.replay_max_bars_per_symbol
+        )
 
     def record_tick(self, tick: NormalizedTick) -> None:
         if tick.symbol != self.symbol:

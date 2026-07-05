@@ -43,6 +43,24 @@ class NormalizedTick:
     source: str
 
 
+def tick_price(tick: NormalizedTick) -> Optional[float]:
+    """The single, shared definition of "the price" of a tick: `last` if
+    present, otherwise the bid/ask midpoint, otherwise unavailable.
+
+    This is the one and only place this decision is made. Every consumer
+    (bar construction, market-snapshot generation) calls this function
+    rather than re-implementing it — the same "compute once, share the
+    result" discipline `ADR-002` §13 established, applied here to avoid
+    repeating the `swing_points()`-style duplication this architecture
+    explicitly rejects (`ADR-013` §8, `ADR-017` §8).
+    """
+    if tick.last is not None:
+        return tick.last
+    if tick.bid is not None and tick.ask is not None:
+        return (tick.bid + tick.ask) / 2.0
+    return None
+
+
 @dataclass(frozen=True)
 class NormalizedBar:
     """A single OHLCV bar (ADR-013 §5).
