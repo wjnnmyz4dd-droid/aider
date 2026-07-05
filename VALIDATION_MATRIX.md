@@ -196,7 +196,12 @@ decision traceable; replay deterministic (contingent on completeness/
 immutability); research supported one-way, read-only; no live decision
 authority.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 66 Analytics tests added
+(`tests/phantom_pipeline/analytics/`), covering every required test
+above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 885/885 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
