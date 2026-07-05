@@ -130,7 +130,12 @@ deterministic and logged with reason/timestamp/`trace_id`/validation
 stage; no hidden execution path/emergency override, enforced at the
 permission level; idempotency state bounded and TTL-pruned.
 
-**Status: NOT STARTED.**
+**Status: COMPLETE (Phase 1).** 113 Execution Validator tests added
+(`tests/phantom_pipeline/execution_validator/`), covering every required
+test above. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 631/631 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
 
 ---
 
