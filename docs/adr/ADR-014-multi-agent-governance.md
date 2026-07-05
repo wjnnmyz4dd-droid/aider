@@ -457,3 +457,71 @@ ADR-014 is acceptable only if it guarantees:
 
 Per `ADR-001` and `CLAUDE.md` §1.10, **no implementation begins until this
 ADR's Status changes from Proposed to Accepted.**
+
+---
+
+# Amendment 1 — Research → Plan → Implement (RPI) gated workflow
+
+Amended: 2026-07-05
+
+**Trigger:** a Council review of an external Claude Code development-
+practices reference (`shanraisshan/claude-code-best-practice`) found one
+genuinely reusable idea — a named, artifact-producing Research → Plan →
+Implement gate — worth adopting. The source repository's own agent
+roster (`product-manager`, `ux-designer`, `requirement-parser`, etc.) was
+evaluated and rejected: it is built for general product features, not a
+trading system, and every one of its roles either has no Phantom
+equivalent worth adding or duplicates a `TEAM.md` role that already
+exists. Per `TEAM.md` §6's binding "do not add an 11th agent without
+demonstrating a clear, measurable benefit" precedent (restated as this
+ADR's own binding standard for Governance Agents, §9), **no new agent is
+added.** This Amendment adopts only the phase-gate *pattern*, mapped
+entirely onto the ten Governance Agents already classified in §3.
+
+**This Amendment grants no new authority, permission, or agent.** It is
+purely a formalization of process already required by `CLAUDE.md` §4 and
+already practiced by `TEAM.md` §2's existing per-activity workflows — it
+makes the "Plan" step of those workflows produce a durable, on-disk
+artifact instead of an implicit, undocumented one, and it names a fixed
+location for that artifact. Nothing in §3 (Agent classes), §5
+(Permissions), or §6 (Forbidden actions) changes.
+
+**The three phases, each performed by an existing Governance Agent
+already assigned that lane:**
+
+- **Research** — the RACI Accountable/Consulted architect(s) for the
+  touched component (`TEAM.md` §5's existing rows), same as `CLAUDE.md`
+  §4's existing "Before" steps 1–4 (read affected files/dependencies,
+  check against `ADR-001`'s pipeline, confirm the stage's ADR is
+  Accepted, identify duplicate logic/regressions) — now written down as
+  a short Research note rather than performed silently.
+- **Plan** — Software Architect (cross-module/new-engine changes) or
+  Backend Architect (contained changes), exactly `TEAM.md` §2's existing
+  "Feature development" step 1/§3's existing "new engine, or any change
+  crossing package boundaries" trigger — now required to leave a written
+  Plan artifact (approach, architectural-compliance confirmation, a
+  circular-dependency check, files to be touched) before Minimal Change
+  Engineer begins, rather than only being stated in conversation.
+- **Implement** — Minimal Change Engineer, unchanged (`TEAM.md` §7 — the
+  sole implementer on every row already).
+
+Followed, unchanged, by the existing validation gate: Code Reviewer +
+Test Results Analyzer + any mandatory reviewer `TEAM.md` §3's routing
+table already names for the touched path.
+
+**Mandatory only when `TEAM.md` §3 already requires Software Architect**
+(new engine, or a change crossing package boundaries) **— optional for
+everything else** (a contained bug fix, refactor, or performance change
+already covered by `TEAM.md` §2's lighter-weight workflows). This
+distinction is deliberate: making every change, however small, produce
+a Research/Plan artifact would contradict the Minimal Change Engineer
+philosophy (`TEAM.md` §7, `CLAUDE.md` §6) this Amendment is not
+permitted to weaken.
+
+**Practical detail — artifact location, the circular-dependency check
+recipe, and the changelog convention — lives in `TEAM.md` §9**, per this
+ADR's own established division of labor (`TEAM.md` is the operational
+document; this ADR is its architectural backing, §15).
+
+This Amendment does not reopen ADR-014's Accepted status and changes no
+prior section's text.

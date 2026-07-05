@@ -415,3 +415,92 @@ logic. Re-evaluated against the now-drafted ADRs:
    unverified rather than claimed resolved.
 4. Everything marked "low priority" above — revisit opportunistically, no
    assigned stage.
+
+---
+
+## 9. Research → Plan → Implement (RPI) — gated workflow (`ADR-014` Amendment 1)
+
+Added 2026-07-05. Formalizes `CLAUDE.md` §4's existing Before/During/After
+steps and §2's existing per-activity workflows into three named phases
+with a durable, on-disk artifact — **using the existing 10 agents only.
+No 11th agent is added** (§6's binding precedent, restated as `ADR-014`
+§9's own binding standard). Grants no new authority or permission.
+
+**When it applies.** Mandatory exactly where §3's routing table already
+requires Software Architect (new engine, or any change crossing package
+boundaries) — optional for everything else (a contained bug fix,
+refactor, or performance change already covered by §2's lighter-weight
+workflows). A one-line fix to `phantom_pipeline/scanner/config.py` does
+not need a Plan artifact; a new pipeline stage does. Over-applying this
+gate to trivial changes would contradict §7's Minimal Change Engineer
+philosophy, which this section may not weaken.
+
+**Artifact location.** `docs/plans/<slug>.md`, one file per gated change,
+using `docs/plans/TEMPLATE.md`'s three sections (Research, Plan,
+Validation). The file accumulates across the change's lifecycle — the
+same "one document, updated as work proceeds" pattern
+`IMPLEMENTATION_PLAN.md`/`VALIDATION_MATRIX.md` already use — it is not
+three separate files per change.
+
+**Phase 1 — Research** (the RACI Accountable/Consulted architect(s) for
+the touched component, §5, + Minimal Change Engineer):
+- Read the affected files and their dependencies (`CLAUDE.md` §4.1).
+- Confirm the touched stage's ADR is Accepted, not merely Proposed
+  (`CLAUDE.md` §1.10, §4.3).
+- Identify duplicate logic and potential regressions (`CLAUDE.md` §4.4).
+- Run the circular-dependency/private-state check below and record the
+  result.
+- Write these findings into `docs/plans/<slug>.md`'s Research section.
+
+**Circular-dependency / private-state check** (run from the repo root):
+```
+python3 scripts/check_architecture.py
+```
+Verifies, across every `phantom_pipeline/` package: no import cycle, and
+every cross-package import targets only another package's `.models`,
+`.trace`, `.registry`, or its `__init__.py` public re-exports — never
+another package's `.engine`/`.state_store`/`.config`/`.checks`/
+`.metrics`/`.logging_sink`/`.idempotency_store` (the same private-state
+boundary the Phase 1 Certification Audit verified manually; this script
+makes that check repeatable rather than re-derived by hand each time).
+
+**Phase 2 — Plan** (Software Architect for cross-module/new-engine
+changes, per §2's existing "Feature development" step 1 and §3's
+existing trigger table; Backend Architect for a contained
+single-package change):
+- State the approach and its boundaries.
+- Confirm architectural compliance against `ADR-001`'s pipeline and the
+  touched stage's own ADR (`CLAUDE.md` §4.2–.3).
+- List the files to be touched.
+- Written into `docs/plans/<slug>.md`'s Plan section **before** Minimal
+  Change Engineer begins — this is the one genuinely new requirement
+  this Amendment adds: the sign-off `TEAM.md` §2 already required is now
+  a saved artifact, not only a stated intention.
+
+**Phase 3 — Implement** (Minimal Change Engineer, unchanged, §7):
+implements the smallest correct diff against the approved Plan.
+
+**Unchanged validation gate** (§3, mandatory, no exceptions): Code
+Reviewer, Test Results Analyzer (`validate.py` green, full
+`unittest discover` green, `compileall` clean), plus any mandatory
+reviewer §3's routing table names for the touched path. Record the
+validation results in `docs/plans/<slug>.md`'s Validation section —
+this is the "final validation report" `CLAUDE.md` §4.8 already requires,
+now also saved to the plan file, not only stated in the response.
+
+**Documentation and changelog** — unchanged practice (`IMPLEMENTATION_
+PLAN.md`/`VALIDATION_MATRIX.md` updates, exactly as done for every ADR-002
+through ADR-013 stage in this repository's history), plus one addition:
+update `CHANGELOG.md` at repo root with a dated entry summarizing the
+change, per its own header convention. `CHANGELOG.md` starts from
+2026-07-05 forward; git history remains the authoritative record of
+everything before it — this Amendment does not retroactively fabricate
+changelog entries for prior work.
+
+**Static analysis** — `python3 -m compileall phantom_pipeline tests`
+remains the existing static check (unchanged). Adding a linter/type
+checker (mypy, flake8, or equivalent) is explicitly out of scope here —
+it would be new tooling with its own configuration decisions, not a
+formalization of something already practiced, and belongs in its own
+explicitly-scoped follow-up per §7's "split into a separate, scoped
+follow-up rather than expanded inline" rule.
