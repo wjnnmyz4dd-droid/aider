@@ -242,6 +242,29 @@ class TestMalformedAndInsufficientDataHandling(unittest.TestCase):
         self.assertNotEqual(observation.data_quality_flag.value, "NOMINAL")
         self.assertEqual(engine.generate(observation, TIMEFRAME), ())
 
+    def test_no_playbook_evaluate_is_ever_called_on_non_nominal_data_quality(self):
+        """Call-count spy proving `evaluate()` is never invoked at all —
+        not just that its output happens to be absent — when
+        data_quality_flag is non-nominal (ADR-003 §4)."""
+        registry = StrategyRegistry(playbook_classes=[AlwaysUpPlaybook])
+        engine = StrategyEngine(registry, enabled_config("TEST_ALWAYS_UP"))
+        observation = warm_up_observation()
+
+        call_count = {"n": 0}
+        original_evaluate = AlwaysUpPlaybook.evaluate
+
+        def spy(self, obs, config):
+            call_count["n"] += 1
+            return original_evaluate(self, obs, config)
+
+        AlwaysUpPlaybook.evaluate = spy
+        try:
+            engine.generate(observation, TIMEFRAME)
+        finally:
+            AlwaysUpPlaybook.evaluate = original_evaluate
+
+        self.assertEqual(call_count["n"], 0)
+
     def test_playbook_with_missing_required_field_abstains_rather_than_crashing(self):
         registry = StrategyRegistry(playbook_classes=[RequiresTrendPlaybook])
         engine = StrategyEngine(registry, enabled_config("TEST_REQUIRES_TREND"))

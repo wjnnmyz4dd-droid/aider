@@ -8,7 +8,12 @@ unmodified (ADR-003 §9); the engine itself never picks a winner.
 
 A non-nominal `data_quality_flag` is an automatic no-hypothesis condition
 for the entire call (ADR-002 §10's contract, honored here per ADR-003
-§4) — no playbook is even invoked. Each playbook is then independently
+§4) — no playbook is even invoked. This is itself a logged, metered event
+(`log_no_hypothesis_scan`/`record_no_hypothesis_scan`), not a silent
+return: ADR-003 §12 requires "which playbooks fired, which abstained, and
+why" to be answerable purely from logs/metrics, and a call that skips
+every playbook is exactly the case that requirement covers. Each playbook
+is then independently
 gated (enabled, schema-version-compatible, symbol/timeframe-supported)
 and invoked inside a try/except: an exception is caught, logged, and
 isolated at the playbook boundary (ADR-003 §10) — it never propagates to
@@ -21,7 +26,12 @@ from typing import List, Optional, Tuple
 
 from ..scanner.models import DataQualityFlag, ScannerObservation
 from .config import DEFAULT_CONFIG, StrategyEngineConfig
-from .logging_sink import log_candidate_trade, log_playbook_abstention, log_playbook_failure
+from .logging_sink import (
+    log_candidate_trade,
+    log_no_hypothesis_scan,
+    log_playbook_abstention,
+    log_playbook_failure,
+)
 from .metrics import StrategyEngineMetrics
 from .models import CandidateTrade
 from .registry import StrategyRegistry
@@ -42,6 +52,15 @@ class StrategyEngine:
         self, observation: ScannerObservation, primary_timeframe: str
     ) -> Tuple[CandidateTrade, ...]:
         if observation.data_quality_flag != DataQualityFlag.NOMINAL:
+            log_no_hypothesis_scan(
+                observation.trace_id,
+                observation.schema_version,
+                observation.symbol,
+                primary_timeframe,
+                observation.data_quality_flag.value,
+            )
+            if self.metrics is not None:
+                self.metrics.record_no_hypothesis_scan(observation.data_quality_flag.value)
             return ()
 
         candidates: List[CandidateTrade] = []
