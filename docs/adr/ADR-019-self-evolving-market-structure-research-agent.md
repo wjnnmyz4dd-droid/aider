@@ -1,6 +1,10 @@
 # ADR-019 — Self-Evolving Market Structure Research Agent
 
-Status: Proposed
+Status: Accepted
+
+Acceptance Date: 2026-07-04
+
+Accepted By: Software Architect / Phantom Engineering Council
 
 Owner: Security Architect (research-AI trust boundary is a design-time
 threat-modeling question first, per `.claude/agents/TEAM.md` §4 — same
