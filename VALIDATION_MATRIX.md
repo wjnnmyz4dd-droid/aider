@@ -22,7 +22,22 @@ multi-timeframe correctness, boundary/type-level test.
 downstream stage consumes one canonical model; replay deterministic;
 historical loading deterministic; no trading authority.
 
-**Status: NOT STARTED.**
+**Status: IMPLEMENTED (Phase 1).** 81 Data Pipeline tests added
+(`tests/phantom_pipeline/data_pipeline/`), covering gap detection,
+duplicate removal, replay consistency, normalization/timestamp/timezone
+correctness, multi-timeframe correctness, and the boundary/type-level
+test. Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 1008/1008 pass.
+- `python3 -m compileall phantom_pipeline tests`: clean.
+- `python3 validate.py`: 13/13 pass.
+
+**Outstanding ADR-013 requirements** (not yet implemented — this stage
+is not marked `COMPLETE`):
+- Gap repair (§7) — Phase 1 is detection-only; no gap-repair test exists
+  because the feature does not exist.
+- Bulk historical loading / warm-cache bootstrap (§4, §11).
+- A dedicated `metrics.py` (§15).
+- Explicit cache invalidation events (§11).
 
 ---
 
