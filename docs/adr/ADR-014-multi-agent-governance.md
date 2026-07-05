@@ -525,3 +525,146 @@ document; this ADR is its architectural backing, §15).
 
 This Amendment does not reopen ADR-014's Accepted status and changes no
 prior section's text.
+
+---
+
+# Amendment 2 — Three new Governance Agents; SRE's lane extended
+
+Amended: 2026-07-06
+
+**Trigger:** a distinct, human-initiated instruction to extend the
+Council (per this ADR's own §9 Change Management standard for a
+Governance Agent addition — "the precedent `TEAM.md` §6 already set...
+is the binding standard, not a new one invented here"). Four roles were
+requested; three genuinely fill a capability gap without overlapping an
+existing role (§3's classification test below); one duplicates an
+existing role and is folded into it instead, per this ADR's own Hard
+Rule that "no agent may be added without demonstrating a clear,
+measurable benefit... without overlapping existing roles."
+
+**This Amendment grants no new authority to any *existing* agent and
+takes none away.** It adds three new Governance Agents to the class
+already defined in §3 (extending that class's membership from ten named
+roles to thirteen, without altering §3's original table text — the
+original ten-agent list above remains the historical record of what was
+Accepted then; this Amendment is the dated extension, following exactly
+the pattern Amendment 1 already established for adding the RPI
+workflow), and it extends one existing agent's (SRE's) already-granted
+lane to explicitly name duties that were always implicitly within
+"Watchdog function... incident response" (`TEAM.md` §1) but had not been
+enumerated.
+
+## New Governance Agents
+
+### Quant Validation Engineer
+- **Fills:** statistical strategy-edge validation (walk-forward analysis,
+  Monte Carlo analysis, overfitting detection, parameter robustness,
+  risk-adjusted performance validation) — a gap this file's own §6
+  (`TEAM.md`) explicitly identified and, at the time, declined to fill
+  with a new agent. That recommendation is **not overruled**; the
+  candidate it evaluated (a generic equity/VC research agent) remains
+  correctly rejected. This Amendment adds a differently, more narrowly
+  scoped role, on the explicit-instruction standard §9 requires — see
+  `TEAM.md` §6's own inline resolution note for the full reasoning.
+- **Authority:** Advisory only. **Never modifies strategy, scoring, or
+  risk code directly** — a Governance Agent that proposes, exactly like
+  every other Council role (§3's classification: "governs the
+  *development process*... never a live trading decision").
+- **Mandatory review trigger:** any change to statistical logic in
+  Strategy Engine, Scoring Engine, or Replay & Certification Engine
+  (`ADR-018`, when built) — per `TEAM.md` §3's updated routing table.
+  Advisory; never blocks a merge alone (mirrors Test Results Analyzer's
+  own non-blocking-alone standing where it isn't the Accountable party).
+- **RACI:** Consulted on Strategy Engine, Scoring Engine, and Testing
+  rows (`TEAM.md` §5); never Accountable or Responsible for any component
+  — it has no authority over what those stages already own.
+- **De-duplication from Test Results Analyzer:** Test Results Analyzer
+  validates *code* regression (`validate.py` still passing); Quant
+  Validation Engineer validates *strategy-edge* statistics (does the
+  edge survive out-of-sample testing). Two-tier, the same shape as
+  Security Architect/AppSec Engineer (§4's original split).
+
+### Integration Engineer
+- **Fills:** post-hoc verification that the *already-built* system
+  matches its documented architecture — interface compatibility,
+  dependency/circular-import checks, end-to-end pipeline verification.
+  No existing role owns this: Software Architect's mandate (§1, "Cross-
+  module design, dependency direction, ADRs") is forward-looking/
+  design-time; nothing in the original ten verifies the built result
+  stays consistent with that design over time.
+- **Authority:** Verification and reporting only. **Never designs new
+  architecture and never fixes a detected violation itself** — a finding
+  routes to whichever agent already owns the affected component (§5's
+  existing RACI grants, unchanged).
+- **Mandatory review trigger:** identical to Software Architect's
+  existing trigger (`TEAM.md` §3) — "new engine, or any change crossing
+  package boundaries" — added as a second, verification-time name on
+  that same row, never a replacement for Software Architect's design-
+  time sign-off.
+- **RACI:** Consulted or Informed on every pipeline-stage row it now
+  verifies (`TEAM.md` §5, updated); owns `scripts/check_architecture.py`
+  and the RPI workflow's Research-phase circular-dependency check
+  (`TEAM.md` §9).
+- **De-duplication from Software Architect:** the same design-time/
+  verification-time split §4 already established for Security Architect/
+  AppSec Engineer, applied to architecture instead of security.
+
+### AI Systems Engineer
+- **Fills:** AI-adjacent features with no current owner — trade memory,
+  AI trade journal, explainable decisions, outcome analytics, natural-
+  language dashboard views, research assistant. Multi-Agent Systems
+  Architect's own lane "stops at the strategy layer" (`TEAM.md` §4); none
+  of the original ten roles cover an AI/LLM-integration feature class.
+- **Authority — the narrowest of the three, restated verbatim from its
+  own agent file's Absolute Boundary:** AI Systems Engineer **may never**
+  generate a live trade, a candidate, a score, a risk decision, a
+  compliance verdict, an execution decision, a broker order, or a
+  position-management action, and **may never** override, modify,
+  bypass, or influence — directly or indirectly — the output of Scanner,
+  Strategy Engine, Risk Engine, Compliance Engine, Execution Validator,
+  MT5 Bridge, or Position Manager. This is the same absolute boundary §6
+  (Forbidden actions) and the Advisory/Research Agent classes (§3)
+  already establish for `ADR-016`/`ADR-019` — AI Systems Engineer is
+  classified alongside them for this purpose, not granted any authority
+  those classes don't already lack.
+- **Mandatory review trigger:** any AI-adjacent feature (`TEAM.md` §3's
+  updated routing table), plus Security Architect if the feature touches
+  account-sensitive data (mirroring the Dashboard row's existing
+  standard, `TEAM.md` §5).
+- **RACI:** Consulted or Informed on Analytics, AI News Intelligence,
+  and Dashboard rows only (`TEAM.md` §5, updated) — never Accountable or
+  Responsible for any pipeline or infrastructure component.
+
+## Extended existing agent: SRE
+
+**"Reliability Engineer (SRE)" was requested as a fourth new agent and is
+not added as one.** Its requested responsibilities — runtime reliability,
+Watchdog review, recovery validation, chaos testing, restart validation,
+service resilience, infrastructure health — are SRE's own existing lane
+(`TEAM.md` §1: "Watchdog function... incident response") almost exactly.
+Adding a second agent for the same lane would violate this Amendment's
+own no-overlap standard and `TEAM.md` §4's existing "SRE is operational,
+not correctness" de-duplication rule. **Resolution:** `TEAM.md` §1's
+roster entry and §4's de-duplication bullet are extended in place to
+name these duties explicitly; no new agent file exists for this request,
+and SRE's Accountable/Responsible grants (`TEAM.md` §5) are unchanged.
+
+## Acceptance confirmation
+
+- ✓ Every new agent classified within an existing `ADR-014` §3 class
+  (Governance Agents) — no new class invented.
+- ✓ Every new agent's authority documented by pointing to `TEAM.md`'s own
+  roster/RACI/routing-table entries (§4's "Ownership documentation"
+  requirement) — not restated ad hoc here beyond the summary above.
+- ✓ No implicit permission granted — AI Systems Engineer's boundary in
+  particular is stated as an absolute list, not an inferred scope (§5).
+- ✓ No existing agent's authority modified or reduced (Hard Rules — "no
+  agent may modify another agent's authority" was honored: SRE's own
+  extension was a human instruction acting through this Amendment, not
+  another agent editing SRE unilaterally).
+- ✓ One unique owner responsibility per new role — none of the three
+  duplicates an existing Accountable grant (`TEAM.md` §5 unchanged for
+  every pre-existing row's Accountable column).
+
+This Amendment does not reopen ADR-014's Accepted status, does not
+modify Amendment 1, and changes no prior section's text.

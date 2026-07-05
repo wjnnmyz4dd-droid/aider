@@ -1,8 +1,11 @@
 # Phantom Engineering Council
 
-Permanent governance charter for the 10 approved specialist agents installed
-in this directory. Sourced verbatim (unmodified prompts) from
-[agency-agents](https://github.com/msitarzewski/agency-agents). No other
+Permanent governance charter for the 13 approved specialist agents installed
+in this directory. Ten are sourced verbatim (unmodified prompts) from
+[agency-agents](https://github.com/msitarzewski/agency-agents); three
+(Quant Validation Engineer, Integration Engineer, AI Systems Engineer) were
+authored in-session on 2026-07-06 to fill genuine capability gaps not
+present in that library (see the 2026-07-06 status note and §6). No other
 agent may be added without demonstrating a clear, measurable benefit to a
 Python-based institutional algorithmic trading system (see §6).
 
@@ -48,6 +51,56 @@ superseded by ADR-001 above where they conflict):
 **Risk Engine → Execution Safety → MT5 Bridge → Watchdog → Scanner → Scorer
 → Analytics → Dashboard.**
 
+**Status note (updated 2026-07-06, Council extension pass —
+`ADR-014` Amendment 2):** the Council grows from 10 to 13 named
+specialists, per an explicit, distinct human instruction (the gate
+`ADR-014` §9's Change Management already requires for a Governance Agent
+addition). Four roles were requested; three were added, one was folded
+into an existing role rather than duplicated:
+
+- **Quant Validation Engineer** (new) — statistical strategy-edge
+  validation (walk-forward, Monte Carlo, overfitting detection, parameter
+  robustness, risk-adjusted performance), advisory-only, never modifies
+  strategy directly. This **reverses §6's prior "do not add an 11th
+  agent" recommendation below** — that recommendation evaluated a
+  generic equity/VC research agent and correctly rejected it as a bad
+  fit; it did not evaluate a role scoped this precisely to Phantom's own
+  strategy/replay/certification statistics, and the explicit instruction
+  to add it is exactly the kind of "clear, measurable benefit" gate this
+  file's own opening paragraph requires. §6's original text is preserved
+  below, not deleted, with this reversal noted inline.
+- **Integration Engineer** (new) — verifies the *already-built* system
+  still matches its documented architecture (import-graph/circular-
+  dependency checks, interface compatibility, end-to-end pipeline
+  verification) — the verification-time counterpart to Software
+  Architect's design-time role, the same two-tier split §4 already
+  established for Security Architect/AppSec Engineer. Owns
+  `scripts/check_architecture.py` and the RPI workflow's Research-phase
+  check (§9).
+- **AI Systems Engineer** (new) — AI-adjacent features only (trade
+  memory, AI trade journal, explainable decisions, outcome analytics,
+  natural-language dashboard views, research assistant) — classified as
+  an Advisory/Research-adjacent Governance Agent per `ADR-014` §3, with
+  an absolute, non-negotiable boundary: never generates a live trade,
+  never overrides Scanner, Strategy Engine, Risk Engine, Compliance
+  Engine, Execution Validator, MT5 Bridge, or Position Manager. Distinct
+  from Multi-Agent Systems Architect, whose lane "stops at the strategy
+  layer" (§4) — AI Systems Engineer's lane is Analytics/Dashboard/
+  research-tooling AI features, never strategy logic itself.
+- **"Reliability Engineer (SRE)"** (requested) — **not added as a
+  separate agent.** Its requested responsibilities (Watchdog review,
+  recovery validation, chaos testing, restart validation, service
+  resilience, infrastructure health) are the existing **SRE** role's own
+  lane almost exactly (row 6, §1) — adding a second agent for the same
+  lane would violate this file's own no-duplication rule (§4) and the
+  explicit instruction's own "without overlapping existing roles"
+  condition. Resolution: SRE's roster entry (§1) and RACI grants (§5)
+  are extended in place to explicitly name these duties; no new agent
+  file was created for it.
+
+See `docs/adr/ADR-014-multi-agent-governance.md` Amendment 2 for the
+formal authority-boundary/RACI documentation of the three new roles.
+
 ---
 
 ## 1. Roster — one responsibility each
@@ -59,15 +112,19 @@ superseded by ADR-001 above where they conflict):
 | 3 | `engineering-code-reviewer.md` | Code Reviewer | Final correctness/maintainability pass on every diff |
 | 4 | `engineering-minimal-change-engineer.md` | Minimal Change Engineer | Implements the smallest correct diff |
 | 5 | `engineering-multi-agent-systems-architect.md` | Multi-Agent Systems Architect | Strategy layer (`phantom/strategies/`) as a distributed system |
-| 6 | `engineering-sre.md` | SRE | Watchdog function: SLOs, alerting, incident response |
+| 6 | `engineering-sre.md` | SRE | Watchdog function: SLOs, alerting, incident response, **recovery/chaos/restart validation, infrastructure health (extended 2026-07-06 — still one role, see status note above)** |
 | 7 | `security-architect.md` | Security Architect | Threat models / trust boundaries (design-time) |
 | 8 | `security-appsec-engineer.md` | Application Security Engineer | Secure code review / CVE scanning (diff-time) |
 | 9 | `testing-api-tester.md` | API Tester | Behavioral validation of `phantom/api.py` routes |
 | 10 | `testing-test-results-analyzer.md` | Test Results Analyzer | Statistical read on `validate.py` / regression risk |
+| 11 | `quant-validation-engineer.md` | Quant Validation Engineer | Statistical strategy-edge validation (walk-forward, Monte Carlo, overfitting, robustness) — advisory only, never modifies strategy |
+| 12 | `integration-engineer.md` | Integration Engineer | Verifies the built system matches its documented architecture — interface compatibility, dependency/circular-import checks, end-to-end pipeline verification |
+| 13 | `ai-systems-engineer.md` | AI Systems Engineer | AI-adjacent features only (trade memory, journal, explainable decisions, outcome analytics, NL dashboard, research assistant) — never live trades, never overrides any pipeline stage |
 
 No responsibility appears twice. Where two agents look adjacent (the two
-architects, the two security agents, the two testers), §4 states exactly
-which one acts and when — see "De-duplication" below.
+architects, the two security agents, the two testers, and now Software
+Architect/Integration Engineer), §4 states exactly which one acts and
+when — see "De-duplication" below.
 
 ---
 
@@ -85,7 +142,10 @@ irrelevant agent is correct behavior, not a shortcut.
 6. **Code Reviewer — reviews**
 7. Application Security Engineer — only if the diff touches `api.py` / `account.py` / `guards.py` / `trade_router.py`
 8. API Tester — only if routes changed
-9. **Test Results Analyzer — mandatory `validate.py` regression check**
+9. Integration Engineer — mandatory for a new engine or any change crossing package boundaries (§3), verifying the built result against `scripts/check_architecture.py` after Code Reviewer
+10. Quant Validation Engineer — only if the change touches strategy/scoring statistical logic (walk-forward, robustness, overfitting exposure)
+11. AI Systems Engineer — only if the change is an AI-adjacent feature (trade memory, journal, explainable decisions, outcome analytics, NL dashboard, research assistant)
+12. **Test Results Analyzer — mandatory `validate.py` regression check**
 
 **Bug fixing**
 1. SRE — triage only if surfaced via `/health`, `/metrics`, or an incident
@@ -116,14 +176,17 @@ irrelevant agent is correct behavior, not a shortcut.
 **Testing** (extending coverage, not validating one change)
 1. Test Results Analyzer — designs statistical/regression coverage
 2. API Tester — designs endpoint coverage
-3. **Minimal Change Engineer — implements the test code**
-4. **Code Reviewer**
+3. Quant Validation Engineer — designs walk-forward/Monte Carlo/robustness coverage, only for strategy-edge-adjacent test work (distinct lens from Test Results Analyzer's regression coverage, §4)
+4. **Minimal Change Engineer — implements the test code**
+5. **Code Reviewer**
 
 **Deployment** (forward-test freeze / release, per `RELEASE.md`)
 1. Test Results Analyzer — go/no-go statistical sign-off
-2. SRE — uptime/alerting readiness sign-off
-3. Security Architect — surface review, only if the attack surface changed since the last freeze
-4. Software Architect — final call; enforces the freeze policy (no new features mid-freeze)
+2. Quant Validation Engineer — strategy-edge sign-off, only if a strategy/scoring change is in the release (advisory; never blocks alone — feeds Software Architect's final call)
+3. Integration Engineer — end-to-end pipeline verification sign-off (`scripts/check_architecture.py` clean, no broken interfaces)
+4. SRE — uptime/alerting readiness sign-off, recovery/chaos-test results if the release touches Watchdog
+5. Security Architect — surface review, only if the attack surface changed since the last freeze
+6. Software Architect — final call; enforces the freeze policy (no new features mid-freeze)
 
 ---
 
@@ -140,13 +203,17 @@ irrelevant agent is correct behavior, not a shortcut.
 |---|---|
 | `phantom/api.py`, `phantom/account.py`, `phantom/trade_router.py`, `phantom/guards.py` | Application Security Engineer |
 | Any new or changed HTTP route in `phantom/api.py` | API Tester, Security Architect |
-| `phantom/strategies/**` | Multi-Agent Systems Architect |
-| New engine, or any change crossing package boundaries | Software Architect |
-| `/health`, `/metrics`, alerting thresholds, anything watchdog-adjacent | SRE |
+| `phantom/strategies/**`, `phantom_pipeline/strategy_engine/**` | Multi-Agent Systems Architect |
+| New engine, or any change crossing package boundaries | Software Architect, **Integration Engineer** (added 2026-07-06 — verification counterpart to Software Architect's design sign-off, §4) |
+| `/health`, `/metrics`, alerting thresholds, anything watchdog-adjacent, `phantom_pipeline/watchdog/**` | SRE |
+| Statistical logic in `phantom_pipeline/strategy_engine/**`, `phantom_pipeline/scoring_engine/**`, or replay/certification statistics | **Quant Validation Engineer** (added 2026-07-06, advisory — never blocks a merge alone; escalates a concern to Software Architect) |
+| Any AI-adjacent feature (trade memory, journal, explainable decisions, outcome analytics, NL dashboard, research assistant) | **AI Systems Engineer** (added 2026-07-06), plus Security Architect if it touches account-sensitive data (mirroring the Dashboard row's existing standard) |
 
 A diff touching only, say, `phantom/indicators.py` never triggers Security
 Architect, API Tester, or SRE — that is the mechanism for "minimize bugs
-without unnecessary review," not an accident.
+without unnecessary review," not an accident. The same applies to the
+three new rows: a diff outside their named lane never triggers Quant
+Validation Engineer, Integration Engineer, or AI Systems Engineer.
 
 ---
 
@@ -174,6 +241,42 @@ without unnecessary review," not an accident.
 - **Testing splits by lens, not by file.** API Tester owns "does the
   endpoint behave correctly"; Test Results Analyzer owns "is this a
   statistical regression." The same PR can need both without duplication.
+- **Quant Validation Engineer vs. Test Results Analyzer (added 2026-07-06)
+  — testing is two-tier, the same shape as Security.** Test Results
+  Analyzer validates *code* regression: does `validate.py` still pass,
+  did a change silently alter a score/decision. Quant Validation Engineer
+  validates *strategy-edge* statistics: does a playbook's edge survive
+  walk-forward/out-of-sample testing, is a parameter overfit, is a Monte
+  Carlo drawdown distribution acceptable. Neither substitutes for the
+  other; a change can need both, exactly like Security Architect/AppSec
+  Engineer.
+- **Integration Engineer vs. Software Architect (added 2026-07-06) —
+  architecture is now three-tier, not two.** Software Architect decides
+  the shape of a *new* cross-module change (design-time, forward-looking,
+  §4's original bullet above). Integration Engineer verifies the
+  *already-built* system still matches whatever shape was already decided
+  (verification-time, regression-detecting) — it does not design, it
+  detects drift (a broken interface, a new circular import, a stage
+  silently reaching into another's private state). This is the same
+  design-time/verification-time split §4 already established for
+  Security Architect/AppSec Engineer, applied to architecture instead of
+  security.
+- **AI Systems Engineer's lane is AI-adjacent features, never strategy
+  logic (added 2026-07-06).** Distinct from Multi-Agent Systems
+  Architect, whose lane "stops at the strategy layer" per the bullet
+  above — AI Systems Engineer's lane is the opposite side of that same
+  boundary: Analytics/Dashboard/research-tooling AI features (trade
+  memory, journal, explainable decisions, outcome analytics, NL
+  dashboard, research assistant), never a trading decision. It has no
+  authority Multi-Agent Systems Architect, Risk Engine, Compliance
+  Engine, Execution Validator, MT5 Bridge, or Position Manager already
+  hold — restated explicitly because this is the newest and narrowest
+  role added, per `ADR-014` Amendment 2's Hard Rule.
+- **SRE's extended duties (2026-07-06) are still one role, not a new
+  one.** Recovery validation, chaos testing, and restart validation are
+  operational reliability work — the same "operational, not correctness"
+  lane the bullet above already scopes SRE to — not a second Watchdog
+  reviewer.
 
 ---
 
@@ -199,45 +302,44 @@ except Testing, where the testing agents *are* the doers.
 
 | Component | R | A | C | I |
 |---|---|---|---|---|
-| **Scanner** (`ADR-002`, Accepted; ref. `scanner.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Backend Architect | SRE, Test Results Analyzer |
-| **Strategy Engine** (`ADR-003`, Accepted; ref. `strategies/`) | Minimal Change Engineer | Multi-Agent Systems Architect | Software Architect, Test Results Analyzer | Code Reviewer, Backend Architect |
-| **Scoring Engine** (`ADR-004`, Accepted; ref. `scorer.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Test Results Analyzer | Code Reviewer, SRE |
+| **Scanner** (`ADR-002`, Accepted; ref. `scanner.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Backend Architect | SRE, Test Results Analyzer, Integration Engineer |
+| **Strategy Engine** (`ADR-003`, Accepted; ref. `strategies/`) | Minimal Change Engineer | Multi-Agent Systems Architect | Software Architect, Test Results Analyzer, **Quant Validation Engineer (added 2026-07-06 — statistical edge validation of playbook output)** | Code Reviewer, Backend Architect, Integration Engineer |
+| **Scoring Engine** (`ADR-004`, Accepted; ref. `scorer.py`) | Minimal Change Engineer | Software Architect | Multi-Agent Systems Architect, Test Results Analyzer, **Quant Validation Engineer (added 2026-07-06)** | Code Reviewer, SRE, Integration Engineer |
 | **Risk Engine** (`ADR-005`, Accepted; ref. `risk.py`) | Minimal Change Engineer | Backend Architect | Software Architect, Security Architect, Test Results Analyzer | SRE, Code Reviewer |
 | **Compliance Engine** (`ADR-006`, Accepted; ref. `ComplianceEngine`, `guards.py`) | Minimal Change Engineer | Security Architect | Backend Architect, **Software Architect** (moved from I — `ADR-006`'s own "Reviewed by" names Software Architect for cross-module boundary sign-off, the same standing every other stage gives that role when named as a reviewer), AppSec Engineer, Test Results Analyzer | SRE |
 | **Execution Validator** (`ADR-007`, Accepted) | Minimal Change Engineer | Backend Architect | **Security Architect (mandatory gate, not just C — `ADR-007`'s own "Reviewed by" states this explicitly, not just this table)**, Software Architect, AppSec Engineer | SRE, everyone |
 | **MT5 Bridge** (`ADR-008` + Amendment 1, Accepted) | Minimal Change Engineer | Backend Architect | Security Architect, SRE | Software Architect |
 | **Position Manager** (`ADR-009`, Accepted) | Minimal Change Engineer | Backend Architect | SRE, Security Architect | Software Architect |
-| **Analytics & Decision Provenance** (`ADR-010`, Accepted) | Minimal Change Engineer | Software Architect | Backend Architect, Multi-Agent Systems Architect (strategy attribution must derive from the Strategy Registry, `ADR-003` §3 — not a hand-maintained list, per the now-closed `analytics.STRATEGIES` defect, §8) | Security Architect, SRE |
-| **AI News Intelligence** (`ADR-016`, Accepted — side-ADR, not a pipeline stage) | Minimal Change Engineer | Security Architect | Software Architect | Backend Architect, SRE |
-| **Watchdog** *(ADR-011, not yet drafted; conceptually SRE's lane)* | Minimal Change Engineer | SRE | Backend Architect, Security Architect | Software Architect |
+| **Analytics & Decision Provenance** (`ADR-010`, Accepted) | Minimal Change Engineer | Software Architect | Backend Architect, Multi-Agent Systems Architect (strategy attribution must derive from the Strategy Registry, `ADR-003` §3 — not a hand-maintained list, per the now-closed `analytics.STRATEGIES` defect, §8), **AI Systems Engineer (added 2026-07-06 — AI trade journal/outcome analytics read Analytics' output, never write to it)** | Security Architect, SRE, Integration Engineer |
+| **AI News Intelligence** (`ADR-016`, Accepted — side-ADR, not a pipeline stage) | Minimal Change Engineer | Security Architect | Software Architect, **AI Systems Engineer (added 2026-07-06)** | Backend Architect, SRE |
+| **Watchdog** (`ADR-011`, Accepted) | Minimal Change Engineer | SRE | Backend Architect, Security Architect, **Integration Engineer (added 2026-07-06)** | Software Architect |
 | **API** (`api.py`) | Minimal Change Engineer | Backend Architect | Security Architect, AppSec Engineer, API Tester | SRE, Software Architect |
-| **Dashboard** *(ADR-012, not yet drafted)* | Minimal Change Engineer | Backend Architect | SRE (what to surface for alerting), **Security Architect (added 2026-07-04 — ADR-012's own governance review found account-sensitive data exposure/access-control a design-time trust-boundary question, per §4's two-tier model)** | Software Architect |
-| **Testing** (`validate.py`, `tests/`) | Test Results Analyzer, API Tester | Software Architect | Minimal Change Engineer, Code Reviewer | SRE, Security Architect |
+| **Dashboard** (`ADR-012`, Accepted) | Minimal Change Engineer | Backend Architect | SRE (what to surface for alerting), Security Architect (`ADR-012`'s own governance review found account-sensitive data exposure/access-control a design-time trust-boundary question, per §4's two-tier model), **AI Systems Engineer (added 2026-07-06 — NL dashboard views only, never a new data source)** | Software Architect, Integration Engineer |
+| **Testing** (`validate.py`, `tests/`) | Test Results Analyzer, API Tester | Software Architect | Minimal Change Engineer, Code Reviewer, **Quant Validation Engineer (added 2026-07-06, strategy-edge coverage only)** | SRE, Security Architect, Integration Engineer |
 
-**Read the parenthetical notes literally.** Watchdog and Dashboard have no
-ADR at all yet (`ADR-011`/`ADR-012` are reserved, undrafted) and no source
-code in this repository today — their RACI here is aspirational for
-when/if they're drafted and built, not a description of existing code or
-existing acceptance. Every other pipeline stage above (Scanner through
-Analytics) now has an Accepted ADR but still no implementation, per
-`CLAUDE.md` §1.10 (Accepted ADR is a precondition for code, not code
-itself). Execution Validator's mandatory Security Architect gate was
-already flagged in this table before `ADR-007` existed and has since been
-confirmed, not invented, by `ADR-007`'s own "Reviewed by" line.
+**Correction (2026-07-06, superseding the stale text below):** Watchdog
+(`ADR-011`) and Dashboard (`ADR-012`) are Accepted **and implemented**
+(Phase 1, `phantom_pipeline/watchdog/`, `phantom_pipeline/dashboard/`),
+not "reserved, undrafted" as the original paragraph below claimed at the
+time it was written — that claim is now factually superseded, preserved
+below only for history, not as current status. Execution Validator's
+mandatory Security Architect gate was already flagged in this table
+before `ADR-007` existed and has since been confirmed, not invented, by
+`ADR-007`'s own "Reviewed by" line (this part remains accurate).
 
-**Two components named in a review request but out of this table's
-current scope, on purpose:**
+**Two components still genuinely out of this table's scope, on purpose:**
 - **Research** (`ADR-019`, Self-Evolving Market Structure Research Agent)
   — still **Proposed**, not Accepted. Its own governance (research-lab
   isolation, promotion chain, human-approval gates) is fully specified in
   `ADR-019` itself; adding a Council RACI row here before it's Accepted
   would overstate its status. Revisit when `ADR-019` is accepted.
-- **Data Pipeline** (`ADR-013`) — not yet drafted at all (unlike Watchdog/
-  Dashboard, which at least have reserved ADR numbers and an aspirational
-  row here already). Nothing exists yet to reconcile a RACI row against;
-  adding one now would be inventing scope this task didn't ask for
-  drafting. Flagged in §"Remaining documentation gaps" below instead of
-  silently added.
+- **Data Pipeline** (`ADR-013`) — **Accepted and implemented**
+  (`IMPLEMENTATION_PLAN.md` marks it `COMPLETE (Phase 1)`), unlike the
+  "not yet drafted at all" claim the original paragraph below made —
+  that claim is also superseded. It still has no dedicated RACI row
+  above; adding one is a separate, narrowly-scoped documentation task,
+  not part of this Council-extension pass, so it is flagged here rather
+  than silently left inconsistent.
 
 ---
 
@@ -250,17 +352,35 @@ out-of-sample confirmation, correcting for testing 5 strategies
 simultaneously). Test Results Analyzer validates whether `validate.py`
 regressed; it does not validate whether a strategy's edge is real.
 
-**Recommendation: do not add an 11th agent.** The one candidate evaluated
-from the source repo (`finance-investment-researcher.md`) is built for
-equity/VC fundamental research and needs more translation than it's worth —
-installing it would be exactly the kind of speculative addition point 8
-below argues against. Instead, close the gap with a lightweight checklist
-(minimum sample size before a playbook counts toward `AGGRESSIVE` tier,
-walk-forward split before any new playbook ships, explicit note when
-comparing 5 strategies simultaneously) owned jointly by **Test Results
-Analyzer** (statistical mechanics) and **Software Architect** (whether the
-checklist is actually enforced in the merge pipeline). This is simpler than
-a new agent and testable the same way everything else here is tested.
+**Recommendation (at the time, 2026-07-04): do not add an 11th agent.** The
+one candidate evaluated from the source repo (`finance-investment-
+researcher.md`) is built for equity/VC fundamental research and needs
+more translation than it's worth — installing it would be exactly the
+kind of speculative addition point 8 below argues against. Instead, close
+the gap with a lightweight checklist (minimum sample size before a
+playbook counts toward `AGGRESSIVE` tier, walk-forward split before any
+new playbook ships, explicit note when comparing 5 strategies
+simultaneously) owned jointly by **Test Results Analyzer** (statistical
+mechanics) and **Software Architect** (whether the checklist is actually
+enforced in the merge pipeline). This is simpler than a new agent and
+testable the same way everything else here is tested.
+
+**Superseded 2026-07-06 by an explicit, distinct human instruction to add
+a Quant Validation Engineer** (`ADR-014` Amendment 2) — this is not a
+reversal of the reasoning above, which remains correct for what it
+evaluated: a generic, untranslated equity/VC research agent was
+correctly rejected. The role actually added is scoped precisely to
+Phantom's own strategy/scoring/replay statistics (walk-forward, Monte
+Carlo, overfitting detection, parameter robustness, risk-adjusted
+performance) and is advisory-only, never modifying strategy directly —
+narrower and better-fitted than the candidate this section evaluated,
+and added on exactly the "clear, measurable benefit" standard this file's
+own opening paragraph requires, via the same explicit-instruction gate
+`ADR-014` §9 requires for any Governance Agent addition. The lightweight-
+checklist arrangement above is not deleted — it remains the mechanism for
+day-to-day enforcement; Quant Validation Engineer is the specialist who
+now owns designing and reviewing that statistical mechanics work directly
+rather than it being folded into Test Results Analyzer's own lane.
 
 ---
 
@@ -274,7 +394,14 @@ no defensive code for impossible scenarios, no drive-by refactors inside a
 bug-fix PR — is the default constraint on everyone else's recommendations.
 An architect's proposal that can't be implemented as a minimal diff gets
 split into a separate, explicitly-scoped follow-up rather than expanded
-inline.
+inline. **The three roles added 2026-07-06 are no exception**: Quant
+Validation Engineer is explicitly advisory-only and never modifies
+strategy directly; Integration Engineer verifies and reports, it does not
+fix what it finds (a detected regression routes to whichever architect
+already owns that component, §5); AI Systems Engineer implements AI-
+adjacent features only through the same Minimal Change Engineer /Code
+Reviewer path every other feature uses — none of the three bypasses this
+governing rule.
 
 Ground rules that override any agent's individual recommendation, per
 project instructions: never weaken risk management, never introduce score
@@ -452,7 +579,9 @@ the touched component, §5, + Minimal Change Engineer):
   result.
 - Write these findings into `docs/plans/<slug>.md`'s Research section.
 
-**Circular-dependency / private-state check** (run from the repo root):
+**Circular-dependency / private-state check** (run from the repo root;
+owned by **Integration Engineer**, added 2026-07-06 — this is exactly
+its verification-time lane, §4):
 ```
 python3 scripts/check_architecture.py
 ```
@@ -467,7 +596,10 @@ makes that check repeatable rather than re-derived by hand each time).
 **Phase 2 — Plan** (Software Architect for cross-module/new-engine
 changes, per §2's existing "Feature development" step 1 and §3's
 existing trigger table; Backend Architect for a contained
-single-package change):
+single-package change; **Quant Validation Engineer additionally
+consulted, added 2026-07-06, when the change touches strategy/scoring
+statistical logic** — advisory input into the Plan, never a Plan-phase
+owner of its own):
 - State the approach and its boundaries.
 - Confirm architectural compliance against `ADR-001`'s pipeline and the
   touched stage's own ADR (`CLAUDE.md` §4.2–.3).

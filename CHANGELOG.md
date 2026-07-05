@@ -18,6 +18,43 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 ## 2026-07-06
 
 ### Added
+- `.claude/agents/quant-validation-engineer.md`, `.claude/agents/
+  integration-engineer.md`, `.claude/agents/ai-systems-engineer.md` —
+  three new Governance Agents extending the Engineering Council from 10
+  to 13, per explicit instruction. Quant Validation Engineer (statistical
+  edge validation: walk-forward, Monte Carlo, overfitting, parameter
+  robustness — advisory only, never edits strategy/scoring/risk code
+  directly); Integration Engineer (post-hoc architectural verification:
+  interface compatibility, dependency direction, circular-import
+  detection, end-to-end pipeline wiring — verifies, does not design);
+  AI Systems Engineer (AI-adjacent features only — trade memory, AI
+  trade journal, explainable decisions, outcome analytics, NL dashboard,
+  research assistant — hard-boundaried against ever generating a trade
+  decision or influencing Scanner/Strategy Engine/Risk Engine/Compliance
+  Engine/Execution Validator/MT5 Bridge/Position Manager).
+- `docs/adr/ADR-014-multi-agent-governance.md` Amendment 2: documents the
+  3 new Governance Agents (fills/authority/mandatory-review-trigger/RACI/
+  de-duplication per role) and the decision to fold the requested
+  "Reliability Engineer (SRE)" into the existing SRE role rather than add
+  a 4th, duplicate agent.
+- `TEAM.md` §1/§2/§3/§4/§5/§6/§7/§9 updated in place for the 3 new roles;
+  SRE's §1/§4 entries extended to cover runtime-reliability review
+  (recovery validation, chaos testing, restart validation) the request
+  described under "Reliability Engineer (SRE)"; §5 RACI matrix corrected
+  to reflect Watchdog/Dashboard's now-Accepted status (was stale "not yet
+  drafted" text left over from before this session's earlier work); §6's
+  prior "do not add an 11th agent" recommendation explicitly superseded
+  for Quant Validation Engineer only, with the reversal's reasoning
+  documented inline rather than silently overwritten.
+
+### Changed (Council extension)
+- Nothing in `phantom_pipeline/`, `phantom/`, or `tests/` — confirmed via
+  `git diff --stat` showing zero output against all three. Full
+  validation suite re-run (1066/1066 tests, `validate.py` 13/13,
+  `scripts/check_architecture.py` clean) to confirm this documentation/
+  governance-only change introduced no regression.
+
+### Added
 - `phantom_pipeline/orchestrator.py` — Phase 2 end-to-end Pipeline
   Orchestrator. Integration glue only (not a 13th stage, no new ADR):
   sequences the 12 already-Accepted stages (Data Pipeline through
