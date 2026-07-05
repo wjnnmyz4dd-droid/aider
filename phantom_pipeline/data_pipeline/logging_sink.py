@@ -17,6 +17,7 @@ logging failure must never propagate into or alter pipeline behavior.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Union
 
 from .models import NormalizedBar, NormalizedTick
@@ -60,4 +61,52 @@ def log_ingestion_event(
     except Exception:
         # Logging is observability, not a gate (ADR-002 §11) — a logging
         # failure must never propagate into or alter pipeline behavior.
+        pass
+
+
+def log_gap_repair(bar: NormalizedBar, level: int = logging.INFO) -> None:
+    """One structured record per repaired bar (ADR-013 §7, §14) — makes
+    every repair attributable without re-running anything. `bar` is
+    always the already-repaired `NormalizedBar` (`is_repaired=True`),
+    never the gap itself, so this carries the same fields every other
+    ingestion event does."""
+    try:
+        logger.log(
+            level,
+            "data_pipeline.gap_repair",
+            extra={
+                "trace_id": bar.trace_id,
+                "schema_version": bar.schema_version,
+                "symbol": bar.symbol,
+                "timeframe": bar.timeframe,
+                "timestamp": bar.timestamp.isoformat(),
+                "source": bar.source,
+                "quality": bar.quality.value,
+            },
+        )
+    except Exception:
+        pass
+
+
+def log_cache_invalidation(
+    symbol: str, timeframe: str, reason: str, bars_cleared: int, timestamp: datetime, level: int = logging.WARNING
+) -> None:
+    """One structured record per explicit cache-invalidation event
+    (ADR-013 §11) — never a silent clear. Carries `symbol`, `timeframe`,
+    `reason`, `bars_cleared`, and `timestamp` so the event is fully
+    attributable after the fact, the same completeness discipline
+    `ADR-013` §14 already requires for ingestion events."""
+    try:
+        logger.log(
+            level,
+            "data_pipeline.cache_invalidation",
+            extra={
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "reason": reason,
+                "bars_cleared": bars_cleared,
+                "timestamp": timestamp.isoformat(),
+            },
+        )
+    except Exception:
         pass

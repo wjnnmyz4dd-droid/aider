@@ -69,6 +69,15 @@ class ReplayRecorder:
         )
 
 
+def is_replay_ready(replay_series: ReplaySeries) -> bool:
+    """Whether `replay_series` currently holds enough captured data to
+    support a meaningful replay run (ADR-013 §15's "Replay readiness"
+    metric) — at least one captured tick and one finalized bar. A purely
+    descriptive check of already-captured state; never itself captures or
+    fabricates anything."""
+    return bool(replay_series.ticks) and bool(replay_series.bars)
+
+
 def replay_through(replay_series: ReplaySeries, pipeline) -> List[NormalizedBar]:
     """Re-feed a captured `ReplaySeries`' ticks through `pipeline` (a fresh
     `DataPipeline` instance) via its normal ingestion path, returning the

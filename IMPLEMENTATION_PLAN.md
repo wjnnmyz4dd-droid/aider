@@ -53,7 +53,7 @@ listed exit criteria:
 
 | Order | Stage | ADR | Depends on | Owner | Status |
 |---|---|---|---|---|---|
-| 1 | Data Pipeline | `ADR-013` | `ADR-001`, `ADR-015` (vendor governance) | Backend Architect | **IMPLEMENTED (Phase 1)** |
+| 1 | Data Pipeline | `ADR-013` | `ADR-001`, `ADR-015` (vendor governance) | Backend Architect | **COMPLETE (Phase 1)** |
 | 2 | Scanner | `ADR-002` | Data Pipeline's `NormalizedBar`/`HistoricalSeries` output contract | Software Architect | **COMPLETE (Phase 1)** |
 | 3 | Strategy Engine | `ADR-003` | Scanner's `ScannerObservation` | Multi-Agent Systems Architect | **COMPLETE (Phase 1)** |
 | 4 | Scoring Engine | `ADR-004` | Strategy Engine's `CandidateTrade` | Software Architect | **COMPLETE (Phase 1)** |
@@ -78,20 +78,12 @@ Governance — already operative via `TEAM.md`'s existing process), and
 framework every stage's adapters must honor, not itself an implemented
 stage).
 
-**Stage 1 (Data Pipeline)'s Phase 1 implementation is scoped narrower
-than `ADR-013`'s full text — marked `IMPLEMENTED (Phase 1)`, not
-`COMPLETE (Phase 1)`, to reflect that.** Implemented: tick ingestion,
-normalization, base-timeframe bar construction, multi-timeframe
-aggregation, gap detection, data quality assessment, a bounded historical
-cache, replay capture/replay-through, the pipeline health signal, and
-structured logging — all integrated with Scanner/Compliance
-Engine/Execution Validator as their real input source. The following
-remain deferred:
-
-- Gap repair (`ADR-013` §7 — detection only in Phase 1).
-- Bulk historical loading / warm-cache bootstrap (`ADR-013` §4, §11).
-- A dedicated `metrics.py` (`ADR-013` §15).
-- Explicit cache invalidation events (`ADR-013` §11).
+**Stage 1 (Data Pipeline)'s four previously-deferred items (gap repair,
+bulk historical loading/warm-cache bootstrap, a dedicated `metrics.py`,
+and explicit cache invalidation events — all flagged by the Phase 1
+Certification Audit) are now implemented**, closing the gap between this
+stage and `ADR-013`'s full text; stage 1 is marked `COMPLETE (Phase 1)`
+on the same basis as every other implemented stage.
 
 ---
 

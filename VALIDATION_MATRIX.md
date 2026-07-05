@@ -22,22 +22,31 @@ multi-timeframe correctness, boundary/type-level test.
 downstream stage consumes one canonical model; replay deterministic;
 historical loading deterministic; no trading authority.
 
-**Status: IMPLEMENTED (Phase 1).** 81 Data Pipeline tests added
-(`tests/phantom_pipeline/data_pipeline/`), covering gap detection,
-duplicate removal, replay consistency, normalization/timestamp/timezone
-correctness, multi-timeframe correctness, and the boundary/type-level
-test. Validation run:
-- `python3 -m unittest discover -s tests/phantom_pipeline`: 1008/1008 pass.
+**Status: COMPLETE (Phase 1).** 126 Data Pipeline tests added
+(`tests/phantom_pipeline/data_pipeline/`), covering gap detection, gap
+repair (single-bar only, `is_repaired` flag, consecutive-gap exclusion),
+duplicate removal, replay consistency (including that bulk-loaded
+historical data is never captured into replay), historical consistency
+(now backed by a genuine bulk-load path, not only in-memory cache reads),
+normalization/timestamp/timezone correctness, multi-timeframe
+correctness, the boundary/type-level test, and the new `metrics.py`
+surface (all eight §15 metrics) and explicit cache-invalidation logging.
+Validation run:
+- `python3 -m unittest discover -s tests/phantom_pipeline`: 1053/1053 pass.
 - `python3 -m compileall phantom_pipeline tests`: clean.
 - `python3 validate.py`: 13/13 pass.
 
-**Outstanding ADR-013 requirements** (not yet implemented — this stage
-is not marked `COMPLETE`):
-- Gap repair (§7) — Phase 1 is detection-only; no gap-repair test exists
-  because the feature does not exist.
-- Bulk historical loading / warm-cache bootstrap (§4, §11).
-- A dedicated `metrics.py` (§15).
-- Explicit cache invalidation events (§11).
+**Previously outstanding ADR-013 requirements — now resolved** (flagged
+by the Phase 1 Certification Audit, closed by the ADR-013 Phase 1
+Completion task):
+- Gap repair (§7) — implemented in `gaps.py`'s `repair_gaps()`.
+- Bulk historical loading / warm-cache bootstrap (§4, §11) — implemented
+  in `historical.py`'s `HistoricalCache.load_bulk()` and `pipeline.py`'s
+  `DataPipeline.load_historical_bars()`/`warm_start()`.
+- A dedicated `metrics.py` (§15) — `DataPipelineMetrics`, all eight named
+  metrics.
+- Explicit cache invalidation events (§11) — `HistoricalCache.invalidate()`
+  + `DataPipeline.invalidate_cache()`, structured-logged, never silent.
 
 ---
 
