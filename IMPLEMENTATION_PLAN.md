@@ -114,6 +114,21 @@ on the same basis as every other implemented stage.
 No actual contradiction was found in the given build order: every
 dependency implied above resolves to an earlier-numbered stage.
 
+**Phase 3 (2026-07-06) — real infrastructure adapters.** Four of the fake
+test doubles Phase 1 explicitly flagged as "a real adapter is future
+work" are now real: `mt5_bridge.mt5_adapter.MT5Adapter` (stage 8),
+`data_pipeline.market_data_adapter.MarketDataAdapter` (stage 1),
+`dashboard.prometheus_adapter.PrometheusAdapter` (stage 12), and
+`watchdog.real_recovery_executor.RealRecoveryActionExecutor` (stage 11).
+This does not change any stage's row above — no new stage, no new ADR, no
+change to any engine's decision logic — see each stage's own
+`VALIDATION_MATRIX.md` entry and `docs/plans/phase3-real-adapters.md` for
+detail. `FakeBrokerAdapter`/`FakePrometheusReadPort`/
+`FakeRecoveryActionExecutor` remain in place unchanged for tests; nothing
+in this repository's test suite was switched to the real adapters (that
+would require a live MT5 terminal/Prometheus server/OS process control,
+none of which exist in this development environment).
+
 ---
 
 ## 3. Implementation-readiness gate (restated from `CLAUDE.md` §1.10 and `ADR-014` §7)

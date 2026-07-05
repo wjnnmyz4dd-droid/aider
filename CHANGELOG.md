@@ -15,6 +15,45 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-06 (Phase 3 — real infrastructure adapters)
+
+### Added
+- `phantom_pipeline/mt5_bridge/mt5_adapter.py` — `MT5Adapter`, a real
+  `BrokerAdapter` backed by the official `MetaTrader5` package. Translates
+  `BrokerRequest` (OPEN/ADJUST/CLOSE) to/from real `order_send` calls;
+  the MT5 client is an injectable constructor parameter (lazily imported
+  otherwise) since the real package only runs against a live MT5
+  terminal. 24 new tests.
+- `phantom_pipeline/data_pipeline/market_data_adapter.py` —
+  `MarketDataAdapter`, a real MT5-backed live-tick feed / historical
+  loader / warm-cache bootstrapper feeding `DataPipeline`'s existing
+  public methods only (`process_raw_tick`/`load_historical_bars`/
+  `warm_start`) — never a new ingestion path. 12 new tests.
+- `phantom_pipeline/dashboard/prometheus_adapter.py` — `PrometheusAdapter`,
+  a real, read-only `PrometheusReadPort` querying a live Prometheus
+  server's HTTP query API. Documents the info-metric label convention it
+  expects from a future per-stage exporter (no such exporter exists yet —
+  a flagged, real gap, not closed by this change). 10 new tests.
+- `phantom_pipeline/watchdog/real_recovery_executor.py` —
+  `RealRecoveryActionExecutor`, a real `RecoveryActionExecutor` performing
+  all 8 named `RecoveryActionType` actions via systemctl restart, SIGHUP
+  reload, real log rotation, and injectable per-component callbacks for
+  the three actions that must reach a specific live dependency this
+  package cannot import directly. 18 new tests.
+- `docs/plans/phase3-real-adapters.md` — the RPI Research/Plan/Validation
+  artifact for this change.
+
+### Changed
+- `VALIDATION_MATRIX.md` (Data Pipeline, MT5 Bridge, Watchdog, Dashboard
+  sections) and `IMPLEMENTATION_PLAN.md` — a "Phase 3 addition" note per
+  affected stage; no stage's status/exit-criteria row changed.
+- Nothing in any existing `phantom_pipeline` file — confirmed via
+  `git diff --stat` showing zero output against every tracked file; this
+  change is 100% new files. `FakeBrokerAdapter`/`FakePrometheusReadPort`/
+  `FakeRecoveryActionExecutor` remain unchanged and still back every
+  existing test. Full suite re-run: 1130/1130 tests (was 1066), 13/13
+  `validate.py`, `scripts/check_architecture.py` clean.
+
 ## 2026-07-06
 
 ### Added

@@ -48,6 +48,15 @@ Completion task):
 - Explicit cache invalidation events (§11) — `HistoricalCache.invalidate()`
   + `DataPipeline.invalidate_cache()`, structured-logged, never silent.
 
+**Phase 3 addition (2026-07-06):** `market_data_adapter.py`'s
+`MarketDataAdapter` — a real MT5-backed live-tick/historical-load/warm-
+cache source feeding `DataPipeline`'s existing public methods only (never
+a new ingestion path). 12 new tests
+(`tests/phantom_pipeline/data_pipeline/test_market_data_adapter.py`),
+covering connection, live-tick translation (including replay capture),
+bulk historical load (including that it is never captured into replay),
+and multi-symbol warm-start. See `docs/plans/phase3-real-adapters.md`.
+
 ---
 
 ## 2. Scanner (`ADR-002`, + Amendment 1)
@@ -206,6 +215,18 @@ above. Validation run:
 - `python3 -m compileall phantom_pipeline tests`: clean.
 - `python3 validate.py`: 13/13 pass.
 
+**Phase 3 addition (2026-07-06):** `mt5_adapter.py`'s `MT5Adapter` — a
+real `BrokerAdapter` implementation backed by the official `MetaTrader5`
+package, replacing `FakeBrokerAdapter` for production use (translation
+only, per `ADR-015`'s Adapter Forbidden Responsibilities; no change to
+`MT5Bridge`'s own idempotency/connection-state logic). 24 new tests
+(`tests/phantom_pipeline/mt5_bridge/test_mt5_adapter.py`), covering
+connection/heartbeat, OPEN/ADJUST/CLOSE translation (including partial
+close and unmappable-direction/missing-tick/missing-position failure
+modes), broker rejection and `order_send`-returned-`None` translation to
+`BrokerError`, and execution polling. See
+`docs/plans/phase3-real-adapters.md`.
+
 ---
 
 ## 9. Position Manager (`ADR-009`)
@@ -274,6 +295,20 @@ strongest for MT5 Bridge; other components rely on operational liveness
 proxies — not a blocker, tracked for future per-stage heartbeat
 amendments.)*
 
+**Phase 3 addition (2026-07-06):** `real_recovery_executor.py`'s
+`RealRecoveryActionExecutor` — a real `RecoveryActionExecutor` performing
+bounded OS-level actions for all 8 `RecoveryActionType` values (systemctl
+restart, SIGHUP-based reload, real log rotation, and injectable
+per-component callbacks for the three actions — reconnect/rebuild/clear-
+heartbeat — that need to reach a specific live dependency this package
+structurally cannot import). Replaces `FakeRecoveryActionExecutor` for
+production use; no change to `WatchdogEngine`'s own eligibility/backoff/
+freeze logic. 18 new tests
+(`tests/phantom_pipeline/watchdog/test_real_recovery_executor.py`),
+covering every action, every unconfigured-component fallback, and that
+`execute()` never raises even when its own configured mechanism throws.
+See `docs/plans/phase3-real-adapters.md`.
+
 ---
 
 ## 12. Dashboard & Observability (`ADR-012`)
@@ -292,6 +327,19 @@ above. Validation run:
 - `python3 -m unittest discover -s tests/phantom_pipeline`: 1008/1008 pass.
 - `python3 -m compileall phantom_pipeline tests`: clean.
 - `python3 validate.py`: 13/13 pass.
+
+**Phase 3 addition (2026-07-06):** `prometheus_adapter.py`'s
+`PrometheusAdapter` — a real, read-only `PrometheusReadPort` querying a
+live Prometheus server's HTTP query API, replacing `FakePrometheusReadPort`
+for production use; no `set_*`/`write_*` method anywhere on it, preserving
+the ABC's own read-only structural guarantee. Documents the info-metric
+label convention (`phantom_component_health_state`/`phantom_alert`/
+`phantom_system_metric`) this adapter expects from a future per-stage
+exporter — no such exporter exists yet in this repository, a real,
+flagged Phase 3 gap (see `docs/plans/phase3-real-adapters.md`). 10 new
+tests (`tests/phantom_pipeline/dashboard/test_prometheus_adapter.py`),
+covering translation of all three read methods and fail-soft (empty
+tuple, never a crash) behavior on query/HTTP/status failure.
 
 ---
 
