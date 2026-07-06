@@ -15,6 +15,75 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-06 (Phase 5 — production deployment & operations infrastructure)
+
+### Added
+- `phantom_pipeline/deployment/` — a new, 14th package: VPS/process
+  supervision infrastructure for running Phantom on a Windows VPS, no new
+  ADR (mirrors `orchestrator.py`, the Phase 3 adapters, and
+  `paper_trading`'s own "tooling built around the pipeline, not a stage"
+  framing — this phase sits one layer further out still: whole-process
+  supervision, not trading-pipeline integration).
+  - `models.py` — shared types: `ServiceState`, `DeploymentProfile`
+    (DEV/PAPER/LIVE), `ServiceDefinition`, `ServiceStatus`,
+    `RestartReason`/`RestartRecord`, `ConfigValidationIssue`/`Result`,
+    `ResourceSample`, `MonitoringSnapshot`,
+    `BackupRecord`/`BackupManifest`/`RestoreResult`,
+    `DeploymentCheckResult`/`DeploymentReadinessReport`.
+  - `config_manager.py` — `ConfigurationManager`: DEV/PAPER/LIVE profile
+    loading from an injected mapping (never reads `os.environ` directly),
+    pre-startup validation (missing secrets, invalid MT5 account, wrong
+    broker profile, LIVE-must-not-paper-trade).
+  - `service_manager.py` — `WindowsServiceManager`: auto-start after
+    reboot, crash/hang detection and restart with a logged
+    `RestartRecord`, and the hard rule "never restart MT5 while a trade
+    is actively executing" via an injected `trade_in_progress` probe —
+    a distinct layer above `watchdog.real_recovery_executor`'s own
+    in-pipeline component recovery, never a duplicate of it.
+  - `deployment_manager.py` — `ProductionDeploymentManager`: one-command
+    `start_all`/`stop_all` over a dependency-ordered
+    `Sequence[ServiceDefinition]` (topological sort on `depends_on`),
+    pre-launch dependency verification, post-start health verification,
+    graceful reverse-order shutdown.
+  - `logging_manager.py` — rotating + JSON-structured logging, daily
+    archive, crash-dump generation, retention-policy enforcement; pure
+    stdlib, no new dependency.
+  - `monitoring.py` — `ProductionMonitoring`: injected samplers for
+    CPU/RAM/disk/network latency/MT5 connection quality/Python process
+    health/Dashboard health, feeding `dashboard.config.DashboardConfig`'s
+    already-declared `infrastructure_components` — a previously-unfilled
+    gap, not a duplicate.
+  - `backup_manager.py` — `BackupManager`: checksummed backup/restore for
+    configuration, SQLite databases (via `sqlite3`'s online backup API,
+    never a raw copy of a live DB file), analytics, and trade history;
+    `verify_integrity` independently re-checksums the backup file itself.
+  - `deployment_validator.py` — `DeploymentValidator`: the 10 named
+    go-live checks as injected probes; `emergency_stop_functional` is
+    documented and tested to be backed by `PositionManager`'s own,
+    already-implemented `EMERGENCY_CLOSE` mechanism
+    (`compliance_kill_switch_active`) — never a second, invented kill
+    switch.
+- `tests/phantom_pipeline/deployment/` — 49 tests covering every module,
+  including the MT5-never-restarted-during-an-active-trade rule, the
+  LIVE-profile validation rules, checksummed backup/restore round-trips,
+  topological startup/shutdown ordering, and `emergency_stop_functional`
+  driving the real `PositionManager.EMERGENCY_CLOSE` path end-to-end via
+  the existing orchestrator fixtures.
+- `LIVE_DEPLOYMENT_GUIDE.md`, `VPS_SETUP_GUIDE.md`,
+  `DISASTER_RECOVERY.md`, `OPERATOR_CHECKLIST.md` — operator
+  documentation for wiring and running the deployment package in
+  production.
+- `docs/plans/phase5-production-deployment.md` — the RPI Research/Plan/
+  Validation artifact for this change.
+
+### Changed
+- Nothing in any existing `phantom_pipeline` file, ADR, or trading-logic
+  module — confirmed via `git diff --stat` showing zero output against
+  every tracked file; this change is 100% new files. Full suite re-run:
+  1264/1264 tests (was 1215), `validate.py` 13/13,
+  `scripts/check_architecture.py` clean (14 packages, no new cycle, no
+  new cross-package private-state access).
+
 ## 2026-07-06 (Phase 4 — paper trading & forward validation)
 
 ### Added
