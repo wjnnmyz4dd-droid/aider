@@ -15,6 +15,58 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-06 (Phase 4 — paper trading & forward validation)
+
+### Added
+- `phantom_pipeline/paper_trading/` — a new, 13th package: paper-trading
+  and observability tooling built around the already-Accepted 12-stage
+  pipeline, no new ADR (mirrors `orchestrator.py`'s own Phase 2 framing).
+  - `session_manager.py` — `SessionManager`: London/Tokyo/Sydney/New York
+    active-session detection, weekend handling, daily-reset/trading-day
+    boundaries, for the Runner's own scheduling — never Scanner's own
+    per-observation session tagging.
+  - `account_tracker.py` — `AccountTracker`: turns a raw equity reading
+    into the `daily_drawdown_pct`/`total_drawdown_pct` values
+    `RiskEngine`/`ComplianceEngine`'s own `AccountState` types have always
+    documented as an externally-supplied input — closing a real,
+    previously-unfilled gap.
+  - `forward_test_engine.py` — `ForwardTestEngine`/`ForwardTestReport`:
+    win rate/profit factor/expectancy/max drawdown attributed directly
+    from `AnalyticsEngine.compute_performance_statistics`; average RR,
+    slippage, missed/blocked trade counts derived transparently from
+    already-recorded `TradeProvenanceRecord` fields; execution latency,
+    duplicate prevention, and recovery statistics attributed directly
+    from each stage's own existing `*Metrics` object.
+  - `prop_firm_validator.py` — `PropFirmValidator`/`PropFirmProfile`
+    (FTMO/FundedNext reference presets): read-only config audit plus
+    real-time status against already-produced `RiskDecision`/
+    `ComplianceDecision` objects — a report, never a second blocking
+    authority.
+  - `report_generator.py` — `ReportGenerator`: daily/weekly/monthly
+    reports (best/worst pair/session/regime, biggest winner/loser, rule
+    blocking frequency, compliance/recovery statistics) built entirely
+    from `AnalyticsEngine`'s existing grouping methods.
+  - `paper_trading_runner.py` — `PaperTradingRunner`: drives
+    `PipelineOrchestrator`'s existing public methods on a schedule,
+    pulling one live tick per cycle and refusing to run against a
+    non-demo account (caller-supplied `confirm_demo_account`, re-checked
+    every cycle) — never places a live trade, never modifies any
+    engine's decision logic.
+  - `validation_dashboard.py` — `ValidationDashboardBuilder`: a new,
+    paper-trading-scoped read-only snapshot (system/watchdog health, MT5
+    connection, today's open/closed trades, prop-firm status, performance)
+    — additive, since `dashboard.models.ViewName` is a closed enum this
+    phase has no authorization to extend.
+- `docs/plans/phase4-paper-trading.md` — the RPI Research/Plan/Validation
+  artifact for this change.
+
+### Changed
+- Nothing in any existing `phantom_pipeline` file — confirmed via
+  `git diff --stat` showing zero output against every tracked file; this
+  change is 100% new files. Full suite re-run: 1215/1215 tests (was
+  1130), `validate.py` 13/13, `scripts/check_architecture.py` clean (13
+  packages, no new cycle, no new cross-package private-state access).
+
 ## 2026-07-06 (Phase 3 — real infrastructure adapters)
 
 ### Added
