@@ -12,13 +12,20 @@ Verifies, across every `phantom_pipeline/<package>/`:
    `.state_store`, `.config`, `.checks`, `.metrics`, `.logging_sink`,
    `.idempotency_store`, or any other internal module.
 
+3. **No pipeline-stage package imports `knowledge`** (`ADR-020` Hard
+   Rule 9) — the Knowledge/RAG subsystem may read every pipeline
+   stage's `.models`, but no pipeline stage may ever import from
+   `knowledge` in return; it is a pure downstream observer, exactly like
+   Watchdog/Dashboard are for the trading decision chain.
+
 This is read-only: it only parses import statements via a regular
 expression over already-committed source files. It never imports or
 executes `phantom_pipeline` code, and it never modifies anything.
 
 These are exactly the two checks performed by hand during the Phase 1
 Certification Audit; this script makes them repeatable rather than
-re-derived manually for every future change.
+re-derived manually for every future change. Check 3 was added for
+`ADR-020`.
 
 Usage: `python3 scripts/check_architecture.py`
 Exit code 0 on a clean architecture, 1 if any violation is found.
@@ -37,6 +44,18 @@ PACKAGE_ROOT = REPO_ROOT / "phantom_pipeline"
 # A package may only reach another package's public surface: its own
 # __init__.py (bare `from ..other import X`), or these three submodules.
 ALLOWED_SUBMODULES = {"models", "trace", "registry"}
+
+# The 10 sequential pipeline stages (ADR-001's documented order) — none
+# of these may import `knowledge` (ADR-020 Hard Rule 9). Cross-cutting
+# observer packages (watchdog, dashboard, deployment, paper_trading,
+# knowledge itself) are deliberately excluded from this set: they already
+# sit outside the trading decision chain by their own ADRs, so this rule
+# does not additionally constrain them.
+PIPELINE_STAGE_PACKAGES = {
+    "data_pipeline", "scanner", "strategy_engine", "scoring_engine",
+    "risk_engine", "compliance_engine", "execution_validator",
+    "mt5_bridge", "position_manager", "analytics",
+}
 
 _IMPORT_RE = re.compile(r"^from \.\.([a-z0-9_]+)(?:\.([a-z0-9_]+))?\s+import\b", re.MULTILINE)
 
@@ -116,11 +135,21 @@ def find_private_state_violations(packages: List[str]) -> List[str]:
     return violations
 
 
+def find_knowledge_import_violations(packages: List[str]) -> List[str]:
+    violations = []
+    for package in PIPELINE_STAGE_PACKAGES & set(packages):
+        for source_file, target_package, _submodule in find_cross_package_imports(package):
+            if target_package == "knowledge":
+                violations.append(f"{source_file}: pipeline stage {package!r} imports `knowledge` (ADR-020 Hard Rule 9)")
+    return violations
+
+
 def main() -> int:
     packages = discover_packages()
     graph = build_dependency_graph(packages)
     cycle = find_cycle(graph)
     violations = find_private_state_violations(packages)
+    knowledge_violations = find_knowledge_import_violations(packages)
 
     print("Architecture check — phantom_pipeline/")
     print("=" * 40)
@@ -140,6 +169,14 @@ def main() -> int:
             print(f"      - {violation}")
     else:
         print("PASS  no cross-package private-state access")
+
+    if knowledge_violations:
+        ok = False
+        print(f"FAIL  {len(knowledge_violations)} pipeline-stage -> knowledge violation(s):")
+        for violation in knowledge_violations:
+            print(f"      - {violation}")
+    else:
+        print("PASS  no pipeline-stage imports knowledge")
 
     print("=" * 40)
     print("RESULT: PASS" if ok else "RESULT: FAIL")

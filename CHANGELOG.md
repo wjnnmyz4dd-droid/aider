@@ -15,6 +15,60 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-06 (Knowledge & RAG subsystem — ADR-020)
+
+### Added
+- `docs/adr/ADR-020-knowledge-rag-subsystem.md` — Accepted, per explicit
+  in-session user direction. Establishes the Knowledge/RAG subsystem as
+  a cross-cutting observer (like Watchdog/Dashboard), with no decision,
+  execution, risk, compliance, or scoring authority; additive to
+  Dashboard only; deterministic-template explanations for Phase 1 (an
+  LLM "assistant mode" explicitly deferred); a real neural embedding
+  backend as an optional, lazily-imported production option behind the
+  same interface as the deterministic default.
+- `phantom_pipeline/knowledge/` — a new, 15th package: `models.py`,
+  `config.py`, `embeddings.py` (`HashingEmbeddingProvider` default,
+  `SentenceTransformerEmbeddingProvider` optional real backend),
+  `vector_store.py` (`InMemoryVectorStore`), `memory.py`
+  (`TradeMemoryStore`), `ingestion.py` (document ingestion restricted to
+  a named source set + `KnowledgeDocumentStore` with content-hash
+  dedup/incremental-update semantics + `build_trade_memory_record`,
+  which reads every field from an already-produced
+  `TradeProvenanceRecord`, never re-deriving one), `retriever.py`,
+  `search.py` (`SemanticSearchService` — winners/losers/similar-trades/
+  setup-pattern/drawdown-threshold convenience queries),
+  `engine.py` (`KnowledgeEngine` orchestrator + `ExplanationEngine`,
+  deterministic templates over each decision's own `reason_codes`/
+  `blocking_rules`/`blocking_reasons`/`decision_reason`), `logging_sink.py`,
+  `metrics.py`, `__init__.py`.
+- `tests/phantom_pipeline/knowledge/` — 133 tests: determinism/replay
+  determinism across independent engines, search accuracy, duplicate
+  prevention, memory integrity (every `TradeMemoryRecord` field traced to
+  its source), thread safety, documentation/trade indexing, vector
+  retrieval, and a dedicated structural-boundary suite (no pipeline
+  stage imports `knowledge`, `dashboard.models.ViewName` untouched, no
+  decision-verb method names, no arbitrary directory walk).
+- `docs/plans/knowledge-rag-subsystem.md` — the RPI Research/Plan
+  artifact, including the TF-IDF → feature-hashing design change
+  (corpus-order independence, needed for incremental indexing).
+- `docs/architecture/knowledge-subsystem-diagram.md` — Mermaid data-flow
+  diagram.
+- `KNOWLEDGE_DEPLOYMENT_GUIDE.md` — wiring guide (construct, prime from
+  docs, record trades, search, weekly review, dashboard snapshot);
+  every code sample verified to actually run against this repository.
+
+### Changed
+- `scripts/check_architecture.py` — extended with a third check (no
+  pipeline-stage package may import `knowledge`, `ADR-020` Hard Rule 9);
+  the two pre-existing checks are unchanged.
+- Nothing else in any existing `phantom_pipeline`/`tests` file —
+  confirmed via `git diff --stat` showing only `check_architecture.py`
+  modified against every tracked file; this change is otherwise 100%
+  new files. Full suite re-run: 1397/1397 tests (was 1264), `validate.py`
+  13/13, `scripts/check_architecture.py` clean (15 packages, no new
+  cycle, no cross-package private-state access, no pipeline-stage →
+  `knowledge` import).
+
 ## 2026-07-06 (VPS deployment package)
 
 ### Added
