@@ -65,7 +65,7 @@ class TestNoPipelineStageImportsKnowledge(unittest.TestCase):
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("no pipeline-stage imports knowledge", result.stdout)
+        self.assertIn("no pipeline-stage imports a cross-cutting observer package", result.stdout)
 
 
 class TestDashboardNotModified(unittest.TestCase):

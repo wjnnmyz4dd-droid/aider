@@ -15,6 +15,92 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-06 (Phantom AI Research Desk — ADR-021)
+
+### Added
+- `docs/adr/ADR-021-ai-research-desk.md` — Accepted, per explicit user
+  specification this session. Establishes the Research Desk as a
+  cross-cutting observer one layer above `phantom_pipeline.knowledge`
+  (`ADR-020`), with no decision, execution, risk, compliance, or scoring
+  authority; every recommendation is exported data requiring human
+  approval before becoming production logic.
+- `phantom_pipeline/research_desk/` — a new, 16th package, built
+  **on top of, not beside**, `phantom_pipeline.knowledge`: no second
+  vector store, no second document repository, no second dashboard-
+  snapshot type, no second `ResearchSuggestion` type. Every new report
+  type converts to a `knowledge.KnowledgeDocument` using an
+  already-existing `DocumentKind` value — zero modification to
+  `knowledge/models.py`.
+  - `market_research.py` — `MarketResearchAgent`: structure/volatility/
+    liquidity/session/regime analysis from `ScannerObservation`;
+    macro-news/economic-calendar analysis honestly scoped to the one
+    real feed that exists (`NewsCalendarState.blackout_windows`, per
+    `ADR-006` §8) — no richer feed fabricated.
+  - `debate.py` — `BullBearDebateAgent`: per-symbol bullish/bearish/
+    neutral thesis with a transparent (agreeing-signals/considered-
+    signals) confidence score; `DebateThesis` has no direction/size/
+    entry field — structurally never a trading signal.
+  - `trade_thesis.py` — `TradeThesisGenerator`: institutional context/
+    expected continuation/risk factors/lessons learned, read entirely
+    from the same `TradeProvenanceRecord` a `TradeMemoryRecord` was
+    already built from.
+  - `trade_journal.py` — `AITradeJournal`: reuses
+    `knowledge.ExplanationEngine` for risk/execution narrative (never a
+    second explanation implementation); `suggested_improvements` is the
+    one new heuristic. `JournalEntry` is frozen with no update method
+    anywhere — a correction is a new entry, never an edit of history.
+  - `strategy_research.py` — `StrategyResearchAgent`: reuses
+    `AnalyticsEngine.group_by_pair/session/regime`; rule-combination
+    co-occurrence frequency is genuinely new analysis;
+    `analyze_parameter_sensitivity` always reports `available=False` —
+    no backtest/parameter-sweep module exists anywhere in
+    `phantom_pipeline`, a real gap, not fabricated.
+  - `institutional_review.py` — `WeeklyInstitutionalReviewGenerator`:
+    composes an already-built `paper_trading.PeriodReport` (never
+    recomputes it) into a narrative executive/performance/risk/
+    compliance/execution/market review with recurring-mistake detection
+    read from `PeriodReport`'s own already-attributed block-count
+    dictionaries.
+  - `explainable.py` — `ExplainableDecisionEngine`: delegates every
+    already-supported natural-language question shape to
+    `knowledge.SemanticSearchService` (reused, not duplicated);
+    `compare_periods`/`what_changed_over` are the new query shapes,
+    built entirely from two `PeriodReport`s' own fields.
+  - `dashboard.py` — `ResearchDeskDashboardBuilder`: wraps
+    `knowledge.KnowledgeDashboardSnapshot` verbatim as a field on a new
+    `ResearchDeskDashboardSnapshot`; `dashboard/` (`ADR-012`) and
+    `knowledge/` (`ADR-020`) are both untouched.
+  - `models.py`, `config.py`, `logging_sink.py`, `metrics.py`,
+    `__init__.py`.
+- `tests/phantom_pipeline/research_desk/` — 100 tests: unit coverage per
+  agent, replay determinism, a shared-`KnowledgeEngine`-reuse integration
+  test, and a dedicated structural-boundary suite (no decision-verb
+  method names, no pipeline-stage import of `research_desk` or
+  `knowledge`, `dashboard.models.ViewName` still 10 values,
+  `knowledge.models.DocumentKind` still 17 values, `JournalEntry`/
+  `AITradeJournal` have no update method, `DebateThesis`/`ThesisCase`
+  have no signal-shaped field).
+- `docs/plans/ai-research-desk.md` — the RPI Research/Plan artifact,
+  including the full duplicate-logic reuse map against `ADR-020`.
+- `RESEARCH_DESK_GUIDE.md` — wiring guide; every code sample verified to
+  actually run against this repository.
+
+### Changed
+- `scripts/check_architecture.py` — the `ADR-020` knowledge-import check
+  is generalized to a `CROSS_CUTTING_OBSERVER_PACKAGES` set covering both
+  `knowledge` and `research_desk`; no pipeline stage may import either.
+- `tests/phantom_pipeline/knowledge/test_structural_boundary.py` — one
+  assertion updated to match the generalized check's new output string
+  (no behavior change to the check itself beyond the `research_desk`
+  addition).
+- Nothing else in any existing `phantom_pipeline`/`tests` file —
+  confirmed via `git diff --stat` showing only the two files above
+  modified against every tracked file; this change is otherwise 100%
+  new files. Full suite re-run: 1497/1497 tests (was 1397), `validate.py`
+  13/13, `scripts/check_architecture.py` clean (16 packages, no new
+  cycle, no cross-package private-state access, no pipeline-stage →
+  observer-package import).
+
 ## 2026-07-06 (Knowledge & RAG subsystem — ADR-020)
 
 ### Added
