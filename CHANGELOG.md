@@ -15,6 +15,55 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-06 (VPS deployment package)
+
+### Added
+- `DEPLOYMENT_PACKAGE/` — a fresh, VPS-ready snapshot of the current
+  working Phantom runtime only, built fully from this repository (no
+  assumption that any old VPS files are usable):
+  - `phantom_pipeline/` — byte-identical copy of all 14 packages
+    (`analytics`, `compliance_engine`, `dashboard`, `data_pipeline`,
+    `deployment`, `execution_validator`, `mt5_bridge`, `orchestrator.py`,
+    `paper_trading`, `position_manager`, `risk_engine`, `scanner`,
+    `scoring_engine`, `strategy_engine`, `watchdog`) — confirmed via
+    `diff -rq` showing zero output against the source tree. Legacy
+    `phantom/` and `phantom_institutional.py` are deliberately excluded
+    (reference-only, "not a running authority" per `CLAUDE.md` §2) — not
+    packaged as if they were part of the current runtime.
+  - `config/{dev,paper,live}.env.template` — profile configuration
+    templates matching `ConfigurationManager`'s and `MT5Adapter`'s real
+    env-var names.
+  - `scripts/start_phantom.py` — the new production entry point (the
+    "EA" driver for the current, sole authoritative system): wires the
+    Phase 3 real adapters and every stage engine exactly as
+    `tests/phantom_pipeline/orchestrator/_fixtures.py`'s own
+    `build_orchestrator()` already proves works, auto-discovering real
+    playbooks/scoring rules (never hand-listed), then dispatches by
+    `DeploymentProfile` — DEV (construction-only smoke test), PAPER
+    (delegates to the existing `PaperTradingRunner`'s demo-account-
+    guarded loop, unchanged), LIVE (configuration validation, service
+    startup, and all 10 `DeploymentValidator` go-live checks wired to
+    real probes, including `emergency_stop_functional` driving
+    `PositionManager`'s own `EMERGENCY_CLOSE` path against a synthetic
+    probe position — stated honestly as *not* including a continuous
+    live-order-submission scheduler, since none exists yet anywhere in
+    `phantom_pipeline`).
+  - `scripts/start_phantom.bat`/`stop_phantom.bat` — Windows wrappers.
+  - `requirements.txt` — `MetaTrader5`/`requests`, confirmed as the only
+    two third-party imports anywhere in `phantom_pipeline` via a
+    repository-wide import scan.
+  - `VERSION.txt` — exact source commit/branch/build timestamp.
+- `COPY_TO_VPS.md`, `START_PHANTOM.md`, `VERIFY_DEPLOYMENT.md` — operator
+  procedures: backup-before-overwrite VPS copy steps, per-profile startup
+  instructions, and a verification checklist that does not assume the
+  (deliberately unshipped) test suite is present on the VPS.
+
+### Changed
+- Nothing in any existing `phantom_pipeline`/`tests`/`scripts` file —
+  confirmed via `git status --porcelain` showing only new files. Full
+  suite re-run: 1264/1264 tests (unchanged), `validate.py` 13/13,
+  `scripts/check_architecture.py` clean (14 packages).
+
 ## 2026-07-06 (Phase 5 — production deployment & operations infrastructure)
 
 ### Added

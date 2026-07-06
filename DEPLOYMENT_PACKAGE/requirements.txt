@@ -1,0 +1,18 @@
+# Runtime dependencies for phantom_pipeline (verified via a repository-wide
+# import scan of phantom_pipeline/ — everything else used is Python 3.11+
+# stdlib: dataclasses, enum, datetime, sqlite3, logging, json, gzip,
+# hashlib, subprocess, signal, socket, shutil, os, typing, collections,
+# importlib, pkgutil, abc, inspect).
+#
+# MetaTrader5 is Windows-only and required for MT5Adapter
+# (mt5_bridge/mt5_adapter.py) and MarketDataAdapter
+# (data_pipeline/market_data_adapter.py) to connect to a real terminal.
+# Both modules lazily import it, so the rest of phantom_pipeline (and all
+# of DEV-profile construction-only testing) works without it installed.
+MetaTrader5>=5.0.45
+
+# requests is required only if dashboard/prometheus_adapter.py's
+# PrometheusAdapter is wired in (PROMETHEUS_BASE_URL set); also lazily
+# imported, so it is optional for a deployment with no live Prometheus
+# server.
+requests>=2.31.0
