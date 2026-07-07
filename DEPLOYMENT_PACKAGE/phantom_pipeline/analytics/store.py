@@ -53,6 +53,8 @@ class _TradeBucket:
         self.position_synchronization_results: List[PositionSynchronizationResult] = []
         self.account_snapshots: List[Any] = []
         self.market_snapshots: List[MarketSnapshot] = []
+        self.statistical_risk_assessment: Optional[Any] = None
+        self.kelly_recommendation: Optional[float] = None
 
 
 class TradeProvenanceStore(ABC):
@@ -111,6 +113,14 @@ class TradeProvenanceStore(ABC):
         ...
 
     @abstractmethod
+    def record_statistical_risk_assessment(self, trace_id: str, assessment: Any) -> None:
+        ...
+
+    @abstractmethod
+    def record_kelly_recommendation(self, trace_id: str, value: Optional[float]) -> None:
+        ...
+
+    @abstractmethod
     def get_bucket(self, trace_id: str) -> Optional[_TradeBucket]:
         ...
 
@@ -166,6 +176,12 @@ class InMemoryTradeProvenanceStore(TradeProvenanceStore):
 
     def record_market_snapshot(self, trace_id: str, snapshot: MarketSnapshot) -> None:
         self._bucket_for(trace_id).market_snapshots.append(snapshot)
+
+    def record_statistical_risk_assessment(self, trace_id: str, assessment: Any) -> None:
+        self._bucket_for(trace_id).statistical_risk_assessment = assessment
+
+    def record_kelly_recommendation(self, trace_id: str, value: Optional[float]) -> None:
+        self._bucket_for(trace_id).kelly_recommendation = value
 
     def get_bucket(self, trace_id: str) -> Optional[_TradeBucket]:
         return self._buckets.get(trace_id)

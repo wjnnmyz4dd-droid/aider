@@ -21,6 +21,7 @@ from .engine import ExplanationEngine, KnowledgeEngine
 from .ingestion import (
     KNOWN_ROOT_DOCUMENTS,
     KnowledgeDocumentStore,
+    build_statistical_risk_document,
     build_trade_memory_record,
     ingest_directory,
     ingest_markdown_file,
@@ -70,6 +71,7 @@ __all__ = [
     "ingest_directory",
     "ingest_repository_documents",
     "build_trade_memory_record",
+    "build_statistical_risk_document",
     "Retriever",
     "SemanticSearchService",
     "trade_to_text",

@@ -65,6 +65,12 @@ class MarketStructureFinding:
     active_sessions: Tuple[str, ...]
     regime: Optional[str]
 
+    # ADR-022 Amendment 1 §A1.2 item 5 — additive, defaulted so every
+    # pre-existing construction of this type is unaffected. Plain quoted
+    # text built from an already-produced `StatisticalRiskAssessment`;
+    # never a new statistical value computed here.
+    statistical_risk_summary: Optional[str] = None
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "active_sessions", tuple(self.active_sessions))
 

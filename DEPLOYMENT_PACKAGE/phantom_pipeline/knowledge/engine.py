@@ -32,13 +32,15 @@ from ..execution_validator.models import Verdict as ExecutionVerdict
 from ..paper_trading import PeriodReport
 from ..position_manager.models import ManagementAction, PositionManagementDecision
 from ..risk_engine.models import RiskDecision, RiskTier
+from ..statistical_risk.models import StatisticalRiskAssessment
 from .config import DEFAULT_CONFIG, KnowledgeConfig
 from .embeddings import EmbeddingProvider, HashingEmbeddingProvider
-from .ingestion import KnowledgeDocumentStore, build_trade_memory_record
+from .ingestion import KnowledgeDocumentStore, build_statistical_risk_document, build_trade_memory_record
 from .logging_sink import log_document_ingested, log_search_performed, log_trade_recorded
 from .memory import TradeMemoryStore
 from .metrics import KnowledgeMetrics
 from .models import (
+    DocumentKind,
     KnowledgeDashboardSnapshot,
     KnowledgeDocument,
     ResearchCategory,
@@ -222,6 +224,31 @@ class KnowledgeEngine:
         else:
             self.metrics.record_duplicate_trade_skipped()
         return memory_record
+
+    def record_statistical_risk_assessment(self, assessment: StatisticalRiskAssessment, now: datetime) -> bool:
+        """Stores one `StatisticalRiskAssessment` as a `KnowledgeDocument`
+        (`ADR-022` Amendment 1 §A1.2 item 4) — reuses `ingest_document()`
+        verbatim (dedup, embedding, logging, metrics all already covered
+        by that path, never a second ingestion implementation)."""
+        document = build_statistical_risk_document(assessment, now)
+        return self.ingest_document(document)
+
+    def find_statistical_risk_assessments(
+        self, recommendation: Optional[str] = None
+    ) -> Tuple[KnowledgeDocument, ...]:
+        """Literal filter over already-ingested `STATISTICAL_RISK_ASSESSMENT`
+        documents (`ADR-022` Amendment 1 §A1.2 item 4) — mirrors
+        `SemanticSearchService.find_by_setup_pattern`'s own literal-match
+        precedent; free-text questions ("safest trading weeks", "highest
+        portfolio heat periods", "compare volatility regimes") are served
+        by `search()`'s existing semantic path over the same documents,
+        never a second, fabricated NLP layer."""
+        return tuple(
+            document
+            for document in self._document_store.all()
+            if document.kind == DocumentKind.STATISTICAL_RISK_ASSESSMENT
+            and (recommendation is None or document.metadata.get("statistical_recommendation") == recommendation)
+        )
 
     def search(self, text: str, top_k: Optional[int] = None, filters: Optional[dict] = None) -> Tuple[SearchResult, ...]:
         start = time.monotonic()

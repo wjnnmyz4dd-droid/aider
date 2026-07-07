@@ -1,23 +1,13 @@
 Phantom Deployment Package
-===========================
-Source repository commit: f5c5e3e745a25b596510bb7fd8a9814353f06ebb
-Short commit:              f5c5e3e
-Source branch:              claude/phantom-ea-visibility-cjjf3a
-Package built (UTC):        2026-07-07T04:46:40Z
-Rebuilt from scratch: yes (previous package deleted and fully
-regenerated — never patched in place; see CHANGELOG.md this date).
+Source commit: 53ea4ea347604472cca49e0db85df3d3867690eb
+Branch: claude/phantom-ea-visibility-cjjf3a
+Rebuilt: 2026-07-07T23:29:12Z
 
-Packaged contents: phantom_pipeline/ (16 packages: analytics,
-compliance_engine, dashboard, data_pipeline, deployment,
+Packages (17):
+analytics, compliance_engine, dashboard, data_pipeline, deployment,
 execution_validator, knowledge, mt5_bridge, orchestrator.py,
 paper_trading, position_manager, research_desk, risk_engine, scanner,
-scoring_engine, strategy_engine, watchdog), config/ templates, scripts/
-(start_phantom.py entry point + Windows wrappers), requirements.txt.
+scoring_engine, statistical_risk, strategy_engine, watchdog
 
-Excluded (by design, per COPY_TO_VPS.md): tests/, docs/adr/, AUDIT.md,
-IMPLEMENTATION_PLAN.md, VALIDATION_MATRIX.md, docs/plans/, CLAUDE.md,
-.claude/, legacy phantom/ and phantom_institutional.py (reference-only,
-not a running authority per CLAUDE.md SS2).
-
-This file is regenerated on every package build - do not hand-edit; diff
-it against the previous VERSION.txt to see what changed between builds.
+Rebuilt from scratch: phantom_pipeline/ copied wholesale from source,
+never patched in place. diff -rq against source confirms byte-identical.

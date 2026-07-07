@@ -51,6 +51,20 @@ class StrategyResearchAgent:
     def best_worst_regimes(self, records: Sequence[TradeProvenanceRecord]) -> Tuple[Optional[str], Optional[str]]:
         return self._rank(self._analytics.group_by_regime(records))
 
+    def best_worst_statistical_recommendation(
+        self, records: Sequence[TradeProvenanceRecord]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Groups by the already-recorded `StatisticalRiskAssessment.statistical_recommendation`
+        (`ADR-022` Amendment 1 §A1.2 item 5) — mirrors `best_worst_pairs`/
+        `best_worst_sessions`/`best_worst_regimes` exactly; never computes
+        a new statistical value, only groups by one already recorded."""
+        groups: Dict[str, list] = defaultdict(list)
+        for record in records:
+            assessment = record.statistical_risk_assessment
+            if assessment is not None:
+                groups[assessment.statistical_recommendation.value].append(record)
+        return self._rank({key: tuple(group) for key, group in groups.items()})
+
     def _rank(self, groups: Dict[str, Tuple[TradeProvenanceRecord, ...]]) -> Tuple[Optional[str], Optional[str]]:
         totals = {}
         for key, group_records in groups.items():

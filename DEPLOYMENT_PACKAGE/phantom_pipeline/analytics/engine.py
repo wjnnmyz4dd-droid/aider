@@ -137,6 +137,14 @@ class AnalyticsEngine:
         self.store.record_market_snapshot(trace_id, snapshot)
         self._log_and_meter(trace_id, "market_snapshot")
 
+    def collect_statistical_risk_assessment(self, trace_id: str, assessment: Any) -> None:
+        self.store.record_statistical_risk_assessment(trace_id, assessment)
+        self._log_and_meter(trace_id, "statistical_risk_assessment")
+
+    def collect_kelly_recommendation(self, trace_id: str, value) -> None:
+        self.store.record_kelly_recommendation(trace_id, value)
+        self._log_and_meter(trace_id, "kelly_recommendation")
+
     def _log_and_meter(self, trace_id: str, kind: str) -> None:
         log_collected(trace_id, kind)
         if self.metrics is not None:
@@ -169,6 +177,8 @@ class AnalyticsEngine:
             final_outcome=final_outcome,
             analytics_version=ANALYTICS_VERSION,
             collected_at=now,
+            statistical_risk_assessment=bucket.statistical_risk_assessment,
+            kelly_recommendation=bucket.kelly_recommendation,
         )
         log_provenance_record(record)
         if self.metrics is not None:

@@ -71,6 +71,16 @@ class TradeThesisGenerator:
             factors.extend(f"binding constraint: {e.constraint}" for e in record.risk_decision.constraint_evaluations if e.binding)
         if record.compliance_decision is not None and record.compliance_decision.blocking_rules:
             factors.extend(f"compliance concern: {rule}" for rule in record.compliance_decision.blocking_rules)
+        # ADR-022 Amendment 1 §A1.2 item 5 — reads the already-recorded
+        # StatisticalRiskAssessment `record` itself already carries
+        # (analytics.TradeProvenanceRecord.statistical_risk_assessment);
+        # never computes a new statistical value, only quotes one.
+        assessment = record.statistical_risk_assessment
+        if assessment is not None:
+            factors.append(
+                f"statistical risk: {assessment.statistical_recommendation.value} "
+                f"(confidence {assessment.confidence_score}, risk of ruin {assessment.risk_of_ruin})"
+            )
         return tuple(factors)
 
     def _lessons_learned(self, record: TradeProvenanceRecord) -> Tuple[str, ...]:
