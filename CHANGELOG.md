@@ -15,6 +15,86 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-07 (Statistical Risk Integration — ADR-022 Amendment 1)
+
+### Added
+- `docs/adr/ADR-022-statistical-risk-management.md` Amendment 1 —
+  documents the one classification change (`analytics` leaves
+  `scripts/check_architecture.py`'s `PIPELINE_STAGE_PACKAGES` restricted
+  set, since it holds no decision authority — `ADR-010` §1/§3/§11) and
+  the 8 additive integration points below.
+- `phantom_pipeline/statistical_risk/dashboard.py` — `StatisticalRiskDashboardBuilder`,
+  `trend_point_from_assessment()`; `StatisticalRiskTrendPoint`/
+  `StatisticalRiskTrendReport`/`StatisticalRiskDashboardSnapshot` added to
+  `statistical_risk/models.py`; `StatisticalRiskEngine.kelly_recommendation()`/
+  `.compute_trend()`/`.confidence_interval()` added (all additive,
+  `assess()`'s existing signature/return type unchanged).
+- `phantom_pipeline/paper_trading/statistical_risk_backtest.py` —
+  `StatisticalRiskBacktester`: compares actual realized PnL against what
+  following each recommendation's implied risk fraction would have
+  produced (a documented linear-scaling estimate, not a re-simulation).
+- `tests/phantom_pipeline/orchestrator/test_statistical_risk_integration.py` —
+  19 end-to-end tests: trace ID continuity, no regression (wiring in
+  statistical_risk changes nothing else in a `CandidateCycleResult`),
+  determinism across independent orchestrators, historical storage,
+  dashboard rendering, knowledge ingestion (+ dedup), research desk
+  integration (thesis/journal/strategy-research/explainable), paper
+  trading backtest.
+
+### Changed
+- `scripts/check_architecture.py` — `analytics` removed from
+  `PIPELINE_STAGE_PACKAGES` (joins `watchdog`/`dashboard`/`paper_trading`/
+  `deployment` as already outside the restricted set); `statistical_risk`
+  unchanged in `CROSS_CUTTING_OBSERVER_PACKAGES` — the 9 remaining
+  pipeline-stage packages (`risk_engine` included) are still structurally
+  forbidden from ever importing `statistical_risk`.
+- **Orchestrator**: `PipelineOrchestrator` gains two new `Optional`,
+  default-`None` constructor parameters (`statistical_risk`,
+  `statistical_risk_records_provider`) — omitting either reproduces
+  every prior caller's behavior exactly. `_run_candidate()` computes one
+  `StatisticalRiskAssessment` immediately after `risk_decision` (never
+  gating, altering, or delaying any stage below it) and forwards it to
+  Analytics and a new, defaulted `CandidateCycleResult.statistical_risk_assessment`
+  field. New `render_statistical_risk_dashboard_snapshot()` method,
+  wholly separate from `render_dashboard_snapshot()`'s existing dict.
+- **Analytics**: `TradeProvenanceRecord` gains two new, defaulted, loosely-
+  typed (`Any`) fields — `statistical_risk_assessment`, `kelly_recommendation`
+  — mirroring `account_snapshots`' own precedent, specifically to avoid
+  an analytics ↔ statistical_risk circular import (`statistical_risk`
+  already depends on `analytics.models.TradeProvenanceRecord`). New
+  `collect_statistical_risk_assessment`/`collect_kelly_recommendation`
+  methods on `AnalyticsEngine`, mirroring every existing `collect_*`.
+- **Paper Trading**: `PeriodReport` gains two new, defaulted fields
+  (`statistical_risk_trend`, `statistical_risk_backtest`); `ReportGenerator.generate*()`
+  accept them as new, defaulted parameters. `PaperTradingRunner` gains
+  `preview_statistical_risk()`.
+- **Knowledge**: new `DocumentKind.STATISTICAL_RISK_ASSESSMENT` value
+  (18th member); `ingestion.build_statistical_risk_document()`;
+  `KnowledgeEngine.record_statistical_risk_assessment()`/`find_statistical_risk_assessments()`.
+- **AI Research Desk**: `TradeThesisGenerator`/`AITradeJournal` read the
+  already-recorded `TradeProvenanceRecord.statistical_risk_assessment`
+  they already receive (no new parameter needed);
+  `WeeklyInstitutionalReviewGenerator` reads `PeriodReport.statistical_risk_trend`/
+  `.statistical_risk_backtest` it already receives;
+  `StrategyResearchAgent.best_worst_statistical_recommendation()` (new
+  method); `MarketResearchAgent` gains an optional `statistical_risk_assessments`
+  parameter and `MarketStructureFinding.statistical_risk_summary` (new,
+  defaulted field). `ExplainableDecisionEngine.explain_statistical_risk()`
+  answers the 8 named question shapes via deterministic templates.
+- `tests/phantom_pipeline/research_desk/test_structural_boundary.py` —
+  `DocumentKind` count assertion updated 17 → 18 (the test's own stated
+  purpose — catch an unreviewed drift — is satisfied by tracking every
+  intentional, ADR-documented addition, not by freezing the enum).
+
+### Confirmed unchanged
+- `risk_engine/`, `compliance_engine/`, `execution_validator/`,
+  `position_manager/`, `mt5_bridge/`, `scanner/`, `strategy_engine/`,
+  `dashboard/` — `git diff --stat` against all eight is empty.
+  `StatisticalRiskAssessment`'s 18-field contract and `RiskRecommendation`'s
+  4-value enum are unchanged. Full suite: 1629/1629 tests (1610 existing
+  + 19 new integration tests, zero regressions), `validate.py` 13/13,
+  `scripts/check_architecture.py` clean (17 packages).
+
 ## 2026-07-07 (Statistical Risk Management — ADR-022)
 
 ### Added

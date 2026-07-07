@@ -20,6 +20,7 @@ alone.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
 from ..analytics.models import TradeProvenanceRecord
@@ -27,8 +28,15 @@ from ..data_pipeline.models import NormalizedBar
 from ..risk_engine.models import OpenPosition, RiskDecision
 from ..scanner.models import ScannerObservation, StructureConfidence
 from . import correlation, drawdown, expectancy, monte_carlo, portfolio, probability, volatility
-from .config import DEFAULT_CONFIG, StatisticalRiskConfig
-from .models import SCHEMA_VERSION, RiskRecommendation, StatisticalRiskAssessment
+from .config import DEFAULT_CONFIG, STATISTICAL_RISK_VERSION, StatisticalRiskConfig
+from .dashboard import trend_point_from_assessment
+from .models import (
+    SCHEMA_VERSION,
+    ConfidenceInterval,
+    RiskRecommendation,
+    StatisticalRiskAssessment,
+    StatisticalRiskTrendReport,
+)
 
 _RECOMMENDATION_ORDER = (
     RiskRecommendation.NORMAL_RISK,
@@ -126,6 +134,53 @@ def recommendation_for_ruin(
 class StatisticalRiskEngine:
     def __init__(self, config: StatisticalRiskConfig = DEFAULT_CONFIG) -> None:
         self.config = config
+
+    def kelly_recommendation(self, records: Sequence[TradeProvenanceRecord]) -> Optional[float]:
+        """Convenience wrapper exposing `kelly_criterion()` over the same
+        rolling window `assess()` uses internally — added so callers
+        (Analytics, Dashboard) can read Kelly without `assess()`'s own
+        signature/return type changing (`ADR-022` Amendment 1 §A1.2 item
+        2/6). Still advisory only: nothing calls this automatically."""
+        return kelly_criterion(expectancy.rolling_window_pnls(records, self.config))
+
+    def confidence_interval(
+        self, trace_id: str, records: Sequence[TradeProvenanceRecord]
+    ) -> ConfidenceInterval:
+        """Confidence interval on expected return for `trace_id`
+        (`ADR-022` §1, capability 20) — built from `expectancy.confidence_interval_bounds()`
+        over the same rolling window `assess()` uses; `None` bounds mean
+        an honestly too-small sample (Hard Rule 7), never a fabricated
+        interval."""
+        window_pnls = expectancy.rolling_window_pnls(records, self.config)
+        lower, upper = expectancy.confidence_interval_bounds(window_pnls, self.config.confidence_interval_level)
+        point_estimate = expectancy.rolling_expectancy(window_pnls)
+        return ConfidenceInterval(
+            trace_id=trace_id,
+            point_estimate=point_estimate,
+            lower_bound=lower,
+            upper_bound=upper,
+            confidence_level=self.config.confidence_interval_level,
+            sample_size=len(window_pnls),
+        )
+
+    def compute_trend(
+        self, records: Sequence[TradeProvenanceRecord], now: datetime
+    ) -> StatisticalRiskTrendReport:
+        """Reduces every `records` entry already carrying a recorded
+        `statistical_risk_assessment` (`analytics.TradeProvenanceRecord`'s
+        own loosely-typed field, see that module's docstring for why) to
+        one `StatisticalRiskTrendPoint`, in the order supplied — read-only,
+        no new statistic computed (`ADR-022` Amendment 1 §A1.2 items 2/6)."""
+        points = tuple(
+            trend_point_from_assessment(
+                record.statistical_risk_assessment, record.collected_at, record.kelly_recommendation
+            )
+            for record in records
+            if record.statistical_risk_assessment is not None
+        )
+        return StatisticalRiskTrendReport(
+            points=points, generated_at=now, statistical_risk_version=STATISTICAL_RISK_VERSION
+        )
 
     def assess(
         self,

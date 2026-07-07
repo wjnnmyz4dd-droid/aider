@@ -64,6 +64,23 @@ class WeeklyInstitutionalReviewGenerator:
             f"expectancy {ftr.expectancy}, max drawdown {ftr.max_drawdown}."
         )
         risk_review = f"Daily drawdown {ftr.daily_drawdown_pct}%, total drawdown {ftr.total_drawdown_pct}%."
+        # ADR-022 Amendment 1 §A1.2 item 5 — reads the already-built
+        # statistical_risk_trend/backtest `period_report` itself already
+        # carries (paper_trading.PeriodReport, ADR-022 Amendment 1 §A1.2
+        # item 3); never computes a new statistical value.
+        if period_report.statistical_risk_trend is not None and period_report.statistical_risk_trend.points:
+            latest = period_report.statistical_risk_trend.points[-1]
+            risk_review += (
+                f" Latest statistical risk: {latest.statistical_recommendation.value} "
+                f"(risk of ruin {latest.risk_of_ruin}, portfolio heat {latest.portfolio_heat})."
+            )
+        if period_report.statistical_risk_backtest is not None and period_report.statistical_risk_backtest.sample_size > 0:
+            backtest = period_report.statistical_risk_backtest
+            risk_review += (
+                f" Following every statistical recommendation this period would have changed PnL by "
+                f"{backtest.improvement:.2f} (actual {backtest.actual_total_pnl:.2f} vs. "
+                f"hypothetical {backtest.hypothetical_total_pnl:.2f})."
+            )
         compliance_review = (
             f"Kill switch active: {period_report.kill_switch_active}. "
             f"Daily lockout active: {period_report.daily_lockout_active}. "

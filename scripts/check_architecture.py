@@ -28,6 +28,10 @@ These are exactly the two checks performed by hand during the Phase 1
 Certification Audit; this script makes them repeatable rather than
 re-derived manually for every future change. Check 3 was added for
 `ADR-020`, generalized for `ADR-021`, and extended again for `ADR-022`.
+`ADR-022` Amendment 1 removed `analytics` from `PIPELINE_STAGE_PACKAGES`
+(it holds no decision authority — see the amendment for the full
+reasoning) so it may store `statistical_risk`'s output like it already
+stores every other stage's.
 
 Usage: `python3 scripts/check_architecture.py`
 Exit code 0 on a clean architecture, 1 if any violation is found.
@@ -47,17 +51,19 @@ PACKAGE_ROOT = REPO_ROOT / "phantom_pipeline"
 # __init__.py (bare `from ..other import X`), or these three submodules.
 ALLOWED_SUBMODULES = {"models", "trace", "registry"}
 
-# The 10 sequential pipeline stages (ADR-001's documented order) — none
-# of these may import a cross-cutting observer package (ADR-020 Hard
-# Rule 9, ADR-021 Hard Rule 9, ADR-022 Hard Rule 4). Other cross-cutting
-# observer packages (watchdog, dashboard, deployment, paper_trading) are
-# deliberately excluded from this set: they already sit outside the
-# trading decision chain by their own ADRs, so this rule does not
-# additionally constrain them.
+# The 9 packages that hold real trading decision authority (ADR-001's
+# documented order, minus Analytics) — none of these may import a
+# cross-cutting observer package (ADR-020 Hard Rule 9, ADR-021 Hard Rule
+# 9, ADR-022 Hard Rule 4). Other cross-cutting observer packages
+# (watchdog, dashboard, deployment, paper_trading, and — as of ADR-022
+# Amendment 1 — analytics) are deliberately excluded from this set: they
+# already sit outside the trading decision chain by their own ADRs (for
+# analytics: ADR-010 SS1/SS3/SS11's own "collects, never decides" Hard
+# Rules), so this rule does not additionally constrain them.
 PIPELINE_STAGE_PACKAGES = {
     "data_pipeline", "scanner", "strategy_engine", "scoring_engine",
     "risk_engine", "compliance_engine", "execution_validator",
-    "mt5_bridge", "position_manager", "analytics",
+    "mt5_bridge", "position_manager",
 }
 
 # Cross-cutting observer packages no pipeline stage may ever import

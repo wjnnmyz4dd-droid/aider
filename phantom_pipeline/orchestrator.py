@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Optional, Sequence, Tuple, Union
 
 from .analytics.engine import AnalyticsEngine
 from .analytics.models import PerformanceStatistics, TradeProvenanceRecord
@@ -41,6 +41,7 @@ from .compliance_engine.models import ComplianceDecision, NewsCalendarState
 from .dashboard.engine import DashboardEngine
 from .dashboard.models import AlertView, ComponentStatus, View, ViewName
 from .dashboard.prometheus_port import FakePrometheusReadPort
+from .data_pipeline.models import NormalizedBar
 from .data_pipeline.pipeline import DataPipeline
 from .execution_validator.engine import ExecutionValidator
 from .execution_validator.models import AccountState as ExecutionAccountState
@@ -68,10 +69,18 @@ from .scanner.models import Direction, ScannerObservation
 from .scanner.scanner import Scanner
 from .scoring_engine.engine import ScoringEngine
 from .scoring_engine.models import ScoreResult, ScoringFailureRecord
+from .statistical_risk import (
+    StatisticalRiskAssessment,
+    StatisticalRiskDashboardBuilder,
+    StatisticalRiskDashboardSnapshot,
+    StatisticalRiskEngine,
+)
 from .strategy_engine.engine import StrategyEngine
 from .strategy_engine.models import CandidateTrade
 from .watchdog.engine import WatchdogEngine
 from .watchdog.models import ComponentKind, ComponentSignal, HealthState, SystemHealth
+
+StatisticalRiskRecordsProvider = Callable[[], Sequence[TradeProvenanceRecord]]
 
 BrokerResponse = Union[BrokerRequest, None]
 PollResult = Union[ExecutionReceipt, BrokerError, None]
@@ -116,6 +125,14 @@ class CandidateCycleResult:
     broker_request: Optional[BrokerRequest]
     broker_response: BrokerResponse
     poll_result: PollResult
+
+    # ADR-022 Amendment 1 §A1.2 item 1 — additive, defaulted. `None`
+    # whenever the orchestrator wasn't constructed with a
+    # `statistical_risk` engine + records provider (the default), or
+    # whenever `risk_decision` itself is `None` (candidate never reached
+    # Risk Engine). Advisory only — never read by any control-flow branch
+    # in this module.
+    statistical_risk_assessment: Optional[StatisticalRiskAssessment] = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +179,8 @@ class PipelineOrchestrator:
         watchdog: WatchdogEngine,
         dashboard: DashboardEngine,
         prometheus_port: FakePrometheusReadPort,
+        statistical_risk: Optional[StatisticalRiskEngine] = None,
+        statistical_risk_records_provider: Optional[StatisticalRiskRecordsProvider] = None,
     ):
         self.data_pipeline = data_pipeline
         self.scanner = scanner
@@ -176,6 +195,13 @@ class PipelineOrchestrator:
         self.watchdog = watchdog
         self.dashboard = dashboard
         self.prometheus_port = prometheus_port
+        # ADR-022 Amendment 1 §A1.2 item 1 — both `None` by default, which
+        # reproduces every prior caller's behavior exactly (`CLAUDE.md`
+        # §1.6). Supplying both is the only way `_run_candidate` ever
+        # computes a `StatisticalRiskAssessment`; supplying only one is
+        # equivalent to supplying neither (see `_run_candidate`).
+        self.statistical_risk = statistical_risk
+        self._statistical_risk_records_provider = statistical_risk_records_provider
 
     # -- Data Pipeline -> Scanner -> Strategy -> Scoring -> Risk ->
     # -- Compliance -> Execution Validator -> MT5 Bridge -----------------
@@ -227,6 +253,8 @@ class PipelineOrchestrator:
         candidates = self.strategy_engine.generate(observation, primary_timeframe)
         self.watchdog.record_heartbeat("strategy_engine", now)
 
+        primary_bars = bars_by_timeframe.get(primary_timeframe, ())
+
         candidate_results = tuple(
             self._run_candidate(
                 candidate,
@@ -245,6 +273,7 @@ class PipelineOrchestrator:
                 intended_take_profit,
                 stop_loss,
                 take_profit,
+                primary_bars,
             )
             for candidate in candidates
         )
@@ -269,6 +298,7 @@ class PipelineOrchestrator:
         intended_take_profit: Optional[float],
         stop_loss: Optional[float],
         take_profit: Optional[float],
+        bars: Sequence[NormalizedBar] = (),
     ) -> CandidateCycleResult:
         self.analytics.collect_candidate(candidate.trace_id, candidate)
 
@@ -302,6 +332,15 @@ class PipelineOrchestrator:
         )
         self.analytics.collect_risk_decision(risk_decision.trace_id, risk_decision)
         self.watchdog.record_heartbeat("risk_engine", now)
+
+        # Statistical Risk (ADR-022, advisory only) — computed only when
+        # both a `statistical_risk` engine and a records provider were
+        # supplied at construction (both default `None`); never gates,
+        # alters, or delays anything below. `risk_decision` is never
+        # mutated and never re-decided.
+        statistical_risk_assessment = self._assess_statistical_risk(
+            risk_decision, risk_account_state, observation, bars
+        )
 
         # Compliance Engine
         compliance_decision = self.compliance_engine.evaluate(
@@ -361,7 +400,49 @@ class PipelineOrchestrator:
             broker_request=broker_request,
             broker_response=broker_response,
             poll_result=poll_result,
+            statistical_risk_assessment=statistical_risk_assessment,
         )
+
+    # -- Statistical Risk (ADR-022, advisory only) -------------------------
+
+    def _assess_statistical_risk(
+        self,
+        risk_decision: RiskDecision,
+        risk_account_state: Optional[RiskAccountState],
+        observation: ScannerObservation,
+        bars: Sequence[NormalizedBar],
+    ) -> Optional[StatisticalRiskAssessment]:
+        """`None` whenever this orchestrator wasn't constructed with both
+        a `statistical_risk` engine and a records provider (the default) —
+        preserving every prior caller's behavior exactly. Never raises
+        into `_run_candidate`'s control flow: `StatisticalRiskEngine.assess()`
+        is a pure function of its inputs that already handles an absent/
+        insufficient history by reporting `None` fields, never by
+        raising (`ADR-022` Hard Rule 7)."""
+        if self.statistical_risk is None or self._statistical_risk_records_provider is None:
+            return None
+
+        historical_records = self._statistical_risk_records_provider()
+        starting_equity = (
+            risk_account_state.equity
+            if risk_account_state is not None and risk_account_state.equity is not None
+            else 0.0
+        )
+        open_positions = risk_account_state.open_positions if risk_account_state is not None else ()
+
+        assessment = self.statistical_risk.assess(
+            trace_id=risk_decision.trace_id,
+            records=historical_records,
+            starting_equity=starting_equity,
+            open_positions=open_positions,
+            bars=bars,
+            scanner_observation=observation,
+            risk_decision=risk_decision,
+        )
+        self.analytics.collect_statistical_risk_assessment(risk_decision.trace_id, assessment)
+        kelly = self.statistical_risk.kelly_recommendation(historical_records)
+        self.analytics.collect_kelly_recommendation(risk_decision.trace_id, kelly)
+        return assessment
 
     # -- Fill callback -> Analytics ---------------------------------------
 
@@ -527,3 +608,39 @@ class PipelineOrchestrator:
             ViewName.RESEARCH.value: self.dashboard.build_research_view(now),
             ViewName.AUDIT.value: self.dashboard.build_audit_view(now, records=records),
         }
+
+    # -- Statistical Risk Dashboard (ADR-022 Amendment 1 §A1.2 item 6) ----
+
+    def render_statistical_risk_dashboard_snapshot(
+        self, now: datetime
+    ) -> Optional[StatisticalRiskDashboardSnapshot]:
+        """A wholly separate, additive snapshot — not an eleventh
+        `dashboard.models.ViewName` value, not returned from
+        `render_dashboard_snapshot()`'s own dict, and `dashboard/` is not
+        modified (mirrors `ADR-021`'s own `ResearchDeskDashboardBuilder`
+        precedent exactly). `None` whenever this orchestrator wasn't
+        constructed with both a `statistical_risk` engine and a records
+        provider (the default)."""
+        if self.statistical_risk is None or self._statistical_risk_records_provider is None:
+            return None
+
+        records = self._statistical_risk_records_provider()
+        trend_report = self.statistical_risk.compute_trend(records, now)
+
+        records_with_assessment = [r for r in records if r.statistical_risk_assessment is not None]
+        latest_record = records_with_assessment[-1] if records_with_assessment else None
+        latest_assessment = latest_record.statistical_risk_assessment if latest_record is not None else None
+        latest_kelly = latest_record.kelly_recommendation if latest_record is not None else None
+
+        confidence_interval = None
+        if latest_record is not None:
+            confidence_interval = self.statistical_risk.confidence_interval(latest_record.trace_id, records)
+
+        builder = StatisticalRiskDashboardBuilder()
+        return builder.build(
+            now,
+            latest_assessment=latest_assessment,
+            latest_kelly_recommendation=latest_kelly,
+            historical_trend=trend_report.points,
+            confidence_interval=confidence_interval,
+        )

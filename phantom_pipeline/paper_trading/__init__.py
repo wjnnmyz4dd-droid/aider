@@ -20,6 +20,11 @@ from .account_tracker import AccountSnapshot, AccountTracker
 from .forward_test_engine import ForwardTestEngine, ForwardTestReport
 from .paper_trading_runner import MarketDataSource, PaperTradingRunner
 from .report_generator import PeriodReport, ReportGenerator
+from .statistical_risk_backtest import (
+    StatisticalRiskBacktester,
+    StatisticalRiskBacktestEntry,
+    StatisticalRiskBacktestReport,
+)
 from .prop_firm_validator import (
     FTMO_PROFILE,
     FUNDEDNEXT_PROFILE,
@@ -57,6 +62,9 @@ __all__ = [
     "PropFirmValidator",
     "PeriodReport",
     "ReportGenerator",
+    "StatisticalRiskBacktestEntry",
+    "StatisticalRiskBacktestReport",
+    "StatisticalRiskBacktester",
     "MarketDataSource",
     "PaperTradingRunner",
     "ValidationDashboardSnapshot",

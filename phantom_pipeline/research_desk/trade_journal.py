@@ -44,6 +44,15 @@ class AITradeJournal:
         outcome = record.final_outcome
         if outcome is not None and outcome.outcome_kind == OutcomeKind.CLOSED and outcome.realized_pnl is not None and outcome.realized_pnl < 0:
             improvements.append("Trade closed at a loss — review entry qualification criteria for this setup.")
+        # ADR-022 Amendment 1 §A1.2 item 5 — reads the already-recorded
+        # StatisticalRiskAssessment `record` itself already carries; never
+        # computes a new statistical value, only quotes one.
+        assessment = record.statistical_risk_assessment
+        if assessment is not None and assessment.statistical_recommendation.value != "NORMAL_RISK":
+            improvements.append(
+                f"Statistical Risk Manager recommended {assessment.statistical_recommendation.value} "
+                f"for this trade — review whether reduced sizing would have been warranted."
+            )
         return tuple(improvements)
 
     def create_entry(self, record: TradeProvenanceRecord, now: datetime) -> JournalEntry:

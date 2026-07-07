@@ -289,3 +289,169 @@ scan — mirrors `ADR-020`/`ADR-021`'s own boundary test).
   explicitly and returns a fresh `StatisticalRiskAssessment`; no
   `InMemory*Store` is needed since there is no incremental ingestion
   step (unlike `knowledge`).
+
+---
+
+# Amendment 1 — Statistical Risk Integration
+
+Status: Accepted
+
+Acceptance Date: 2026-07-07
+
+Accepted By: User direction, this session (explicit, full specification
+of 8 named integration points: Orchestrator, Analytics, Paper Trading,
+Knowledge, AI Research Desk, Dashboard, Explainable Decisions, Logging/
+Metrics) — the same in-session approving authority already used to
+accept the base ADR.
+
+This amendment implements §7's deferred wiring ("Wiring `StatisticalRiskAssessment`
+into `orchestrator.py`, `paper_trading`, `knowledge`, `research_desk`, or
+`dashboard`... no such wiring is implemented now") — this is exactly that
+future step, and every constraint the base ADR already established
+(advisory-only, no decision authority, structurally incapable of
+exceeding the deterministic engine's approved risk, deterministic-only,
+no fabricated data) remains unchanged and unweakened by this amendment.
+
+## A1.1 The one classification change: Analytics leaves the restricted set
+
+`scripts/check_architecture.py`'s `PIPELINE_STAGE_PACKAGES` set — used
+only to decide which packages may never import a `CROSS_CUTTING_OBSERVER_PACKAGES`
+member — previously included `analytics` (mirroring `ADR-001`'s pipeline
+diagram, where Analytics is the tenth, terminal stage). This amendment
+removes `analytics` from that set, joining `watchdog`/`dashboard`/
+`paper_trading`/`deployment`, which were already excluded for the same
+reason stated in the script's own comment: **they sit outside the trading
+decision chain.**
+
+This is justified, not a loophole, because the restriction's actual
+purpose is narrower than "is this package in `ADR-001`'s diagram" — it is
+"can this package's decision ever be corrupted by a dependency on an
+advisory-only layer." `ADR-010` §1/§3/§11 already establish, as Hard
+Rules, that Analytics **holds no decision authority whatsoever** — it
+collects, it never decides. Analytics sits at the terminal, recording end
+of the pipeline, never the causal end; nothing it stores can feed back
+into a live trading decision because Analytics itself never produces one.
+Letting Analytics store one more already-produced, read-only record type
+(`StatisticalRiskAssessment`, exactly like it already stores `RiskDecision`/
+`ComplianceDecision`/every other stage's output) introduces no new risk
+the restriction was designed to prevent.
+
+**What does not change:** `PIPELINE_STAGE_PACKAGES`'s other 9 members
+(`data_pipeline`, `scanner`, `strategy_engine`, `scoring_engine`,
+`risk_engine`, `compliance_engine`, `execution_validator`, `mt5_bridge`,
+`position_manager`) are completely unaffected — every one of them remains
+structurally forbidden from ever importing `knowledge`, `research_desk`,
+or `statistical_risk`. In particular, **`risk_engine` is not touched by
+this amendment in any way** — it does not gain the ability to import
+`statistical_risk`, and no file under `phantom_pipeline/risk_engine/`
+changes. `ADR-001`'s pipeline order and diagram are unaffected — Analytics
+still receives every stage's output in exactly the same sequence; only
+the import-boundary *enforcement classification* changes.
+
+## A1.2 Integration points (all additive, all read-only)
+
+1. **Orchestrator** (`orchestrator.py`): `PipelineOrchestrator` gains two
+   new, `Optional`, default-`None` constructor parameters
+   (`statistical_risk: Optional[StatisticalRiskEngine]`, `statistical_risk_records_provider:
+   Optional[Callable[[], Sequence[TradeProvenanceRecord]]]`) — omitting
+   both preserves every existing caller's behavior byte-for-byte
+   (`CLAUDE.md` §1.6). When supplied, `_run_candidate()` computes one
+   `StatisticalRiskAssessment` immediately after `risk_decision` is
+   produced, using `risk_decision.trace_id` verbatim, and forwards it to
+   `Analytics` and onto the returned `CandidateCycleResult` (a new,
+   defaulted field) — never altering `risk_decision` itself, never
+   gating any subsequent stage call, never changing `run_scan_cycle`'s
+   control flow.
+2. **Analytics**: `TradeProvenanceRecord` gains two new, defaulted fields
+   (`statistical_risk_assessment`, `kelly_recommendation`), both loosely
+   typed (`Any`) — mirroring `account_snapshots`' own existing precedent
+   — specifically to avoid an analytics ↔ statistical_risk circular
+   import (`statistical_risk` already depends on `analytics.models.TradeProvenanceRecord`
+   for its own historical input, so the dependency can only run one
+   way). `AnalyticsEngine` gains `collect_statistical_risk_assessment`/
+   `collect_kelly_recommendation` (mirroring every existing `collect_*`
+   method, storing the real object even though the field's static type
+   is loose). Historical-trend computation itself
+   (`StatisticalRiskEngine.compute_trend()`, `StatisticalRiskTrendReport`/
+   `StatisticalRiskTrendPoint`) necessarily lives in `statistical_risk`,
+   not `analytics` — it reads the stored records back and reduces them
+   to a time-ordered point series, the same "derive from already-recorded
+   records, never a second implementation" posture `analytics.performance`
+   itself established, just applied from the other side of the (one-way)
+   dependency.
+3. **Paper Trading**: `PaperTradingRunner` gains an additive
+   `preview_statistical_risk()` convenience method (read-only, called
+   before submitting a simulated trade, never gating it);
+   `PeriodReport` gains a `statistical_risk_summary` field populated from
+   `AnalyticsEngine.compute_statistical_risk_trend()`; a new module,
+   `statistical_risk_backtest.py`, compares each period's actual
+   `realized_pnl` against what a `REDUCE_RISK_25`/`REDUCE_RISK_50`/
+   `SKIP_HIGH_RISK` recommendation would have implied, purely as a
+   retrospective, informational analysis — never a replay of history,
+   never a change to any recorded outcome.
+4. **Knowledge**: a new `DocumentKind.STATISTICAL_RISK_ASSESSMENT` value;
+   `build_statistical_risk_document()` (`ingestion.py`) renders one
+   `StatisticalRiskAssessment` into a deterministic-text `KnowledgeDocument`,
+   ingested and embedded exactly like every other document kind — fully
+   searchable via the existing `KnowledgeEngine.search()`/`SemanticSearchService`
+   path, plus a literal `find_statistical_risk_assessments(recommendation=...)`
+   convenience filter (mirrors `find_by_setup_pattern`'s literal-match
+   precedent — never a fabricated NLP layer).
+5. **AI Research Desk**: `WeeklyInstitutionalReviewGenerator`,
+   `MarketResearchAgent`, `TradeThesisGenerator`, `StrategyResearchAgent`,
+   and `AITradeJournal` each gain one new, `Optional`, default-`None`
+   parameter accepting an already-built `StatisticalRiskAssessment` (or a
+   short sequence of them); when supplied, its already-computed fields
+   are quoted verbatim into the generated narrative text — no method
+   anywhere in `research_desk/` computes a new statistical value; every
+   number quoted traces back to `StatisticalRiskAssessment`'s own fields.
+6. **Dashboard**: mirrors `ADR-021`'s own `ResearchDeskDashboardBuilder`
+   precedent exactly — a new `StatisticalRiskDashboardSnapshot` type
+   lives in `statistical_risk/models.py` (not in `dashboard/`), built by a
+   new `StatisticalRiskDashboardBuilder` (`statistical_risk/dashboard.py`).
+   `dashboard/models.py`'s `ViewName` stays the exhaustive ten values it
+   already is (`ADR-012` §5) — this is not an eleventh view, it is a
+   wholly separate, additive snapshot type, exactly like
+   `KnowledgeDashboardSnapshot` is for `knowledge`. `dashboard/` package
+   files are not modified.
+7. **Explainable Decisions**: `ExplainableDecisionEngine` gains
+   `explain_statistical_risk(question, assessment, history=())`
+   answering the 8 named question shapes via deterministic string
+   templates built entirely from `StatisticalRiskAssessment`'s own
+   already-computed fields (and, for the two comparison questions, a
+   plain diff between two supplied assessments) — no new statistic is
+   computed here; every answer quotes a field that already exists.
+8. **Logging/Metrics**: `statistical_risk/logging_sink.py`/`metrics.py`
+   are unchanged (already log/meter every assessment, immutably, since
+   the base ADR); `AnalyticsMetrics`' existing generic `record_collected(kind)`
+   mechanism already covers the two new collection kinds with zero
+   modification needed.
+
+## A1.3 What remains untouched
+
+`risk_engine/`, `compliance_engine/`, `execution_validator/`,
+`position_manager/`, `mt5_bridge/`, `scanner/`, `strategy_engine/`,
+`dashboard/` — not one file under any of these 8 directories changes.
+`statistical_risk`'s own 18-field `StatisticalRiskAssessment` contract
+and 4-value `RiskRecommendation` enum are unchanged. No pipeline stage
+gains a new import; only `analytics` (already justified above) and the
+observer/wrapper packages (`knowledge`, `research_desk`, `paper_trading`,
+`orchestrator.py`) gain a new, optional, additive read of
+`statistical_risk`'s output.
+
+## A1.4 Acceptance criteria
+
+- All of the base ADR's Hard Rules still hold, unchanged.
+- `scripts/check_architecture.py` passes with `analytics` removed from
+  `PIPELINE_STAGE_PACKAGES` and `statistical_risk` still in
+  `CROSS_CUTTING_OBSERVER_PACKAGES` — 17 packages, no cycles, no private-
+  state access, no *actual* pipeline-stage → observer import (the 9
+  remaining restricted packages stay clean).
+- Every integration point is additive: every new constructor/method
+  parameter introduced defaults such that omitting it reproduces prior
+  behavior exactly (verified by re-running the full pre-existing test
+  suite with zero modification and zero regression).
+- New tests cover trace ID continuity, determinism, historical storage,
+  dashboard rendering, knowledge ingestion, research desk integration,
+  analytics integration, and paper trading integration (§11 of the
+  originating task).

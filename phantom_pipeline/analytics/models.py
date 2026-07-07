@@ -122,6 +122,25 @@ class TradeProvenanceRecord:
     analytics_version: str
     collected_at: datetime
 
+    # ADR-022 Amendment 1 §A1.2 item 2 — additive, defaulted so every
+    # pre-existing construction of this type (keyword-argument, per this
+    # module's own convention) is unaffected. `statistical_risk_assessment`
+    # is the verbatim object `statistical_risk.StatisticalRiskEngine.assess()`
+    # produced for this trace_id, never re-derived; `kelly_recommendation`
+    # is carried alongside since it is not one of that object's own 18
+    # fields (`StatisticalRiskEngine.kelly_recommendation()`).
+    #
+    # Loosely typed (`Any`), mirroring `account_snapshots`' own precedent
+    # just above — not because no canonical type exists (it does:
+    # `statistical_risk.models.StatisticalRiskAssessment`) but because
+    # `statistical_risk` itself already depends on this module for
+    # `TradeProvenanceRecord`; importing it back here would create an
+    # analytics <-> statistical_risk circular import. The real object is
+    # still stored and read back verbatim by any caller that knows its
+    # shape (e.g. `statistical_risk.StatisticalRiskEngine.compute_trend()`).
+    statistical_risk_assessment: Optional[Any] = None
+    kelly_recommendation: Optional[float] = None
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "broker_events", tuple(self.broker_events))
         object.__setattr__(self, "fill_reports", tuple(self.fill_reports))

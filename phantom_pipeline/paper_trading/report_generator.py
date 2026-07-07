@@ -35,8 +35,10 @@ from ..analytics import AnalyticsEngine, TradeProvenanceRecord
 from ..analytics.models import OutcomeKind
 from ..compliance_engine import ComplianceEngineMetrics
 from ..execution_validator import ExecutionValidatorMetrics
+from ..statistical_risk.models import StatisticalRiskTrendReport
 from .forward_test_engine import ForwardTestEngine, ForwardTestReport
 from .prop_firm_validator import PropFirmComplianceStatus
+from .statistical_risk_backtest import StatisticalRiskBacktestReport
 
 SCHEMA_VERSION = 1
 
@@ -70,6 +72,16 @@ class PeriodReport:
     kill_switch_active: bool
     daily_lockout_active: bool
 
+    # ADR-022 Amendment 1 §A1.2 item 3 — additive, defaulted so every
+    # pre-existing construction/caller of this type is unaffected.
+    # Neither is recomputed here: both are already-built objects a
+    # caller passes in (`StatisticalRiskEngine.compute_trend()`,
+    # `StatisticalRiskBacktester.evaluate()`), the same "reuse, never a
+    # second implementation" discipline this module's own docstring
+    # already establishes for `group_by_pair`/etc.
+    statistical_risk_trend: Optional[StatisticalRiskTrendReport] = None
+    statistical_risk_backtest: Optional[StatisticalRiskBacktestReport] = None
+
 
 class ReportGenerator:
     def __init__(
@@ -87,23 +99,38 @@ class ReportGenerator:
     def generate_daily(
         self, records: Sequence[TradeProvenanceRecord], now: datetime,
         account_snapshot=None, prop_firm_status: Optional[PropFirmComplianceStatus] = None,
+        statistical_risk_trend: Optional[StatisticalRiskTrendReport] = None,
+        statistical_risk_backtest: Optional[StatisticalRiskBacktestReport] = None,
     ) -> PeriodReport:
         window_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return self.generate("DAILY", records, window_start, now, now, account_snapshot, prop_firm_status)
+        return self.generate(
+            "DAILY", records, window_start, now, now, account_snapshot, prop_firm_status,
+            statistical_risk_trend, statistical_risk_backtest,
+        )
 
     def generate_weekly(
         self, records: Sequence[TradeProvenanceRecord], now: datetime,
         account_snapshot=None, prop_firm_status: Optional[PropFirmComplianceStatus] = None,
+        statistical_risk_trend: Optional[StatisticalRiskTrendReport] = None,
+        statistical_risk_backtest: Optional[StatisticalRiskBacktestReport] = None,
     ) -> PeriodReport:
         window_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-        return self.generate("WEEKLY", records, window_start, now, now, account_snapshot, prop_firm_status)
+        return self.generate(
+            "WEEKLY", records, window_start, now, now, account_snapshot, prop_firm_status,
+            statistical_risk_trend, statistical_risk_backtest,
+        )
 
     def generate_monthly(
         self, records: Sequence[TradeProvenanceRecord], now: datetime,
         account_snapshot=None, prop_firm_status: Optional[PropFirmComplianceStatus] = None,
+        statistical_risk_trend: Optional[StatisticalRiskTrendReport] = None,
+        statistical_risk_backtest: Optional[StatisticalRiskBacktestReport] = None,
     ) -> PeriodReport:
         window_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        return self.generate("MONTHLY", records, window_start, now, now, account_snapshot, prop_firm_status)
+        return self.generate(
+            "MONTHLY", records, window_start, now, now, account_snapshot, prop_firm_status,
+            statistical_risk_trend, statistical_risk_backtest,
+        )
 
     def generate(
         self,
@@ -114,6 +141,8 @@ class ReportGenerator:
         now: datetime,
         account_snapshot=None,
         prop_firm_status: Optional[PropFirmComplianceStatus] = None,
+        statistical_risk_trend: Optional[StatisticalRiskTrendReport] = None,
+        statistical_risk_backtest: Optional[StatisticalRiskBacktestReport] = None,
     ) -> PeriodReport:
         forward_test_report = self._forward_test_engine.build_report(
             records, account_snapshot, window_start, window_end, now
@@ -148,6 +177,8 @@ class ReportGenerator:
             compliance_decisions_by_verdict=dict(self._compliance_engine_metrics.decisions_by_verdict),
             kill_switch_active=self._compliance_engine_metrics.kill_switch_active,
             daily_lockout_active=self._compliance_engine_metrics.daily_lockout_active,
+            statistical_risk_trend=statistical_risk_trend,
+            statistical_risk_backtest=statistical_risk_backtest,
         )
 
 

@@ -19,6 +19,7 @@ record.
 from __future__ import annotations
 
 from .config import DEFAULT_CONFIG, STATISTICAL_RISK_VERSION, StatisticalRiskConfig
+from .dashboard import StatisticalRiskDashboardBuilder, trend_point_from_assessment
 from .engine import (
     StatisticalRiskEngine,
     conditional_value_at_risk,
@@ -47,6 +48,9 @@ from .models import (
     MonteCarloResult,
     RiskRecommendation,
     StatisticalRiskAssessment,
+    StatisticalRiskDashboardSnapshot,
+    StatisticalRiskTrendPoint,
+    StatisticalRiskTrendReport,
     VolatilityState,
 )
 
@@ -61,6 +65,11 @@ __all__ = [
     "MonteCarloResult",
     "ConfidenceInterval",
     "StatisticalRiskAssessment",
+    "StatisticalRiskTrendPoint",
+    "StatisticalRiskTrendReport",
+    "StatisticalRiskDashboardSnapshot",
+    "StatisticalRiskDashboardBuilder",
+    "trend_point_from_assessment",
     "StatisticalRiskEngine",
     "most_conservative",
     "value_at_risk",

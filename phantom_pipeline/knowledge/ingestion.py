@@ -31,6 +31,7 @@ from typing import Dict, Optional, Set, Tuple, TypeVar
 
 from ..analytics.models import TradeProvenanceRecord
 from ..position_manager.models import LifecycleState
+from ..statistical_risk.models import StatisticalRiskAssessment
 from .models import SCHEMA_VERSION, DocumentKind, KnowledgeDocument, TradeMemoryRecord
 
 T = TypeVar("T")
@@ -220,6 +221,49 @@ def build_trade_memory_record(
     )
 
 
+def build_statistical_risk_document(assessment: StatisticalRiskAssessment, now: datetime) -> KnowledgeDocument:
+    """Renders one `StatisticalRiskAssessment` as a deterministic-text
+    `KnowledgeDocument` (`ADR-022` Amendment 1 §A1.2 item 4) — every field
+    quoted verbatim from the assessment, never re-derived. Ingested and
+    embedded exactly like every other document kind, so it is fully
+    searchable via `SemanticSearchService`/`KnowledgeEngine.search()`."""
+    content = (
+        f"Statistical Risk Assessment {assessment.trace_id}\n"
+        f"Recommendation: {assessment.statistical_recommendation.value}\n"
+        f"Confidence score: {assessment.confidence_score}\n"
+        f"Risk of ruin: {assessment.risk_of_ruin}\n"
+        f"Probability of drawdown: {assessment.probability_of_drawdown}\n"
+        f"Expected drawdown: {assessment.expected_drawdown}\n"
+        f"Expected return: {assessment.expected_return}\n"
+        f"Rolling expectancy: {assessment.rolling_expectancy}\n"
+        f"Rolling profit factor: {assessment.rolling_profit_factor}\n"
+        f"Rolling win rate: {assessment.rolling_win_rate}\n"
+        f"Sharpe ratio: {assessment.sharpe_ratio}\n"
+        f"Sortino ratio: {assessment.sortino_ratio}\n"
+        f"Value at risk: {assessment.value_at_risk}\n"
+        f"Conditional value at risk: {assessment.conditional_value_at_risk}\n"
+        f"Portfolio heat: {assessment.portfolio_heat}\n"
+        f"Volatility state: {assessment.volatility_state.label.value}\n"
+        f"Correlation state: most_concentrated_bucket={assessment.correlation_state.most_concentrated_bucket}, "
+        f"flagged_buckets={','.join(assessment.correlation_state.flagged_buckets)}\n"
+    )
+    document_id = f"statistical_risk::{assessment.trace_id}"
+    return KnowledgeDocument(
+        schema_version=SCHEMA_VERSION,
+        document_id=document_id,
+        kind=DocumentKind.STATISTICAL_RISK_ASSESSMENT,
+        title=f"Statistical Risk Assessment — {assessment.trace_id}",
+        content=content,
+        source_path=None,
+        content_hash=_content_hash(content),
+        metadata={
+            "trace_id": assessment.trace_id,
+            "statistical_recommendation": assessment.statistical_recommendation.value,
+        },
+        ingested_at=now,
+    )
+
+
 __all__ = [
     "KNOWN_ROOT_DOCUMENTS",
     "KnowledgeDocumentStore",
@@ -227,4 +271,5 @@ __all__ = [
     "ingest_directory",
     "ingest_repository_documents",
     "build_trade_memory_record",
+    "build_statistical_risk_document",
 ]

@@ -94,9 +94,13 @@ class TestKnowledgeAndDashboardUnmodified(unittest.TestCase):
     def test_knowledge_document_kind_unchanged_count(self):
         from phantom_pipeline.knowledge.models import DocumentKind
 
-        # 17 members as of ADR-020 - confirms research_desk added no new
-        # DocumentKind value (ADR-021 Hard Rule 3).
-        self.assertEqual(len(DocumentKind), 17)
+        # 17 members as of ADR-020 (confirms research_desk added no new
+        # DocumentKind value, ADR-021 Hard Rule 3); 18 as of ADR-022
+        # Amendment 1's STATISTICAL_RISK_ASSESSMENT addition -- this test's
+        # own purpose (catch an unreviewed drift, not freeze the enum
+        # forever) is satisfied by keeping this count in lockstep with
+        # every intentional, ADR-documented addition.
+        self.assertEqual(len(DocumentKind), 18)
 
 
 if __name__ == "__main__":

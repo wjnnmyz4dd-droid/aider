@@ -17,6 +17,7 @@ computation").
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Mapping, Optional, Tuple
 
@@ -134,6 +135,76 @@ class StatisticalRiskAssessment:
     statistical_recommendation: RiskRecommendation
 
 
+@dataclass(frozen=True)
+class StatisticalRiskTrendPoint:
+    """One historical `StatisticalRiskAssessment` reduced to its
+    trend-worthy fields (`ADR-022` Amendment 1 §A1.2 item 2/6) — every
+    value is copied verbatim from an already-produced assessment, never
+    recomputed. `kelly_recommendation` is carried alongside since it is
+    not one of `StatisticalRiskAssessment`'s own 18 fields (Amendment 1's
+    `StatisticalRiskEngine.kelly_recommendation()`)."""
+
+    trace_id: str
+    timestamp: datetime
+    risk_of_ruin: Optional[float]
+    value_at_risk: Optional[float]
+    conditional_value_at_risk: Optional[float]
+    sharpe_ratio: Optional[float]
+    sortino_ratio: Optional[float]
+    rolling_expectancy: Optional[float]
+    portfolio_heat: Optional[float]
+    kelly_recommendation: Optional[float]
+    volatility_state: VolatilityState
+    correlation_state: CorrelationState
+    statistical_recommendation: RiskRecommendation
+
+
+@dataclass(frozen=True)
+class StatisticalRiskTrendReport:
+    """A time-ordered series of already-produced `StatisticalRiskTrendPoint`s
+    (`ADR-022` Amendment 1 §A1.2 items 2/6) — one per historical record
+    carrying a recorded assessment, in the order supplied. This type
+    performs no aggregation beyond selecting and ordering already-
+    recorded points; historical comparison is the caller's own read over
+    this series (e.g. diffing the first and last point), never a second
+    statistics implementation.
+
+    Lives in `statistical_risk`, not `analytics`, deliberately:
+    `analytics.models.TradeProvenanceRecord.statistical_risk_assessment`
+    is loosely typed (`Any`) specifically to avoid an analytics <->
+    statistical_risk circular import (statistical_risk already depends on
+    `analytics.models.TradeProvenanceRecord` for its own historical
+    input) — this report is built by `StatisticalRiskEngine.compute_trend()`,
+    which reads that loosely-typed field back as the real object it is.
+    """
+
+    points: Tuple[StatisticalRiskTrendPoint, ...]
+    generated_at: datetime
+    statistical_risk_version: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "points", tuple(self.points))
+
+
+@dataclass(frozen=True)
+class StatisticalRiskDashboardSnapshot:
+    """Read-only Statistical Risk Dashboard snapshot (`ADR-022`
+    Amendment 1 §A1.2 item 6) — additive, mirrors
+    `knowledge.KnowledgeDashboardSnapshot`'s own precedent exactly.
+    `dashboard.models.ViewName` is untouched and this type is never
+    consumed by `dashboard/`."""
+
+    schema_version: int
+    generated_at: datetime
+    latest_assessment: Optional[StatisticalRiskAssessment]
+    latest_kelly_recommendation: Optional[float]
+    historical_trend: Tuple[StatisticalRiskTrendPoint, ...]
+    confidence_interval: Optional[ConfidenceInterval]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "historical_trend", tuple(self.historical_trend))
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "RiskRecommendation",
@@ -142,4 +213,7 @@ __all__ = [
     "MonteCarloResult",
     "ConfidenceInterval",
     "StatisticalRiskAssessment",
+    "StatisticalRiskTrendPoint",
+    "StatisticalRiskTrendReport",
+    "StatisticalRiskDashboardSnapshot",
 ]

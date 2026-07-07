@@ -30,8 +30,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable, Optional, Protocol, Sequence
 
+from ..analytics.models import TradeProvenanceRecord
 from ..mt5_bridge import BrokerAdapter
 from ..orchestrator import PipelineOrchestrator
+from ..risk_engine.models import AccountState as RiskAccountState
+from ..scanner.models import ScannerObservation
+from ..statistical_risk import StatisticalRiskAssessment
 from .account_tracker import AccountSnapshot, AccountTracker
 from .session_manager import SessionManager
 
@@ -137,6 +141,39 @@ class PaperTradingRunner:
     def render_dashboard_snapshot(self, now: datetime, **kwargs):
         self._require_connected()
         return self._orchestrator.render_dashboard_snapshot(now, **kwargs)
+
+    def preview_statistical_risk(
+        self,
+        trace_id: str,
+        records: Sequence[TradeProvenanceRecord],
+        risk_account_state: Optional[RiskAccountState] = None,
+        scanner_observation: Optional[ScannerObservation] = None,
+    ) -> Optional[StatisticalRiskAssessment]:
+        """Display statistical risk before submitting a simulated trade
+        (`ADR-022` Amendment 1 §A1.2 item 3) — read-only, never gates
+        `run_scan_cycle`. `None` whenever the orchestrator wasn't
+        constructed with a `statistical_risk` engine (advisory feature,
+        optional by design). Bars are omitted here deliberately: the
+        orchestrator's own per-candidate assessment (computed inside
+        `run_scan_cycle`, stored on `CandidateCycleResult.statistical_risk_assessment`)
+        already reads the live primary-timeframe bars; this preview is a
+        pre-submission, bars-optional convenience read of the same engine."""
+        self._require_connected()
+        if self._orchestrator.statistical_risk is None:
+            return None
+        starting_equity = (
+            risk_account_state.equity
+            if risk_account_state is not None and risk_account_state.equity is not None
+            else 0.0
+        )
+        open_positions = risk_account_state.open_positions if risk_account_state is not None else ()
+        return self._orchestrator.statistical_risk.assess(
+            trace_id=trace_id,
+            records=records,
+            starting_equity=starting_equity,
+            open_positions=open_positions,
+            scanner_observation=scanner_observation,
+        )
 
 
 __all__ = ["PaperTradingRunner"]
