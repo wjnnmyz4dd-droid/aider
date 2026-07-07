@@ -11,17 +11,27 @@ the reverse.
 
 ```
 DEPLOYMENT_PACKAGE/
-  phantom_pipeline/        14 packages: analytics, compliance_engine,
+  phantom_pipeline/        16 packages: analytics, compliance_engine,
                             dashboard, data_pipeline, deployment,
-                            execution_validator, mt5_bridge,
+                            execution_validator, knowledge, mt5_bridge,
                             orchestrator.py, paper_trading,
-                            position_manager, risk_engine, scanner,
-                            scoring_engine, strategy_engine, watchdog
+                            position_manager, research_desk, risk_engine,
+                            scanner, scoring_engine, strategy_engine,
+                            watchdog
   config/                  *.env.template for DEV/PAPER/LIVE
   scripts/                 start_phantom.py, start_phantom.bat, stop_phantom.bat
   requirements.txt
   VERSION.txt              exact source commit this build came from
 ```
+
+`knowledge/` (`ADR-020`) and `research_desk/` (`ADR-021`) are read-only
+observers — trade memory/semantic search and market-research/journal
+agents respectively. Neither has any decision, execution, risk,
+compliance, or scoring authority, and neither is wired into
+`start_phantom.py`'s trading loop; they are available to import and wire
+up separately per `KNOWLEDGE_DEPLOYMENT_GUIDE.md`/`RESEARCH_DESK_GUIDE.md`
+if you want them running on this VPS, but their absence from the running
+process has zero effect on trading behavior.
 
 Deliberately **excluded**: `tests/`, `docs/adr/`, `AUDIT.md`,
 `IMPLEMENTATION_PLAN.md`, `VALIDATION_MATRIX.md`, `docs/plans/`,

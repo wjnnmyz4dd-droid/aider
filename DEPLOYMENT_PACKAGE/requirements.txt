@@ -1,8 +1,8 @@
 # Runtime dependencies for phantom_pipeline (verified via a repository-wide
-# import scan of phantom_pipeline/ — everything else used is Python 3.11+
+# import scan of all 16 packages — everything else used is Python 3.11+
 # stdlib: dataclasses, enum, datetime, sqlite3, logging, json, gzip,
 # hashlib, subprocess, signal, socket, shutil, os, typing, collections,
-# importlib, pkgutil, abc, inspect).
+# importlib, pkgutil, abc, inspect, glob, math, re, threading).
 #
 # MetaTrader5 is Windows-only and required for MT5Adapter
 # (mt5_bridge/mt5_adapter.py) and MarketDataAdapter
@@ -16,3 +16,11 @@ MetaTrader5>=5.0.45
 # imported, so it is optional for a deployment with no live Prometheus
 # server.
 requests>=2.31.0
+
+# sentence-transformers is required only if
+# knowledge/embeddings.py's SentenceTransformerEmbeddingProvider is
+# wired in for higher-quality semantic search (see
+# KNOWLEDGE_DEPLOYMENT_GUIDE.md). Lazily imported; the default
+# HashingEmbeddingProvider (dependency-free, deterministic) is used
+# otherwise, so this is optional for every other profile/feature.
+sentence-transformers>=2.2.0

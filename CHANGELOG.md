@@ -15,6 +15,42 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-07 (DEPLOYMENT_PACKAGE full rebuild — 16 packages)
+
+### Added
+- `DEPLOYMENT_PACKAGE/` — deleted in full (157 files, 14-package
+  snapshot from commit `a90f7c6`) and rebuilt entirely from scratch
+  against the current repository (commit `f5c5e3e`), rather than
+  patched in place. Now contains all 16 `phantom_pipeline` packages,
+  including `knowledge/` (`ADR-020`) and `research_desk/` (`ADR-021`),
+  which the previous snapshot predated and therefore omitted — 182
+  files total. `diff -rq phantom_pipeline DEPLOYMENT_PACKAGE/phantom_pipeline`
+  is empty: byte-for-byte identical.
+- `DEPLOYMENT_AUDIT.md` — complete 182-file listing of the rebuilt package.
+- `DEPLOYMENT_MANIFEST.md` — every file mapped to its `C:\phantom\...`
+  destination on the VPS.
+- `FINAL_DEPLOYMENT_READINESS_REPORT.md` — package-completeness,
+  sync-verification, and validation-results report.
+
+### Changed
+- `COPY_TO_VPS.md` §1 — "14 packages" corrected to "16 packages,"
+  `knowledge`/`research_desk` named explicitly with a note that both are
+  read-only observers, not wired into the trading loop by default.
+- `DEPLOYMENT_PACKAGE/requirements.txt` — added `sentence-transformers`
+  (optional, lazily imported by `knowledge/embeddings.py`'s real neural
+  embedding provider; confirmed via a fresh repository-wide import scan
+  across all 16 packages that no other new third-party dependency was
+  introduced since Phase 5).
+- `DEPLOYMENT_PACKAGE/VERSION.txt` — regenerated: current commit hash,
+  16-package list, explicit "rebuilt from scratch" note.
+- Nothing in `phantom_pipeline/` itself, any test, or any trading-logic
+  file — confirmed via `git status` showing no changes outside
+  `DEPLOYMENT_PACKAGE/` and the three docs above. Full suite re-run:
+  1497/1497 tests (unchanged), `validate.py` 13/13,
+  `scripts/check_architecture.py` clean (16 packages). `start_phantom.py`
+  DEV-profile smoke test re-run from inside the rebuilt package —
+  constructs cleanly.
+
 ## 2026-07-06 (Phantom AI Research Desk — ADR-021)
 
 ### Added
