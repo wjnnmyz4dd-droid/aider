@@ -1,5 +1,9 @@
 Phantom Deployment Package
-Source commit: 53ea4ea347604472cca49e0db85df3d3867690eb
+Committed at: 81d8f4c357946031f286c30abcec6e07630ad9c9
+phantom_pipeline/ content verified identical since source commit:
+  53ea4ea347604472cca49e0db85df3d3867690eb
+  (phantom_pipeline/ itself has not changed between 53ea4ea and 81d8f4c;
+  81d8f4c only committed this DEPLOYMENT_PACKAGE/ resync)
 Branch: claude/phantom-ea-visibility-cjjf3a
 Rebuilt: 2026-07-07T23:29:12Z
 
