@@ -15,6 +15,67 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-07 (Statistical Risk Management — ADR-022)
+
+### Added
+- `docs/adr/ADR-022-statistical-risk-management.md` — Accepted, per
+  explicit user specification this session. A cross-cutting observer
+  (same posture as `knowledge`/`research_desk`) that reads already-
+  recorded historical trade data and computes advisory-only statistics.
+  The deterministic Risk Engine (`ADR-005`) is not modified and remains
+  the sole risk authority — enforced structurally, not just documented,
+  by adding `statistical_risk` to `scripts/check_architecture.py`'s
+  `CROSS_CUTTING_OBSERVER_PACKAGES`, so no pipeline-stage package
+  (`risk_engine` included) may ever import it.
+- `phantom_pipeline/statistical_risk/` — a new, 17th package (12 modules
+  + `__init__.py`): `models.py` (`StatisticalRiskAssessment` — 18 named
+  fields; `RiskRecommendation` — the 4-value advisory-only enum
+  `NORMAL_RISK`/`REDUCE_RISK_25`/`REDUCE_RISK_50`/`SKIP_HIGH_RISK`),
+  `config.py`, `expectancy.py` (rolling win-rate/profit-factor/
+  expectancy/Sharpe/Sortino — windowed variants of statistics
+  `analytics.performance` already computes whole-sample, never
+  duplicated), `drawdown.py` (rolling max drawdown, Monte-Carlo-derived
+  expected drawdown), `monte_carlo.py` (seeded, bootstrap-resampled
+  simulation over real historical P/L — `hashlib`-derived seed per
+  `trace_id`, never Python's randomized global `random` state),
+  `probability.py` (probability of reaching the daily/total drawdown
+  limit, Risk of Ruin — all three read off the same Monte Carlo engine
+  at different thresholds), `volatility.py` (ATR via Wilder's method and
+  realized volatility, computed from `data_pipeline.NormalizedBar` OHLC
+  history — no ATR value exists anywhere else in the repository),
+  `correlation.py`/`portfolio.py` (correlation-bucket concentration,
+  portfolio heat, position concentration, currency exposure — all read
+  from `risk_engine.models.OpenPosition`/`AccountState` verbatim, never
+  a second parallel type), `engine.py` (`StatisticalRiskEngine` — VaR/
+  CVaR historical simulation, Kelly Criterion, regime-based confidence,
+  and the top-level `assess()` orchestrator that combines every signal
+  into the single most conservative recommendation), `logging_sink.py`,
+  `metrics.py`.
+- `tests/phantom_pipeline/statistical_risk/` — 113 tests: per-module
+  unit tests, a determinism suite (identical historical input + seed →
+  byte-identical `StatisticalRiskAssessment`, including Monte Carlo,
+  across independent engine instances), a structural-boundary suite (no
+  pipeline-stage package imports `statistical_risk`; `risk_engine`'s
+  own files are unmodified; no decision-verb method names; no arbitrary
+  directory/`.env` access), and an end-to-end integration suite.
+- `docs/plans/statistical-risk-management.md` — the RPI Research/Plan/
+  Validation artifact for this change.
+
+### Changed
+- `scripts/check_architecture.py` — `statistical_risk` added to
+  `CROSS_CUTTING_OBSERVER_PACKAGES` (one-line set addition plus updated
+  docstrings/comments); now checks 17 packages.
+- Nothing in `risk_engine/`, `compliance_engine/`, `execution_validator/`,
+  `position_manager/`, `mt5_bridge/`, `scanner/`, `strategy_engine/`, or
+  any of the other 9 existing packages, or any pre-existing test —
+  confirmed via `git status`/`git diff` showing no changes outside the
+  new `statistical_risk/` package, its tests, the two new docs, and the
+  one-line `check_architecture.py` change. Full suite re-run: 1610/1610
+  tests (1497 existing + 113 new, zero regressions), `validate.py`
+  13/13, `scripts/check_architecture.py` clean (17 packages, no cycles,
+  no cross-package private-state access, no pipeline-stage → observer
+  import).
+
 ## 2026-07-07 (DEPLOYMENT_PACKAGE full rebuild — 16 packages)
 
 ### Added

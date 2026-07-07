@@ -14,10 +14,11 @@ Verifies, across every `phantom_pipeline/<package>/`:
 
 3. **No pipeline-stage package imports a cross-cutting observer
    package** (`knowledge`, `ADR-020` Hard Rule 9; `research_desk`,
-   `ADR-021` Hard Rule 9) — both may read every pipeline stage's
-   `.models`, but no pipeline stage may ever import from either in
-   return; they are pure downstream observers, exactly like
-   Watchdog/Dashboard are for the trading decision chain.
+   `ADR-021` Hard Rule 9; `statistical_risk`, `ADR-022` Hard Rule 4) —
+   all three may read every pipeline stage's `.models`, but no pipeline
+   stage may ever import from any of them in return; they are pure
+   downstream observers, exactly like Watchdog/Dashboard are for the
+   trading decision chain.
 
 This is read-only: it only parses import statements via a regular
 expression over already-committed source files. It never imports or
@@ -26,7 +27,7 @@ executes `phantom_pipeline` code, and it never modifies anything.
 These are exactly the two checks performed by hand during the Phase 1
 Certification Audit; this script makes them repeatable rather than
 re-derived manually for every future change. Check 3 was added for
-`ADR-020` and generalized for `ADR-021`.
+`ADR-020`, generalized for `ADR-021`, and extended again for `ADR-022`.
 
 Usage: `python3 scripts/check_architecture.py`
 Exit code 0 on a clean architecture, 1 if any violation is found.
@@ -48,11 +49,11 @@ ALLOWED_SUBMODULES = {"models", "trace", "registry"}
 
 # The 10 sequential pipeline stages (ADR-001's documented order) — none
 # of these may import a cross-cutting observer package (ADR-020 Hard
-# Rule 9, ADR-021 Hard Rule 9). Other cross-cutting observer packages
-# (watchdog, dashboard, deployment, paper_trading) are deliberately
-# excluded from this set: they already sit outside the trading decision
-# chain by their own ADRs, so this rule does not additionally constrain
-# them.
+# Rule 9, ADR-021 Hard Rule 9, ADR-022 Hard Rule 4). Other cross-cutting
+# observer packages (watchdog, dashboard, deployment, paper_trading) are
+# deliberately excluded from this set: they already sit outside the
+# trading decision chain by their own ADRs, so this rule does not
+# additionally constrain them.
 PIPELINE_STAGE_PACKAGES = {
     "data_pipeline", "scanner", "strategy_engine", "scoring_engine",
     "risk_engine", "compliance_engine", "execution_validator",
@@ -60,10 +61,12 @@ PIPELINE_STAGE_PACKAGES = {
 }
 
 # Cross-cutting observer packages no pipeline stage may ever import
-# (ADR-020 Hard Rule 9, ADR-021 Hard Rule 9). research_desk -> knowledge
-# is expected and fine (it's how research_desk reuses knowledge's RAG
-# layer); this set only restricts the 10 pipeline stages above.
-CROSS_CUTTING_OBSERVER_PACKAGES = {"knowledge", "research_desk"}
+# (ADR-020 Hard Rule 9, ADR-021 Hard Rule 9, ADR-022 Hard Rule 4).
+# research_desk -> knowledge is expected and fine (it's how research_desk
+# reuses knowledge's RAG layer); this set only restricts the 10 pipeline
+# stages above — in particular, this is what keeps risk_engine untouched
+# and sole-authority even though statistical_risk reads risk_engine.models.
+CROSS_CUTTING_OBSERVER_PACKAGES = {"knowledge", "research_desk", "statistical_risk"}
 
 _IMPORT_RE = re.compile(r"^from \.\.([a-z0-9_]+)(?:\.([a-z0-9_]+))?\s+import\b", re.MULTILINE)
 
