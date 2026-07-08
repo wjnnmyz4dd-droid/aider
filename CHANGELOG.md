@@ -15,6 +15,55 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-08 (Hybrid MT5 MQL5 EA Bridge — ADR-023)
+
+### Added
+- `docs/adr/ADR-023-mql5-ea-bridge.md` — a transport-only MQL5 EA bridge:
+  the EA attaches to an MT5 chart, relays telemetry (heartbeat, account
+  state, ticks, bars, positions) to Phantom, and executes only commands
+  Phantom has already approved. Python remains the sole decision
+  authority; no pipeline-stage package changes as a result of this work.
+- `phantom_pipeline/ea_bridge/` — `EABridgeConfig`, transport models
+  (`HeartbeatMessage`/`EAAccountState`/`TickMessage`/`BarMessage`/
+  `PositionReport`/`ExecutionCommand`/`ExecutionReport`/`ErrorReport`/
+  `EmergencyStopState`), `validation.py` (API key/magic number/symbol
+  allowlist/volume/SL-TP/timestamp checks), `CommandQueue` (idempotent,
+  fail-closed command relay keyed by `execution_id`), `EABrokerAdapter`
+  (implements the existing `mt5_bridge.BrokerAdapter` ABC exactly — zero
+  `mt5_bridge` code change required), `EABridgeEngine` (orchestrates
+  `DataPipeline`/`CommandQueue`/`EABrokerAdapter`), a stdlib-only HTTP
+  server exposing 9 routes (`/ea/heartbeat`, `/ea/account`, `/ea/tick`,
+  `/ea/bars`, `/ea/positions`, `/ea/commands/poll`,
+  `/ea/execution/report`, `/ea/error/report`, `/ea/emergency-stop`),
+  plus `logging_sink.py`/`metrics.py`/`__init__.py`.
+- `mt5/PhantomBridgeEA.mq5` + `mt5/PhantomBridgeEA.set` — the MQL5 EA
+  itself: configurable backend URL/API key/heartbeat/bar-sync intervals,
+  symbol allowlist, magic number isolation, fail-closed timeout, an
+  emergency-disable switch, and `CTrade`-backed execution of
+  Phantom-approved commands only.
+- `tests/phantom_pipeline/ea_bridge/` — 104 tests covering validation,
+  command-queue idempotency/staleness/fail-closed behavior, the broker
+  adapter, the engine, all 9 HTTP endpoints end to end, and a structural
+  boundary suite confirming `EABrokerAdapter` is the only new
+  `BrokerAdapter` subclass and that no protected pipeline-stage package
+  changed.
+- `MT5_EA_BRIDGE_GUIDE.md` — deployment guide covering EA installation,
+  `WebRequest` allowlisting, wiring `EABrokerAdapter` into `MT5Bridge`,
+  the security checklist, fail-closed behavior, and the Phase-1
+  hand-rolled-JSON limitation.
+
+### Scope
+- `ea_bridge` deliberately joins neither `PIPELINE_STAGE_PACKAGES` nor
+  `CROSS_CUTTING_OBSERVER_PACKAGES` in `scripts/check_architecture.py` —
+  it holds no decision authority and is not a read-only analytics
+  observer; it is consumed only through `mt5_bridge`'s existing
+  constructor-injection point, the same relationship `MT5Adapter`
+  already has.
+- Not deployed to live and not wired into any default startup path —
+  `EABrokerAdapter` is available but must be constructed explicitly by
+  whichever deployment chooses an EA-backed terminal over the direct
+  `MetaTrader5` adapter.
+
 ## 2026-07-07 (Statistical Risk Integration — ADR-022 Amendment 1)
 
 ### Added
