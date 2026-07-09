@@ -15,7 +15,7 @@
 //| study this design is informed by.                                  |
 //+------------------------------------------------------------------+
 #property copyright "Phantom"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -30,7 +30,9 @@ input int    MaxSlippagePoints        = 20;                        // Deviation 
 input int    FailClosedTimeoutSeconds = 30;                        // No successful contact within this window => halt
 input bool   EmergencyDisable         = false;                     // Manual kill switch -- never polls/executes when true
 input int    MaxRetries               = 3;                         // Bounded HTTP retry count
-input int    RetryDelayMs             = 250;                       // Delay between bounded retries
+input int    RetryDelayMs             = 250;                       // Delay between bounded HTTP retries
+input int    MaxRequoteRetries        = 2;                         // Bounded trade-level retry count on requote/price-changed only
+input int    RequoteRetryDelayMs      = 100;                       // Delay between bounded requote retries
 
 //--- Globals ------------------------------------------------------------
 CTrade   g_trade;
@@ -119,7 +121,14 @@ void ParseAllowedSymbols()
      }
    int count = StringSplit(AllowedSymbolsCsv, ',', g_allowedSymbols);
    for(int i = 0; i < count; i++)
-      StringTrimLeft(StringTrimRight(g_allowedSymbols[i]));
+     {
+      // StringTrimLeft/StringTrimRight modify their string argument by
+      // reference and return an int (characters removed) -- they must
+      // never be nested, since the inner call's int return value can't
+      // be passed as the outer call's string& parameter.
+      StringTrimLeft(g_allowedSymbols[i]);
+      StringTrimRight(g_allowedSymbols[i]);
+     }
   }
 
 bool IsSymbolAllowed(const string symbol)
@@ -138,6 +147,94 @@ bool IsFailClosed()
    if(EmergencyDisable)
       return(true);
    return((TimeCurrent() - g_lastSuccessfulContact) > FailClosedTimeoutSeconds);
+  }
+
+//+------------------------------------------------------------------+
+//| Pre-flight trading-capability checks -- run before every trade    |
+//| attempt, never after. Each returns "" (no issue) or a named,      |
+//| stable reason string; nothing here silently proceeds on a         |
+//| precondition failure.                                              |
+//+------------------------------------------------------------------+
+string CheckTradingPreconditions(const string symbol, const bool isOpeningNewPosition)
+  {
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+      return("TERMINAL_TRADE_NOT_ALLOWED");
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+      return("ACCOUNT_TRADE_NOT_ALLOWED");
+   if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+      return("EXPERT_TRADE_NOT_ALLOWED");
+   if(!SymbolSelect(symbol, true))
+      return("SYMBOL_NOT_AVAILABLE");
+   long tradeMode = SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE);
+   if(tradeMode == SYMBOL_TRADE_MODE_DISABLED)
+      return("SYMBOL_TRADE_DISABLED");
+   // Close-only mode blocks new exposure but must never block closing
+   // an existing position -- callers pass isOpeningNewPosition=false
+   // for MODIFY_SL/MODIFY_TP/CLOSE/PARTIAL_CLOSE.
+   if(isOpeningNewPosition && tradeMode == SYMBOL_TRADE_MODE_CLOSEONLY)
+      return("SYMBOL_CLOSE_ONLY");
+   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   if(bid <= 0.0 || ask <= 0.0)
+      return("MARKET_CLOSED_OR_NO_QUOTES");
+   return("");
+  }
+
+string CheckVolumeValid(const string symbol, const double volume)
+  {
+   double minVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double stepVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(volume < minVol)
+      return("VOLUME_BELOW_MIN");
+   if(volume > maxVol)
+      return("VOLUME_ABOVE_MAX");
+   if(stepVol > 0.0)
+     {
+      double steps = MathRound((volume - minVol) / stepVol);
+      double normalized = minVol + steps * stepVol;
+      if(MathAbs(normalized - volume) > 0.0000001)
+         return("VOLUME_NOT_STEP_ALIGNED");
+     }
+   return("");
+  }
+
+// Validates one stop price (SL or TP, whichever is being set/changed)
+// against the symbol's minimum stop distance, relative to the current
+// market price on the relevant side. Pass 0.0 for whichever of
+// stopLoss/takeProfit is not being checked.
+string CheckStopsValid(const string symbol, const bool isBuy, const double stopLoss, const double takeProfit)
+  {
+   long stopsLevelPoints = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double minDistance = stopsLevelPoints * point;
+   double referencePrice = isBuy ? SymbolInfoDouble(symbol, SYMBOL_ASK) : SymbolInfoDouble(symbol, SYMBOL_BID);
+   if(stopLoss > 0.0)
+     {
+      double slDistance = isBuy ? (referencePrice - stopLoss) : (stopLoss - referencePrice);
+      if(slDistance < minDistance)
+         return("STOP_LOSS_TOO_CLOSE");
+     }
+   if(takeProfit > 0.0)
+     {
+      double tpDistance = isBuy ? (takeProfit - referencePrice) : (referencePrice - takeProfit);
+      if(tpDistance < minDistance)
+         return("TAKE_PROFIT_TOO_CLOSE");
+     }
+   return("");
+  }
+
+//+------------------------------------------------------------------+
+//| Requote handling -- identify the two MT5 retcodes that mean       |
+//| "the price moved, not that the request was invalid," and retry    |
+//| only those, only up to MaxRequoteRetries, entirely within the      |
+//| same command execution. Exactly one ExecutionReport is ever sent   |
+//| per correlation_id regardless of how many internal attempts this   |
+//| takes -- retrying never duplicates the reported result.            |
+//+------------------------------------------------------------------+
+bool IsRequoteRetcode(const uint retcode)
+  {
+   return(retcode == TRADE_RETCODE_REQUOTE || retcode == TRADE_RETCODE_PRICE_CHANGED);
   }
 
 //+------------------------------------------------------------------+
@@ -434,6 +531,11 @@ void ReportExecutionResult(const string correlationId, const bool success, const
 //| Every modify/close operation re-verifies magic-number ownership     |
 //| before touching a position, even though the server already          |
 //| validated the command -- defense in depth, never trusted alone.     |
+//| Every operation: (1) runs pre-flight capability checks, (2) runs    |
+//| volume/stops validation where applicable, (3) attempts execution    |
+//| with a bounded retry restricted to requote/price-changed retcodes   |
+//| only, (4) reports exactly once, using CTrade's actual result        |
+//| (never the originally-requested volume) as the filled amount.       |
 //+------------------------------------------------------------------+
 void ExecuteBuy(const string correlationId, const string symbol, const double volume,
                 const double stopLoss, const double takeProfit)
@@ -443,11 +545,40 @@ void ExecuteBuy(const string correlationId, const string symbol, const double vo
       ReportExecutionResult(correlationId, false, 0, 0, 0, "SYMBOL_NOT_ALLOWED");
       return;
      }
-   bool ok = g_trade.Buy(volume, symbol, 0.0, stopLoss, takeProfit, "phantom");
+   string precondition = CheckTradingPreconditions(symbol, true);
+   if(precondition != "")
+     {
+      ReportExecutionResult(correlationId, false, 0, 0, 0, precondition);
+      return;
+     }
+   string volumeIssue = CheckVolumeValid(symbol, volume);
+   if(volumeIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, 0, 0, 0, volumeIssue);
+      return;
+     }
+   string stopsIssue = CheckStopsValid(symbol, true, stopLoss, takeProfit);
+   if(stopsIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, 0, 0, 0, stopsIssue);
+      return;
+     }
+
+   bool ok = false;
+   uint retcode = 0;
+   for(int attempt = 0; attempt <= MaxRequoteRetries; attempt++)
+     {
+      ok = g_trade.Buy(volume, symbol, 0.0, stopLoss, takeProfit, "phantom");
+      retcode = g_trade.ResultRetcode();
+      if(ok || !IsRequoteRetcode(retcode))
+         break;
+      if(attempt < MaxRequoteRetries)
+         Sleep(RequoteRetryDelayMs);
+     }
    if(ok)
-      ReportExecutionResult(correlationId, true, g_trade.ResultOrder(), g_trade.ResultPrice(), volume, "");
+      ReportExecutionResult(correlationId, true, g_trade.ResultOrder(), g_trade.ResultPrice(), g_trade.ResultVolume(), "");
    else
-      ReportExecutionResult(correlationId, false, 0, 0, 0, IntegerToString(g_trade.ResultRetcode()));
+      ReportExecutionResult(correlationId, false, 0, 0, 0, IntegerToString(retcode));
   }
 
 void ExecuteSell(const string correlationId, const string symbol, const double volume,
@@ -458,11 +589,40 @@ void ExecuteSell(const string correlationId, const string symbol, const double v
       ReportExecutionResult(correlationId, false, 0, 0, 0, "SYMBOL_NOT_ALLOWED");
       return;
      }
-   bool ok = g_trade.Sell(volume, symbol, 0.0, stopLoss, takeProfit, "phantom");
+   string precondition = CheckTradingPreconditions(symbol, true);
+   if(precondition != "")
+     {
+      ReportExecutionResult(correlationId, false, 0, 0, 0, precondition);
+      return;
+     }
+   string volumeIssue = CheckVolumeValid(symbol, volume);
+   if(volumeIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, 0, 0, 0, volumeIssue);
+      return;
+     }
+   string stopsIssue = CheckStopsValid(symbol, false, stopLoss, takeProfit);
+   if(stopsIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, 0, 0, 0, stopsIssue);
+      return;
+     }
+
+   bool ok = false;
+   uint retcode = 0;
+   for(int attempt = 0; attempt <= MaxRequoteRetries; attempt++)
+     {
+      ok = g_trade.Sell(volume, symbol, 0.0, stopLoss, takeProfit, "phantom");
+      retcode = g_trade.ResultRetcode();
+      if(ok || !IsRequoteRetcode(retcode))
+         break;
+      if(attempt < MaxRequoteRetries)
+         Sleep(RequoteRetryDelayMs);
+     }
    if(ok)
-      ReportExecutionResult(correlationId, true, g_trade.ResultOrder(), g_trade.ResultPrice(), volume, "");
+      ReportExecutionResult(correlationId, true, g_trade.ResultOrder(), g_trade.ResultPrice(), g_trade.ResultVolume(), "");
    else
-      ReportExecutionResult(correlationId, false, 0, 0, 0, IntegerToString(g_trade.ResultRetcode()));
+      ReportExecutionResult(correlationId, false, 0, 0, 0, IntegerToString(retcode));
   }
 
 bool SelectOwnedPosition(const string positionId)
@@ -481,12 +641,43 @@ void ExecuteModifySL(const string correlationId, const string positionId, const 
       return;
      }
    ulong ticket = (ulong)StringToInteger(positionId);
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    double currentTp = PositionGetDouble(POSITION_TP);
-   bool ok = g_trade.PositionModify(ticket, newSl, currentTp);
+
+   string precondition = CheckTradingPreconditions(symbol, false);
+   if(precondition != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, precondition);
+      return;
+     }
+   string stopsIssue = CheckStopsValid(symbol, isBuy, newSl, 0.0);
+   if(stopsIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, stopsIssue);
+      return;
+     }
+
+   bool ok = false;
+   uint retcode = 0;
+   for(int attempt = 0; attempt <= MaxRequoteRetries; attempt++)
+     {
+      if(!PositionSelectByTicket(ticket))
+        {
+         ReportExecutionResult(correlationId, false, ticket, 0, 0, "UNKNOWN_OR_FOREIGN_POSITION");
+         return;
+        }
+      ok = g_trade.PositionModify(ticket, newSl, currentTp);
+      retcode = g_trade.ResultRetcode();
+      if(ok || !IsRequoteRetcode(retcode))
+         break;
+      if(attempt < MaxRequoteRetries)
+         Sleep(RequoteRetryDelayMs);
+     }
    if(ok)
       ReportExecutionResult(correlationId, true, ticket, 0, 0, "");
    else
-      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(g_trade.ResultRetcode()));
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(retcode));
   }
 
 void ExecuteModifyTP(const string correlationId, const string positionId, const double newTp)
@@ -497,12 +688,43 @@ void ExecuteModifyTP(const string correlationId, const string positionId, const 
       return;
      }
    ulong ticket = (ulong)StringToInteger(positionId);
+   string symbol = PositionGetString(POSITION_SYMBOL);
+   bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    double currentSl = PositionGetDouble(POSITION_SL);
-   bool ok = g_trade.PositionModify(ticket, currentSl, newTp);
+
+   string precondition = CheckTradingPreconditions(symbol, false);
+   if(precondition != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, precondition);
+      return;
+     }
+   string stopsIssue = CheckStopsValid(symbol, isBuy, 0.0, newTp);
+   if(stopsIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, stopsIssue);
+      return;
+     }
+
+   bool ok = false;
+   uint retcode = 0;
+   for(int attempt = 0; attempt <= MaxRequoteRetries; attempt++)
+     {
+      if(!PositionSelectByTicket(ticket))
+        {
+         ReportExecutionResult(correlationId, false, ticket, 0, 0, "UNKNOWN_OR_FOREIGN_POSITION");
+         return;
+        }
+      ok = g_trade.PositionModify(ticket, currentSl, newTp);
+      retcode = g_trade.ResultRetcode();
+      if(ok || !IsRequoteRetcode(retcode))
+         break;
+      if(attempt < MaxRequoteRetries)
+         Sleep(RequoteRetryDelayMs);
+     }
    if(ok)
       ReportExecutionResult(correlationId, true, ticket, 0, 0, "");
    else
-      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(g_trade.ResultRetcode()));
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(retcode));
   }
 
 void ExecuteClose(const string correlationId, const string positionId)
@@ -513,12 +735,35 @@ void ExecuteClose(const string correlationId, const string positionId)
       return;
      }
    ulong ticket = (ulong)StringToInteger(positionId);
-   double volume = PositionGetDouble(POSITION_VOLUME);
-   bool ok = g_trade.PositionClose(ticket, MaxSlippagePoints);
+   string symbol = PositionGetString(POSITION_SYMBOL);
+
+   string precondition = CheckTradingPreconditions(symbol, false);
+   if(precondition != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, precondition);
+      return;
+     }
+
+   bool ok = false;
+   uint retcode = 0;
+   for(int attempt = 0; attempt <= MaxRequoteRetries; attempt++)
+     {
+      if(!PositionSelectByTicket(ticket))
+        {
+         ReportExecutionResult(correlationId, false, ticket, 0, 0, "UNKNOWN_OR_FOREIGN_POSITION");
+         return;
+        }
+      ok = g_trade.PositionClose(ticket, (ulong)MaxSlippagePoints);
+      retcode = g_trade.ResultRetcode();
+      if(ok || !IsRequoteRetcode(retcode))
+         break;
+      if(attempt < MaxRequoteRetries)
+         Sleep(RequoteRetryDelayMs);
+     }
    if(ok)
-      ReportExecutionResult(correlationId, true, ticket, g_trade.ResultPrice(), volume, "");
+      ReportExecutionResult(correlationId, true, ticket, g_trade.ResultPrice(), g_trade.ResultVolume(), "");
    else
-      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(g_trade.ResultRetcode()));
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(retcode));
   }
 
 void ExecutePartialClose(const string correlationId, const string positionId, const double closeVolume)
@@ -529,17 +774,47 @@ void ExecutePartialClose(const string correlationId, const string positionId, co
       return;
      }
    ulong ticket = (ulong)StringToInteger(positionId);
+   string symbol = PositionGetString(POSITION_SYMBOL);
    double ownedVolume = PositionGetDouble(POSITION_VOLUME);
    if(closeVolume <= 0 || closeVolume >= ownedVolume)
      {
       ReportExecutionResult(correlationId, false, ticket, 0, 0, "INVALID_PARTIAL_CLOSE_VOLUME");
       return;
      }
-   bool ok = g_trade.PositionClosePartial(ticket, closeVolume, MaxSlippagePoints);
+
+   string precondition = CheckTradingPreconditions(symbol, false);
+   if(precondition != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, precondition);
+      return;
+     }
+   string volumeIssue = CheckVolumeValid(symbol, closeVolume);
+   if(volumeIssue != "")
+     {
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, volumeIssue);
+      return;
+     }
+
+   bool ok = false;
+   uint retcode = 0;
+   for(int attempt = 0; attempt <= MaxRequoteRetries; attempt++)
+     {
+      if(!PositionSelectByTicket(ticket))
+        {
+         ReportExecutionResult(correlationId, false, ticket, 0, 0, "UNKNOWN_OR_FOREIGN_POSITION");
+         return;
+        }
+      ok = g_trade.PositionClosePartial(ticket, closeVolume, (ulong)MaxSlippagePoints);
+      retcode = g_trade.ResultRetcode();
+      if(ok || !IsRequoteRetcode(retcode))
+         break;
+      if(attempt < MaxRequoteRetries)
+         Sleep(RequoteRetryDelayMs);
+     }
    if(ok)
-      ReportExecutionResult(correlationId, true, ticket, g_trade.ResultPrice(), closeVolume, "");
+      ReportExecutionResult(correlationId, true, ticket, g_trade.ResultPrice(), g_trade.ResultVolume(), "");
    else
-      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(g_trade.ResultRetcode()));
+      ReportExecutionResult(correlationId, false, ticket, 0, 0, IntegerToString(retcode));
   }
 
 //+------------------------------------------------------------------+

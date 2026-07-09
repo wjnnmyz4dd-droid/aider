@@ -15,3 +15,5 @@ FailClosedTimeoutSeconds=30
 EmergencyDisable=false
 MaxRetries=3
 RetryDelayMs=250
+MaxRequoteRetries=2
+RequoteRetryDelayMs=100
