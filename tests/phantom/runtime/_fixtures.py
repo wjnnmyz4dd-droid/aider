@@ -64,6 +64,46 @@ def make_bars(count: int = 20, symbol: str = "EURUSD", start: datetime = T0) -> 
     return tuple(bars)
 
 
+def _ramp(a: float, b: float, n: int) -> List[float]:
+    return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+
+def make_trending_bars(symbol: str = "EURUSD", start: datetime = T0) -> tuple:
+    """A genuine (non-flat) synthetic bar sequence: an early double-
+    bottom/double-top consolidation (produces two clustered support and
+    two clustered resistance levels, per `structure.py`'s tolerance-based
+    clustering) followed by a monotonic staircase uptrend (ascending
+    swing highs and lows -- `TrendClassification.TRENDING_UP`, BOS-only
+    events, no CHOCH, no volatility expansion/compression). Verified to
+    drive the real Evidence -> Strategy chain to a genuine QUALIFIED
+    `TrendContinuationStrategy` result with `TradeIntent.BUY`, and a
+    composite evidence score comfortably above the Risk Engine's 65-point
+    hard gate (ADR-027 Hard Rule 1) -- unlike `make_bars()`'s flat
+    synthetic data, which deliberately qualifies no strategy."""
+    prices: List[float] = []
+    low, high = 1.1000, 1.1050
+    prices += _ramp(low, high, 6)
+    prices += _ramp(high, low, 6)[1:]
+    prices += _ramp(low, high, 6)[1:]
+    prices += _ramp(high, low, 6)[1:]
+
+    price = prices[-1]
+    for _leg in range(4):
+        for _ in range(8):
+            price += 0.0020
+            prices.append(price)
+        for _ in range(4):
+            price -= 0.0008
+            prices.append(price)
+
+    n = len(prices)
+    bars = [
+        Bar(symbol=symbol, timestamp=start - timedelta(hours=n - i), open=p, high=p + 0.0005, low=p - 0.0005, close=p, volume=100.0)
+        for i, p in enumerate(prices)
+    ]
+    return tuple(bars)
+
+
 def make_market_safety_inputs(**overrides) -> MarketSafetyInputs:
     return MarketSafetyInputs(**overrides)
 
@@ -137,6 +177,7 @@ __all__ = [
     "make_config",
     "make_profile",
     "make_bars",
+    "make_trending_bars",
     "make_market_safety_inputs",
     "make_compliance_snapshot",
     "make_account_state",
