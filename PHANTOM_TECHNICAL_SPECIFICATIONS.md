@@ -33,14 +33,22 @@ requested alongside them.
 
 | File | Component | Extra content |
 |---|---|---|
+| `docs/specs/00_runtime_orchestrator.md` | `phantom/runtime/` (thin orchestrator, not a 9th engine) | Added by Architecture Hardening — closes Red Team Audit Finding 2.1 |
 | `docs/specs/01_evidence_engine.md` | Evidence Engine | Scoring framework: individual pair scoring, the 65-point qualification threshold's actual enforcement point, confidence explanation mechanics |
-| `docs/specs/02_strategy_engine.md` | Strategy Engine | All five playbooks in full detail: market conditions, entry, exit, invalidation, preferred sessions, suitable pairs |
-| `docs/specs/03_portfolio_statistical_risk_engine.md` | Portfolio Statistical Risk Engine | The full Risk Schedule table restated in context |
-| `docs/specs/04_market_intelligence_engine.md` | Market Intelligence Engine | Pair-specific news scoring, Pair Safety Score, London/New York session preference, high-impact blackout rules, currency-peg/policy handling |
-| `docs/specs/05_prop_firm_compliance_engine.md` | Prop Firm Compliance Engine | |
-| `docs/specs/06_research_learning_engine.md` | Research & Learning Engine | |
-| `docs/specs/07_system_reliability_engine.md` | System Reliability Engine | |
+| `docs/specs/02_strategy_engine.md` | Strategy Engine | All five playbooks in full detail: market conditions, entry, exit, invalidation, preferred sessions, suitable pairs; tie-break cascade (Architecture Hardening) |
+| `docs/specs/03_portfolio_statistical_risk_engine.md` | Portfolio Statistical Risk Engine | The full Risk Schedule table restated in context; pending-exposure reservation and minimum-sample-size gate (Architecture Hardening) |
+| `docs/specs/04_market_intelligence_engine.md` | Market Intelligence Engine | Pair-specific news scoring, Pair Safety Score, London/New York session preference, high-impact blackout rules, currency-peg/policy handling; the one time/session/holiday authority (Architecture Hardening) |
+| `docs/specs/05_prop_firm_compliance_engine.md` | Prop Firm Compliance Engine | Ten-category FTMO configuration model (Architecture Hardening) |
+| `docs/specs/06_research_learning_engine.md` | Research & Learning Engine | Every-outcome recording + reconciliation path (Architecture Hardening) |
+| `docs/specs/07_system_reliability_engine.md` | System Reliability Engine | Operator authentication model (Architecture Hardening) |
 | `docs/specs/08_validation.md` | Validation (offline only) | |
+| `docs/specs/09_bridge_concurrency_hardening.md` | PhantomBridgeEA (spec revision only, no code change) | Added by Architecture Hardening — closes Red Team Audit Finding 5.1 |
+
+See `PHANTOM_ARCHITECTURE_HARDENING.md` for the consolidated hardening
+pass: updated dependency graph, runtime flow, authority matrix, threat
+model, concurrency model, operator model, FTMO configuration model
+summary, testing requirements, roadmap deltas, and final readiness
+assessment.
 
 ## What this is not
 

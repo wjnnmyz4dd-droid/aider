@@ -42,14 +42,37 @@ research_engine.recommendations() -> Tuple[Recommendation, ...]
 `record_trade` is the only write path; every other function is
 read-only.
 
+**Revision (Architecture Hardening — closes Red Team Audit Findings
+2.1 and 12.1):** `record_trade` is now called by
+`phantom/runtime/runtime.py` for **every** pair whose cycle reached
+Strategy Engine, whether it proceeded to a submitted `TradeCommand` or
+stopped at the entry gate, a Risk veto, a Compliance rejection, or a
+Bridge-layer `ErrorCode` (`docs/specs/00_runtime_orchestrator.md` §5
+step 7) — "observer" means this component records the outcome of every
+decision the Runtime made, not only successful executions.
+`decision_chain_snapshot` now always carries a `stage_reached`/`outcome`
+pair using each stopping stage's own existing type (`EntryGateDecision`,
+`RiskVeto`, `ComplianceRejection`, or `phantom.bridge.models.ErrorCode`)
+— no new rejection taxonomy is introduced.
+
+**Reconciliation path (closes Red Team Audit Finding 2.3):** if the
+primary `ExecutionReport` for a submitted command never arrives within
+a configured timeout, `record_trade` may be invoked a second time for
+the same trade using `phantom.bridge.engine.BridgeEngine`'s existing
+`handle_trade_transaction` drift-detection data as the outcome source
+instead — reusing the already-built `TradeTransactionReport` mirror
+rather than leaving that trade permanently absent from memory.
+
 ## 4. Inputs
 
 - `DecisionChainSnapshot`: the Evidence/Strategy/Intelligence/Risk/
-  Compliance state at the moment a trade was decided (assembled by
-  whatever orchestrates the live chain, passed in at `record_trade`
-  time — this component does not reach back into any live component
-  itself to construct it).
-- `ExecutionReport` (PhantomBridgeEA, via `phantom.bridge.models`).
+  Compliance state at the moment a trade was decided, now assembled and
+  passed in by `phantom/runtime/runtime.py` specifically (no longer an
+  unnamed "whatever orchestrates the live chain") — this component
+  still does not reach back into any live component itself to
+  construct it.
+- `ExecutionReport` (PhantomBridgeEA, via `phantom.bridge.models`), or
+  a `TradeTransactionReport`-derived reconciliation outcome (see §3).
 - `PortfolioStatistics` (Risk Engine's `portfolio_stats()`, read-only).
 
 ## 5. Outputs
@@ -73,13 +96,23 @@ only).
 None over live trading. This component may only ever be read from by
 anything outside itself; it must never be imported by
 `phantom/strategy/` or `phantom/risk/` (one-directional data flow,
-structurally enforced — see §10).
+structurally enforced — see §10). It is also never imported by
+`phantom/runtime/` for anything other than the `record_trade`
+observer call itself — Runtime does not consult this component's
+`recommendations()`/`explain_trade()`/`query()` outputs as part of any
+live decision.
+
+**Authority restatement (Architecture Hardening):** Research & Learning
+Engine holds **no decision authority of any kind** — pure observer/
+advisory (see the system-wide authority matrix in
+`PHANTOM_ARCHITECTURE_HARDENING.md`).
 
 ## 8. Dependencies
 
-Trade history produced by the completed live chain (Phases 1, 3a, 3b,
-4a, 5, 6), and Risk Engine's `portfolio_stats()` (Phase 5) for
-`performance_attribution.py`'s reuse contract.
+Trade history produced by the completed live chain, delivered via
+`phantom/runtime/runtime.py`'s observer call, and Risk Engine's
+`portfolio_stats()` (Phase 5) for `performance_attribution.py`'s reuse
+contract.
 
 ## 9. Explicit non-responsibilities
 
@@ -109,6 +142,15 @@ Trade history produced by the completed live chain (Phases 1, 3a, 3b,
   contributing values (not a generic template with no real content).
 - Integration test producing a full simulated weekly review from
   fixture trade history end to end.
+- **Every-outcome recording test** (closes Finding 2.1/12.1): a fixture
+  cycle where the pair stops at each of the four possible stages
+  (entry gate, Risk veto, Compliance rejection, Bridge `ErrorCode`)
+  produces a `record_trade` call for every one, each carrying the
+  correct originating stage's own type as the outcome — no stopped
+  pair is silently unrecorded.
+- **Reconciliation test** (closes Finding 2.3): a fixture where the
+  primary `ExecutionReport` never arrives within the configured timeout
+  is backfilled correctly from a fixture `TradeTransactionReport`.
 
 ## 11. Performance requirements
 

@@ -12,21 +12,39 @@ applies to a pair's current `PairEvidence`, and if one does, produce a
 ## 2. Responsibilities
 
 - Maintain the playbook registry (auto-discovered, never hand-listed).
-- Check System Reliability Engine's `is_halted()` and Market
-  Intelligence Engine's `get_entry_gate()` before evaluating any
-  playbook for a pair.
 - Run every registered playbook against the pair's current
-  `PairEvidence` and let at most one playbook produce a `TradeIdea` per
-  evaluation cycle per pair.
+  `PairEvidence` and resolve to at most one `TradeIdea` per evaluation
+  cycle per pair, using the tie-break order in §7.1 whenever more than
+  one playbook's conditions are simultaneously satisfied.
 - Attach the originating playbook's identity and the specific
   entry/exit/invalidation levels it computed to the `TradeIdea`.
+
+**Revision (Architecture Hardening — closes Red Team Audit Finding
+2.1's dependency on this component):** Strategy Engine no longer checks
+`is_halted()` or `get_entry_gate()` itself. Both are now checked by
+`phantom/runtime/runtime.py` (`docs/specs/00_runtime_orchestrator.md`
+§5) — the halt check before *any* component is called for a cycle, and
+the entry-gate check *after* Strategy Engine returns an idea, before
+Risk Engine is called. This removes Strategy Engine's direct dependency
+on Market Intelligence Engine and System Reliability Engine entirely
+(see revised §8) and centralizes cross-cutting preconditions in the one
+component whose job is sequencing.
 
 ## 3. Public interfaces
 
 ```
-strategy_engine.evaluate(pair: Pair, now: Clock) -> Optional[TradeIdea]
-strategy_engine.evaluate_all(now: Clock) -> Mapping[Pair, Optional[TradeIdea]]
+strategy_engine.evaluate(pair: Pair, now: Clock) -> Tuple[TradeIdea, ...]
+strategy_engine.evaluate_all(now: Clock) -> Mapping[Pair, Tuple[TradeIdea, ...]]
 ```
+
+**Revision (Architecture Hardening):** return type changed from
+`Optional[TradeIdea]` to `Tuple[TradeIdea, ...]` (usually empty or
+one-element, but may hold more than one when multiple playbooks
+simultaneously qualify) — closes Red Team Audit Finding 8.1 by making
+the "more than one playbook qualified" case an explicit, observable
+output rather than something the registry's iteration order silently
+resolved. Strategy Engine itself does **not** pick a winner among
+multiple candidates — see the §4 note below.
 
 Internal-only (not exposed outside this package):
 `registry.applicable_playbooks(evidence: PairEvidence) ->
@@ -36,19 +54,38 @@ Optional[TradeIdea]`.
 ## 4. Inputs
 
 - `PairEvidence` from Evidence Engine (score, regime, structure
-  findings).
-- `EntryGateDecision` from Market Intelligence Engine.
-- `is_halted()` from System Reliability Engine.
+  findings) — as of this revision, the *only* other component's data
+  this input list names; `EntryGateDecision` and `is_halted()` are no
+  longer inputs to this component (see §2 revision).
 - Per-playbook configuration (`config.py`): which playbooks are
   enabled, per-playbook parameter overrides.
 
+**Note on tie-break inputs:** the tie-break cascade in §7.1 needs data
+Strategy Engine deliberately does not hold (historical strategy
+performance from Research & Learning Engine, statistical confidence and
+portfolio exposure from Risk Engine, liquidity/news-risk from Market
+Intelligence Engine). Giving Strategy Engine those dependencies would
+both re-expand its dependency footprint (reversing this revision's own
+simplification) and, for Research & Learning Engine specifically,
+violate the existing one-directional-flow rule (`phantom/strategy/`
+must never import from `phantom/research/`). Resolving this: Strategy
+Engine's `evaluate()` returns *every* currently-qualifying candidate
+idea for a pair (§3, revised), and the tie-break cascade itself is
+resolved by `phantom/runtime/runtime.py`, the one component already
+permitted to depend on all 8 others. See
+`docs/specs/00_runtime_orchestrator.md` §5.1 for the resolution
+procedure.
+
 ## 5. Outputs
 
-`TradeIdea`: pair, direction, originating strategy kind, proposed
-entry level/condition, proposed exit level(s), invalidation condition,
-the `PairEvidence` snapshot it was built from, and a timestamp. No
-volume, no order type beyond direction — sizing is Risk Engine's job
-entirely.
+Zero or more `TradeIdea`s per pair per cycle: pair, direction,
+originating strategy kind, proposed entry level/condition, proposed
+exit level(s), invalidation condition, the `PairEvidence` snapshot it
+was built from, and a timestamp. No volume, no order type beyond
+direction — sizing is Risk Engine's job entirely. More than one
+`TradeIdea` for the same pair in the same cycle means more than one
+playbook currently qualifies; Strategy Engine reports this fact, it
+does not resolve it (§7).
 
 ## 6. Internal data models
 
@@ -60,14 +97,52 @@ entirely.
 
 ## 7. Decision authority
 
-Confirmation only. Strategy Engine decides *which pattern is present*,
-never *whether to trade it* (that composite decision belongs to Risk
-Engine + Compliance Engine downstream) and never *how much* to trade.
+Confirmation only. Strategy Engine decides *which pattern(s) are
+present*, never *whether to trade one* (that composite decision
+belongs to Risk Engine + Compliance Engine downstream), never *how
+much* to trade, and — as of this revision — never *which one wins*
+when more than one playbook qualifies simultaneously.
+
+### 7.1 Tie-break resolution (owned by Runtime, specified here for
+completeness)
+
+When `evaluate()` returns more than one `TradeIdea` for a pair in one
+cycle, `phantom/runtime/runtime.py` resolves exactly one winner using
+this fixed, deterministic cascade — no step is skipped, no randomness
+at any point:
+
+1. **Evidence score** — the candidate whose `evidence_snapshot.score`
+   is higher wins; tie proceeds to 2.
+2. **Historical strategy performance** — the candidate whose
+   `strategy_kind` ranks higher in Research & Learning Engine's
+   `strategy_ranking.py` output wins; tie proceeds to 3.
+3. **Statistical confidence** — the candidate Risk Engine's
+   `portfolio_stats()` currently associates with higher confidence
+   (e.g. a lower recent variance/drawdown-probability for that
+   strategy kind) wins; tie proceeds to 4.
+4. **Lower portfolio exposure** — the candidate that would add less
+   currency/correlation exposure (per Risk Engine's current
+   `PortfolioSnapshot`) wins; tie proceeds to 5.
+5. **Higher liquidity quality** — the candidate whose pair currently
+   has the higher `liquidity_quality` from Market Intelligence
+   Engine's `PairIntelligence` wins; tie proceeds to 6.
+6. **Lower news risk** — the candidate whose pair currently has the
+   lower `MarketImpactScore` wins.
+7. **Still tied after all six** — reject the pair for this cycle
+   entirely; no idea proceeds. Never break a tie by arbitrary/insertion
+   order, and never introduce randomness anywhere in this cascade.
+
+This closes Red Team Audit Finding 8.1. Because this cascade requires
+Research & Learning Engine's, Risk Engine's, and Market Intelligence
+Engine's data, it is deliberately specified as Runtime's
+responsibility, not Strategy Engine's — see §4's note above and
+`docs/specs/00_runtime_orchestrator.md` §5.
 
 ## 8. Dependencies
 
-Evidence Engine (Phase 3a), Market Intelligence Engine (Phase 3b),
-System Reliability Engine (Phase 3c), `phantom/shared/`.
+Evidence Engine only, plus `phantom/shared/`. (Revised — Market
+Intelligence Engine and System Reliability Engine are no longer direct
+dependencies; see §2.)
 
 ## 9. Explicit non-responsibilities
 
@@ -75,15 +150,19 @@ System Reliability Engine (Phase 3c), `phantom/shared/`.
   `TradeIdea`).
 - Never submits a command to PhantomBridgeEA — has no dependency on
   `phantom/bridge` at all.
-- Never overrides Market Intelligence Engine's entry gate or System
-  Reliability Engine's halt state.
-- Never lets two playbooks both fire for the same pair in the same
-  evaluation cycle (would be a duplicate signal, forbidden by the
-  Charter's Strategy philosophy) — `registry.applicable_playbooks`
-  plus `evaluate`'s "at most one" rule enforces this structurally.
+- Never checks Market Intelligence Engine's entry gate or System
+  Reliability Engine's halt state itself — Runtime does, before and
+  after calling this component respectively (§2).
+- Never resolves a tie among multiple simultaneously-qualifying
+  playbooks itself — reports all of them; Runtime resolves per §7.1.
 - Never hand-lists playbook names anywhere (registry is auto-discovery
   only, per the drift-risk lesson already on record for this exact
   anti-pattern).
+- Never recomputes regime or market structure independently of
+  `evidence.regime`/`evidence.findings` — closes Red Team Audit Finding
+  1.1; enforced by a structural-boundary test asserting no file under
+  `phantom/strategy/playbooks/` imports
+  `phantom/evidence/regime.py`/`market_structure.py` directly.
 
 ## 10. Test plan
 
@@ -91,13 +170,15 @@ System Reliability Engine (Phase 3c), `phantom/shared/`.
 - `registry.py` auto-discovery test: adding a new playbook file makes
   it appear in `applicable_playbooks` output with zero other code
   changes.
-- Entry-gate/halt suppression integration tests: a fixture pair whose
-  evidence would otherwise fire a playbook produces no `TradeIdea` when
-  `get_entry_gate` returns any `BLOCKED_*` value or `is_halted()` is
-  true.
-- Mutual-exclusion test: a crafted fixture where two playbooks' naive
-  conditions could both match must still produce exactly one
-  `TradeIdea`.
+- **Multi-candidate test** (revised from "mutual-exclusion test"): a
+  crafted fixture where two playbooks' conditions both match must
+  produce a `Tuple` with both `TradeIdea`s present — Strategy Engine
+  itself must **not** collapse this to one internally.
+- **No-independent-regime test:** a fixture confirms no playbook's
+  output changes if `market_structure.py`'s internal detail changes
+  while `evidence.regime` is held fixed (proves playbooks consume only
+  the public `PairEvidence` surface).
+- Structural-boundary test per §9's regime-duplication rule.
 
 ## 11. Performance requirements
 
@@ -105,13 +186,16 @@ System Reliability Engine (Phase 3c), `phantom/shared/`.
 Strategy Engine's own decision-cycle budget (target: well under 1
 second for a realistic enabled-pair count, validated during
 implementation) — this is a target, not a guarantee made here.
+Single-threaded caller assumed (Runtime); this component is not
+required to be internally thread-safe (closes Red Team Audit Finding
+5.2 for this component).
 
 ## 12. Failure modes
 
 | Failure | Expected behavior |
 |---|---|
 | A playbook raises during `confirm()` | Caught per-playbook at `strategy_engine.py`; that playbook contributes no idea this cycle, logged, other playbooks/pairs unaffected. |
-| Market Intelligence Engine or System Reliability Engine unreachable/erroring | Fail closed — no `TradeIdea` is ever produced if either upstream gate cannot be positively confirmed as `ALLOWED`/not-halted. |
+| Tie-break cascade's upstream data (Research/Risk/Intelligence) unreachable during Runtime's resolution | Fail closed — Runtime rejects the tied pair for this cycle rather than guessing a winner from partial data. |
 
 ## 13. Security considerations
 
@@ -121,10 +205,17 @@ input beyond configured pair/playbook enablement lists.
 ## 14. Logging requirements
 
 `logging_sink.py` logs every `TradeIdea` produced (pair, strategy kind,
-levels) and every suppressed evaluation (pair, reason: gate/halt/no
-playbook matched). `metrics.py` tracks ideas produced per strategy
-kind, suppression counts by reason, and per-playbook evaluation
-latency.
+levels) and every multi-candidate cycle (which playbooks qualified,
+handed to Runtime for tie-break). `metrics.py` tracks ideas produced
+per strategy kind, multi-candidate frequency, and per-playbook
+evaluation latency. Gate/halt suppression is now logged by Runtime
+(§14 of `docs/specs/00_runtime_orchestrator.md`), not here.
+
+**Authority restatement (Architecture Hardening):** Strategy Engine
+holds **selection/confirmation authority only** — the sole source of
+"which pattern(s) are present." It claims no scoring, sizing, gating,
+or execution authority (see the system-wide authority matrix in
+`PHANTOM_ARCHITECTURE_HARDENING.md`).
 
 ---
 

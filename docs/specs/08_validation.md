@@ -84,10 +84,12 @@ it's written.
 
 ## 9. Explicit non-responsibilities
 
-- **Never imports any live component's `engine.py`/orchestrator module**
-  — only `models.py` types, so the offline/online boundary is
-  structurally checkable (mirrors Phase 1's own
-  `test_structural_boundary.py` pattern).
+- **Never imports any live component's `engine.py`/orchestrator module,
+  and never imports `phantom/runtime/` at all** (Architecture Hardening
+  — restated explicitly per this task's structural rules) — only
+  `models.py` types, so the offline/online boundary is structurally
+  checkable (mirrors Phase 1's own `test_structural_boundary.py`
+  pattern).
 - Never submits a command to PhantomBridgeEA, or to any live component
   at all.
 - Never runs against a live/streaming data feed — its price history is
@@ -101,7 +103,10 @@ it's written.
 ## 10. Test plan
 
 - Structural-boundary test: no file under `phantom/validation/` imports
-  any live component's orchestrator module — only `models.py` types.
+  any live component's orchestrator module, and no file under
+  `phantom/validation/` imports `phantom/runtime/` (grep-based, added
+  by this hardening task's explicit structural rule) — only `models.py`
+  types.
 - Known-outcome regression test: a fixture historical window with a
   hand-verified expected `BacktestResult`, so a future change to
   `backtest_engine.py` itself is caught if it silently changes
@@ -142,3 +147,9 @@ last month" can be answered from the log, not just memory). No
 `metrics.py` counters in the same live-system-observability sense as
 the other components — this is offline batch tooling, not a live
 service — but a run history/audit log is still required.
+
+**Authority restatement (Architecture Hardening):** Validation holds
+**no live authority of any kind** — offline only, never imported by and
+never importing any live component's orchestrator or `phantom/runtime/`
+(see the system-wide authority matrix in
+`PHANTOM_ARCHITECTURE_HARDENING.md`).

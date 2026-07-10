@@ -45,6 +45,7 @@ contents) and the build sequencing that document deferred.
 | 8 | System Reliability Engine | Not started |
 | 9 | Validation (offline only) | Not started |
 | — | `phantom/shared/` | Not started — locked contents below |
+| — | `phantom/runtime/` (thin orchestrator, not a 9th engine) | Not started — see §6.1 and `docs/specs/00_runtime_orchestrator.md` |
 
 ## 2. `phantom/shared/` — locked contents
 
@@ -481,6 +482,56 @@ that §0's gate has cleared. None of this begins until both are true.
   3c onward, deepening at Phase 8, never "finished."
 - **Research & Learning Engine's reviews are continuous** (weekly/
   monthly) from Phase 7 onward.
+
+## 6.1 Architecture Hardening amendments (post-Red-Team-Audit)
+
+This roadmap is amended as follows — see `PHANTOM_ARCHITECTURE_HARDENING.md`
+for the full rationale; this section only states the build-order
+deltas.
+
+- **New: Phase 1R — Bridge Concurrency Remediation (blocked on separate
+  approval).** Closes Red Team Audit Finding 5.1. Adds locking to
+  `phantom/bridge/command_queue.py` and `connection_health.py` per
+  `docs/specs/09_bridge_concurrency_hardening.md`. This is a fix to
+  already-built, already-frozen Phase 1 code — it does not begin as
+  part of this hardening pass, requires its own explicit authorization
+  the same way any other change to `PhantomBridgeEA` would, and must
+  pass the full existing 85-test Phase 1 regression suite unchanged
+  afterward. It may happen at any point relative to Phase 2 onward, but
+  must be complete before Phase 6's real (non-fixture) bridge
+  integration testing.
+- **New: Phase 2R — `phantom/runtime/runtime.py` skeleton, built
+  incrementally.** Runtime's sequencing logic can be stubbed against
+  Evidence Engine and Strategy Engine as soon as both exist (alongside
+  Phase 4a), using mock Risk/Compliance/Bridge/Research/Reliability
+  calls, and wired to each real component as it lands — Market
+  Intelligence Engine's gate check (Phase 3b), Risk Engine's
+  serialized `evaluate()` calls (Phase 5), Compliance Engine and the
+  real `BridgeEngine.submit_command` integration (Phase 6), Research &
+  Learning Engine's observer call (Phase 7), and Reliability's
+  `is_halted()`/`record_cycle` (Phase 3c core, then Phase 8 extension).
+  Runtime's own exit criteria (full sequencing test, determinism test,
+  every rejection-propagation test) are only fully met once Phase 6 is
+  done — this replaces Phase 6's prior exit criterion ("full chain
+  proven end to end") with the equivalent, now-named criterion "Runtime
+  module proven end to end," closing Red Team Audit Finding 2.1.
+- **Phase 3c (System Reliability Engine core) scope addition:**
+  `operator_auth.py` (authenticate/authorize/audit) is now part of this
+  phase's core scope, not deferred — Compliance Engine's emergency
+  lockout and Market Intelligence Engine's peg/policy block both depend
+  on it existing before their own clear-paths can be tested (closes
+  Finding 17.1).
+- **Phase 5 (Risk Engine) exit criteria addition:** the pending-exposure
+  reservation ledger and minimum-sample-size gate
+  (`docs/specs/03_portfolio_statistical_risk_engine.md` §3/§6.1) are now
+  part of Phase 5's own exit criteria, not a later addition — closes
+  Findings 2.2 and 7.1 at the same phase they were always going to be
+  built, rather than as a retrofit.
+- **Phase 6 (Compliance Engine) scope addition:** the full ten-category
+  `ComplianceRuleSet` (`docs/specs/05_prop_firm_compliance_engine.md`
+  §"FTMO configuration model") replaces the original five-category
+  scope — closes Findings 4.1, 11.1–11.4 at the same phase, not a
+  retrofit.
 
 ## 7. Rule for adding anything not already named here
 

@@ -51,7 +51,10 @@ phantom/                         # Python package root (already exists — Phase
 ├── research/                    # Component 7
 ├── reliability/                 # Component 8
 ├── validation/                  # Component 9 -- offline only
-└── shared/                      # Recommended, not yet approved -- see §14
+├── shared/                      # LOCKED (Architecture Hardening) -- see PHANTOM_ARCHITECTURE_HARDENING.md
+└── runtime/                     # Thin orchestrator ONLY, not a 9th engine -- see
+                                  # docs/specs/00_runtime_orchestrator.md and
+                                  # PHANTOM_ARCHITECTURE_HARDENING.md
 
 mt5/
 ├── PhantomBridgeEA.mq5          # Component 1 (MQL5 side) -- FROZEN
@@ -59,6 +62,8 @@ mt5/
 
 tests/phantom/
 ├── bridge/                      # already exists (85 tests, Phase 1)
+├── shared/
+├── runtime/
 ├── evidence/
 ├── strategy/
 ├── risk/
@@ -71,7 +76,11 @@ tests/phantom/
 docs/
 ├── research/                    # this session's research artifacts (unchanged pattern)
 ├── architecture/                # existing diagrams (unchanged)
-└── mt5_validation/              # Phase 1 validation package (unchanged)
+├── mt5_validation/              # Phase 1 validation package (unchanged)
+└── specs/                       # per-component technical specifications
+                                  # (00_runtime_orchestrator through 09_bridge_
+                                  # concurrency_hardening -- see
+                                  # PHANTOM_TECHNICAL_SPECIFICATIONS.md)
 ```
 
 No top-level Python package outside `phantom/` is introduced. `mt5/`

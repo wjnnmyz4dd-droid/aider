@@ -34,10 +34,20 @@ intelligence_engine.get_entry_gate(pair: Pair, now: Clock) -> EntryGateDecision
 
 Two distinct calls, deliberately: `get_pair_intelligence`'s scores are
 inputs to Risk Engine's sizing; `get_entry_gate`'s decision is a
-mandatory precondition Strategy Engine must check before it may emit a
-`TradeIdea` at all. Conflating them into one call risks a caller
+mandatory precondition. Conflating them into one call risks a caller
 treating the gate as just another score to weigh rather than a hard
 stop.
+
+**Revision (Architecture Hardening):** `get_entry_gate` is now called
+by `phantom/runtime/runtime.py`, not by Strategy Engine directly (see
+`docs/specs/00_runtime_orchestrator.md` §5 and
+`docs/specs/02_strategy_engine.md` §2) — Market Intelligence Engine's
+own interface is unchanged; only the identity of its caller moved.
+`get_entry_gate`'s scope remains **new entries only** — MODIFY_SL/
+MODIFY_TP/CLOSE on an already-open position are deliberately exempted,
+consistent with PhantomBridgeEA's own close-only-mode precedent (never
+blocks closing); this closes Red Team Audit Finding 9.1 by making the
+decision explicit rather than implicit.
 
 ## 4. Inputs
 
@@ -66,6 +76,34 @@ and `EntryGateDecision` (`ALLOWED` / `BLOCKED_NEWS_BLACKOUT` /
 | `EntryGateDecision` | enum: `ALLOWED`, `BLOCKED_NEWS_BLACKOUT`, `BLOCKED_HOLIDAY`, `BLOCKED_PEG_POLICY_EVENT` |
 | `PairIntelligence` | `(pair, news_score, market_impact_score, pair_safety_score, session_quality, liquidity_quality, spread_quality, volatility_forecast, evaluated_at)` |
 
+### 6.1 Authoritative time handling (Architecture Hardening — closes Red
+Team Audit Finding 9.2)
+
+Market Intelligence Engine is **the one authoritative source for
+session, DST, and holiday-calendar calculations** in the entire system.
+`session_quality.py` and `economic_calendar.py` are the only files
+permitted to compute "what session is this," "has DST shifted the
+session boundary," or "is this a trading holiday" — every other
+component that needs a session/holiday fact (Evidence Engine's
+`regime.py`, Compliance Engine's daily/weekly rollover logic for
+drawdown and trading-day tracking) consults this component rather than
+performing its own date/session arithmetic. This is the resolution to
+"create one authoritative clock specification": the authority is this
+already-approved component, not a new one, and not business logic added
+to `phantom/shared/` (which may hold only the `Clock` protocol and
+similar immutable value types, never session/holiday logic, per its
+locked allowlist).
+
+Concretely: all time-based logic here (and anywhere that consults it)
+operates on **broker server time**, obtained from PhantomBridgeEA's own
+telemetry (its account/terminal reports already carry the server-time
+basis), never on system local time or a naive UTC assumption — MT5
+broker servers commonly run a fixed offset (e.g. UTC+2/+3, or EET)
+following the *broker's* DST convention, not the trader's. Session
+windows (London/New York open/close) are defined against this
+broker-time basis and re-derived correctly across the broker's own DST
+transitions, not the trader's.
+
 ## 7. Decision authority
 
 Advisory in its scores (never chooses a trade, never sizes), but the
@@ -77,8 +115,10 @@ a `BLOCKED_*` result.
 
 ## 8. Dependencies
 
-`phantom/shared/` only, plus its own calendar/news ingestion. No
-dependency on Evidence Engine, Strategy Engine, or PhantomBridgeEA.
+`phantom/shared/`, plus its own calendar/news ingestion, plus
+PhantomBridgeEA's server-time telemetry (§6.1 — read-only, for the
+broker-time basis only, not execution telemetry). No dependency on
+Evidence Engine or Strategy Engine.
 
 ## 9. Explicit non-responsibilities
 
@@ -136,7 +176,26 @@ convention, never hardcoded or logged.
 `logging_sink.py` logs every `get_entry_gate` call and result, and
 every `PairIntelligence` evaluation. `metrics.py` tracks blocked-vs-
 allowed counts by block reason, per-event-type classification counts,
-and evaluation latency.
+and evaluation latency. **Peg/policy block clearance is now logged with
+who/when, matching Compliance Engine's emergency-lockout audit
+requirement** (closes Red Team Audit Finding 9.3), via the shared
+operator-authorization model in
+`docs/specs/07_system_reliability_engine.md` §"Operator authentication"
+— clearing a peg/policy block is one of the administrative actions that
+model covers.
+
+**Authority restatement (Architecture Hardening):** Market Intelligence
+Engine holds **news authority only** — the sole source of news/session/
+calendar/holiday facts, including the time authority in §6.1. It claims
+no scoring, sizing, compliance, or execution authority (see the
+system-wide authority matrix in `PHANTOM_ARCHITECTURE_HARDENING.md`).
+Note (cross-reference, not owned here): a prop firm's own *contractual*
+news-trading restriction is enforced by Prop Firm Compliance Engine as
+a hard rule that *consults* this component's event classification —
+this component's own blackout remains a general, risk-advisory gate,
+not a substitute for that contractual rule (closes Red Team Audit
+Finding 11.1; see `docs/specs/05_prop_firm_compliance_engine.md`
+§"FTMO configuration model").
 
 ---
 

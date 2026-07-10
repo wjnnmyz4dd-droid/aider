@@ -42,6 +42,14 @@ No other function is exposed. Strategy Engine and Risk Engine consume
 only `PairEvidence`; neither may reach into `market_structure.py`,
 `indicators.py`, or `regime.py` directly — those are internal.
 
+**Revision (Architecture Hardening):** `evaluate()` and
+`get_all_pair_evidence()` are called exclusively by
+`phantom/runtime/runtime.py` (`docs/specs/00_runtime_orchestrator.md`)
+as of this revision — Evidence Engine itself gains no new caller and no
+new dependency; only the identity of its existing caller is now named.
+Per-pair evaluation has no shared mutable state and is therefore safely
+parallelizable across pairs (closes Red Team Audit Finding 16.1).
+
 ## 4. Inputs
 
 - Enabled-pair list and per-pair indicator/lookback parameters
@@ -101,6 +109,19 @@ than `shared/`.
 - Never uses a non-deterministic/generative technique — "No AI" in
   this component's original scope holds; scoring is rule-based and
   reproducible.
+- **Never calculates session windows, holidays, or DST-adjusted time
+  independently.** Market Intelligence Engine is the sole time/session/
+  holiday authority (`docs/specs/04_market_intelligence_engine.md`
+  §"Authoritative time handling"); if Evidence Engine's regime/
+  indicator logic ever needs a session boundary, it consults that
+  authority rather than deriving one itself (closes Red Team Audit
+  Finding 9.2 for this component).
+
+**Authority restatement (Architecture Hardening):** Evidence Engine
+holds **scoring authority only** — the sole source of a pair's
+structure/regime/indicator-derived score. No other component may
+compute a competing score of this kind (see the system-wide authority
+matrix in `PHANTOM_ARCHITECTURE_HARDENING.md`).
 
 ## 10. Test plan
 
