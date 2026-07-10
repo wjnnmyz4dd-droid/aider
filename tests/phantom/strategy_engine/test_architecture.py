@@ -1,7 +1,16 @@
 """Architecture tests (ADR-026 Hard Rules 1-2): no trade-decision
 vocabulary, no import from `phantom_pipeline/` or `phantom/bridge/`
 (the only permitted upstream imports are `phantom.evidence_engine` and
-`phantom.market_intelligence`), no randomness."""
+`phantom.market_intelligence`), no randomness.
+
+Amendment 1 narrows Hard Rule 1's "no BUY/SELL" to allow exactly one
+thing: the `TradeIntent` enum's `BUY`/`SELL` members, a directional
+conclusion of an already-qualified entry thesis -- never a size, order,
+or execution artifact. `BUY`/`SELL` are therefore removed from the
+forbidden-identifier set below; every execution/sizing term remains
+forbidden, and `TestNoSharedMutableEligibilityState` (below) still
+verifies no method exists that *selects* or *chooses* a direction --
+only a field that already carries one."""
 
 from __future__ import annotations
 
@@ -12,7 +21,7 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "phantom" / "strategy_engine"
 
 FORBIDDEN_IDENTIFIERS = {
-    "BUY", "SELL", "position_size", "stop_loss", "take_profit",
+    "position_size", "stop_loss", "take_profit",
     "order_type", "place_order", "submit_order", "lot_size",
 }
 

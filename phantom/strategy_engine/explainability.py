@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 from phantom.evidence_engine.models import EvidenceSnapshot
 from phantom.market_intelligence.models import MarketIntelligenceSnapshot
 
-from .models import QualificationResult, StrategySnapshot, WinningStrategy
+from .models import QualificationResult, StrategySnapshot, TradeIntent, WinningStrategy
 
 
 def _rejection_reason(qualifications: Sequence[QualificationResult]) -> str:
@@ -60,6 +60,7 @@ def build_strategy_snapshot(
         rejection_reason=_rejection_reason(qualifications) if rejected else None,
         supporting_evidence_summary=_evidence_summary(evidence),
         supporting_market_intelligence_summary=_market_intelligence_summary(market_intelligence),
+        trade_intent=winning_strategy.qualification.trade_intent if winning_strategy else TradeIntent.NONE,
     )
 
 

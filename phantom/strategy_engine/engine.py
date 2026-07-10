@@ -3,8 +3,10 @@
 Consumes an `EvidenceSnapshot` (ADR-024) and a `MarketIntelligenceSnapshot`
 (ADR-025) for one pair, runs every registered strategy's `qualify()`,
 runs the deterministic selection cascade, and produces a
-`StrategySnapshot`. No trade direction, no sizing, no execution
-(ADR-026 Hard Rule 1).
+`StrategySnapshot`. No sizing, no execution (ADR-026 Hard Rule 1); the
+winning strategy's `trade_intent` (BUY/SELL/NONE, ADR-026 Amendment 1)
+is the one narrow exception -- a directional conclusion, never a size
+or order.
 
 Thread safety: `StrategyEngine` holds no per-call mutable state.
 `StrategyRegistry` is populated once at construction and never mutated

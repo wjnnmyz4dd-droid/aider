@@ -14,9 +14,28 @@ from phantom.market_intelligence.models import MarketIntelligenceSnapshot
 
 from ..config import StrategyEngineConfig
 from ..eligibility import check_eligibility
-from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId
+from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId, TradeIntent
 from ._helpers import clamp, component
 from .base import Strategy
+
+
+def _trade_intent_for_zone(nearest_zone, evidence: EvidenceSnapshot) -> TradeIntent:
+    """(ADR-026 Amendment 1) A bounce off support is a `BUY`; a
+    rejection at resistance is a `SELL`. `sources` already carries the
+    literal `"support"`/`"resistance"` label whenever a structural
+    support/resistance level contributed to this zone
+    (`support_resistance.py`'s own `sourced_prices` construction) --
+    reused here, never recomputed. If neither label is present (the
+    zone was built purely from session/psychological levels), fall
+    back to comparing the zone's price against the session range's
+    midpoint -- both already on `SupportResistanceContext`."""
+
+    if "support" in nearest_zone.sources:
+        return TradeIntent.BUY
+    if "resistance" in nearest_zone.sources:
+        return TradeIntent.SELL
+    midpoint = (evidence.support_resistance.session_high + evidence.support_resistance.session_low) / 2.0
+    return TradeIntent.BUY if nearest_zone.price <= midpoint else TradeIntent.SELL
 
 _DEFINITION = StrategyDefinition(
     strategy_id=StrategyId.RANGE_REVERSAL,
@@ -120,6 +139,7 @@ class RangeReversalStrategy(Strategy):
             score=score, confidence=confidence,
             reason=f"Range reversal setup at confluence zone (price={nearest_zone.price:.5f}, score={nearest_zone.confluence_score:.1f})",
             strengths=tuple(strengths), weaknesses=tuple(weaknesses),
+            trade_intent=_trade_intent_for_zone(nearest_zone, evidence),
         )
 
 

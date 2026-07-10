@@ -213,11 +213,25 @@ class TestSessionBreakout(unittest.TestCase):
         evidence = make_evidence_snapshot(
             session=make_session_state(session=SessionName.LONDON_NEW_YORK_OVERLAP, quality_score=90.0),
             volatility=make_volatility_state(is_expansion=True, volatility_score=80.0),
+            structure=make_structure_result(trend=TrendClassification.TRENDING_UP),
             component_overrides={"session": {"value": 90.0, "confidence": 0.9}},
         )
         mi = make_mi_snapshot(pair_safety=make_pair_safety(session=make_session_intelligence(session_score=90.0)))
         result = strategy.qualify("EURUSD", evidence, mi, make_config())
         self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+
+    def test_no_directional_fact_disqualifies_fail_closed(self):
+        strategy = SessionBreakoutStrategy()
+        evidence = make_evidence_snapshot(
+            session=make_session_state(session=SessionName.LONDON_NEW_YORK_OVERLAP, quality_score=90.0),
+            volatility=make_volatility_state(is_expansion=True, volatility_score=80.0),
+            structure=make_structure_result(trend=TrendClassification.RANGE),
+            component_overrides={"session": {"value": 90.0, "confidence": 0.9}},
+        )
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(session=make_session_intelligence(session_score=90.0)))
+        result = strategy.qualify("EURUSD", evidence, mi, make_config())
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertIn("no directional fact", result.reason.lower())
 
 
 class TestRangeReversal(unittest.TestCase):

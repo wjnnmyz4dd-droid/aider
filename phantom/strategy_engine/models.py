@@ -1,9 +1,11 @@
 """Data models for the Strategy Engine (Phase 2C).
 
 Every type here describes a strategy's self-declared shape or a scored
-evaluation of it. Nothing here is a trade decision: there is no
-`BUY`/`SELL` enum, no position size, no order, anywhere in this module,
-by design (see `docs/adr/ADR-026-strategy-engine.md` Hard Rule 1).
+evaluation of it. There is no position size, no order, anywhere in this
+module (ADR-026 Hard Rule 1). `TradeIntent` (Amendment 1) is the single,
+narrow exception to "no BUY/SELL": a directional conclusion of an
+already-qualified entry thesis, never a size, order, or execution
+artifact -- see `docs/adr/ADR-026-strategy-engine.md` Amendment 1.
 """
 
 from __future__ import annotations
@@ -43,12 +45,26 @@ class QualificationStatus(Enum):
     NOT_ELIGIBLE = "NOT_ELIGIBLE"  # pair outside the strategy's approved universe (hard gate)
 
 
+class TradeIntent(Enum):
+    """(ADR-026 Amendment 1) The winning strategy's own directional
+    conclusion -- never a size, order, or execution artifact. Derived
+    exclusively from facts a strategy already computed during
+    qualification (see Amendment 1's per-strategy table); `NONE` for
+    every non-`QUALIFIED` result."""
+
+    BUY = "BUY"
+    SELL = "SELL"
+    NONE = "NONE"
+
+
 @dataclass(frozen=True)
 class QualificationResult:
     """Every strategy produces exactly one of these per pair. `score`
     and `confidence` are `0.0` whenever `status` is not `QUALIFIED` --
     ineligibility and self-disqualification are never partially
-    scored (ADR-026 Hard Rules 3-4)."""
+    scored (ADR-026 Hard Rules 3-4). `trade_intent` defaults to `NONE`
+    -- a strategy sets a real value only on its `QUALIFIED` path
+    (Amendment 1)."""
 
     strategy_id: StrategyId
     pair: str
@@ -58,6 +74,7 @@ class QualificationResult:
     reason: str
     strengths: Tuple[str, ...]
     weaknesses: Tuple[str, ...]
+    trade_intent: TradeIntent = TradeIntent.NONE
 
 
 @dataclass(frozen=True)
@@ -88,8 +105,9 @@ class WinningStrategy:
 
 @dataclass(frozen=True)
 class StrategySnapshot:
-    """No trade direction, no execution, no sizing -- ever (ADR-026
-    Hard Rule 1)."""
+    """No execution, no sizing -- ever (ADR-026 Hard Rule 1).
+    `trade_intent` (Amendment 1) is the winning strategy's own
+    directional conclusion, `NONE` when `rejected`."""
 
     pair: str
     generated_at: datetime
@@ -99,6 +117,7 @@ class StrategySnapshot:
     rejection_reason: Optional[str]
     supporting_evidence_summary: str
     supporting_market_intelligence_summary: str
+    trade_intent: TradeIntent = TradeIntent.NONE
 
 
 __all__ = [
@@ -106,6 +125,7 @@ __all__ = [
     "StrategyId",
     "MarketRegime",
     "QualificationStatus",
+    "TradeIntent",
     "QualificationResult",
     "StrategyDefinition",
     "WinningStrategy",

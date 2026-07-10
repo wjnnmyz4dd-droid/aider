@@ -14,7 +14,7 @@ from phantom.market_intelligence.models import MarketIntelligenceSnapshot
 from ..config import StrategyEngineConfig
 from ..eligibility import check_eligibility
 from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId
-from ._helpers import clamp, component
+from ._helpers import clamp, component, trade_intent_from_structure_direction
 from .base import Strategy
 
 _DEFINITION = StrategyDefinition(
@@ -107,6 +107,7 @@ class BosFvgStrategy(Strategy):
             score=score, confidence=confidence,
             reason=f"BOS at index {best_bos.confirmed_index} with unfilled FVG [{best_gap.start_index}-{best_gap.end_index}]",
             strengths=tuple(strengths), weaknesses=tuple(weaknesses),
+            trade_intent=trade_intent_from_structure_direction(best_bos.direction),
         )
 
 

@@ -14,7 +14,7 @@ from phantom.market_intelligence.models import MarketIntelligenceSnapshot
 
 from ..config import StrategyEngineConfig
 from ..eligibility import check_eligibility
-from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId
+from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId, TradeIntent
 from ._helpers import clamp, component
 from .base import Strategy
 
@@ -36,6 +36,11 @@ _DEFINITION = StrategyDefinition(
 )
 
 _DIRECTIONAL = (TrendClassification.TRENDING_UP, TrendClassification.TRENDING_DOWN)
+
+_TRADE_INTENT_BY_TREND = {
+    TrendClassification.TRENDING_UP: TradeIntent.BUY,
+    TrendClassification.TRENDING_DOWN: TradeIntent.SELL,
+}
 
 
 class TrendContinuationStrategy(Strategy):
@@ -88,6 +93,7 @@ class TrendContinuationStrategy(Strategy):
             score=score, confidence=confidence,
             reason=f"Structural trend {evidence.structure.trend.value} with trend score {trend_value:.1f}",
             strengths=tuple(strengths), weaknesses=tuple(weaknesses),
+            trade_intent=_TRADE_INTENT_BY_TREND[evidence.structure.trend],
         )
 
 

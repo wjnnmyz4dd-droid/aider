@@ -21,7 +21,7 @@ from phantom.market_intelligence.models import MarketIntelligenceSnapshot
 from ..config import StrategyEngineConfig
 from ..eligibility import check_eligibility
 from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId
-from ._helpers import clamp, component
+from ._helpers import clamp, component, trade_intent_from_structure_direction
 from .base import Strategy
 
 _DEFINITION = StrategyDefinition(
@@ -120,6 +120,7 @@ class LiquiditySweepMssStrategy(Strategy):
             score=score, confidence=confidence,
             reason=f"Stop hunt at index {best_sweep.sweep_index} confirmed by CHOCH at index {best_choch.confirmed_index}",
             strengths=tuple(strengths), weaknesses=tuple(weaknesses),
+            trade_intent=trade_intent_from_structure_direction(best_choch.direction),
         )
 
 

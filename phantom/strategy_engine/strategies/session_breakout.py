@@ -7,16 +7,35 @@ volatility expansion -- a breakout with no expansion is not a breakout.
 
 from __future__ import annotations
 
-from phantom.evidence_engine.models import EvidenceSnapshot, SessionName
+from typing import Optional
+
+from phantom.evidence_engine.models import EvidenceSnapshot, SessionName, TrendClassification
 from phantom.market_intelligence.models import MarketIntelligenceSnapshot
 
 from ..config import StrategyEngineConfig
 from ..eligibility import check_eligibility
-from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId
-from ._helpers import clamp, component
+from ..models import MarketRegime, QualificationResult, QualificationStatus, StrategyDefinition, StrategyId, TradeIntent
+from ._helpers import clamp, component, trade_intent_from_structure_direction
 from .base import Strategy
 
 _PREFERRED_SESSIONS = (SessionName.LONDON, SessionName.LONDON_NEW_YORK_OVERLAP, SessionName.EARLY_NEW_YORK)
+
+_TRADE_INTENT_BY_TREND = {
+    TrendClassification.TRENDING_UP: TradeIntent.BUY,
+    TrendClassification.TRENDING_DOWN: TradeIntent.SELL,
+}
+
+
+def _breakout_trade_intent(evidence: EvidenceSnapshot) -> Optional[TradeIntent]:
+    """(ADR-026 Amendment 1) The most recently confirmed structural
+    break already implies the breakout's direction; if none exists,
+    fall back to an already-directional raw trend. Returns `None` --
+    never a guess -- if no directional fact is available at all."""
+
+    if evidence.structure.events:
+        latest_event = max(evidence.structure.events, key=lambda e: e.confirmed_index)
+        return trade_intent_from_structure_direction(latest_event.direction)
+    return _TRADE_INTENT_BY_TREND.get(evidence.structure.trend)
 
 _DEFINITION = StrategyDefinition(
     strategy_id=StrategyId.SESSION_BREAKOUT,
@@ -96,6 +115,15 @@ class SessionBreakoutStrategy(Strategy):
                 strengths=(), weaknesses=("volatility score too low despite expansion flag",),
             )
 
+        trade_intent = _breakout_trade_intent(evidence)
+        if trade_intent is None:
+            return QualificationResult(
+                strategy_id=StrategyId.SESSION_BREAKOUT, pair=pair, status=QualificationStatus.NOT_QUALIFIED,
+                score=0.0, confidence=0.0,
+                reason="No directional fact available (no structure events and trend not directional) -- fail closed, never guessed",
+                strengths=(), weaknesses=("no structural break or directional trend to derive a breakout direction from",),
+            )
+
         score = clamp(0.4 * session_value + 0.3 * mi_session_score + 0.3 * evidence.volatility.volatility_score)
         confidence = session_component.confidence if session_component else 0.5
 
@@ -109,6 +137,7 @@ class SessionBreakoutStrategy(Strategy):
             score=score, confidence=confidence,
             reason=f"Volatility expansion during {evidence.session.session.value}",
             strengths=tuple(strengths), weaknesses=tuple(weaknesses),
+            trade_intent=trade_intent,
         )
 
 

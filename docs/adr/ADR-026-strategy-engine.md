@@ -182,3 +182,122 @@ concurrency, explainability.
   `StrategySnapshot` or this package's public surface.
 - 28+ pairs evaluated with no shared mutable state and no duplicate
   Evidence/Market Intelligence/News/Indicator computation.
+
+---
+
+# Amendment 1 (2026-07-10) — Strategy Engine owns `TradeIntent`
+
+**Accepted by:** explicit user architecture decision, this session,
+given directly in response to a design question raised during Phase 3A
+(Runtime Orchestrator) implementation: none of Evidence, Market
+Intelligence, Strategy (pre-amendment), Risk, or Compliance produces a
+trade direction, yet the Bridge's `submit_command()` requires one. The
+user's own words: *"The Strategy Engine SHALL be the sole owner of
+TradeIntent (BUY/SELL). This is not a new engine and not a new decision
+authority. It is simply completing the Strategy Engine's existing
+responsibility... because it already evaluates the complete entry
+thesis."*
+
+## Decision
+
+`StrategySnapshot` gains a `trade_intent: TradeIntent` field
+(`BUY` / `SELL` / `NONE`). `TradeIntent` is derived **exclusively from
+the winning strategy's own already-computed entry-thesis facts** — no
+new detection logic, no reinterpretation of Evidence Engine's output as
+a signal Evidence Engine itself never asserted, no Runtime involvement.
+
+This narrows Hard Rule 1's blanket "no `BUY`/`SELL`" to a single,
+explicit exception: **a `TradeIntent` value is not a trade decision.**
+It carries no size, no order, no execution authority, and cannot by
+itself cause anything to trade — it is the directional conclusion of
+the same qualification the strategy already performs, exposed rather
+than discarded. Every other part of Hard Rule 1 (no position size, no
+order, no FTMO/compliance verdict) is unchanged and still enforced by
+the architecture test.
+
+## Per-strategy derivation (no new facts invented)
+
+| Strategy | Source fact (already computed) | Mapping |
+|---|---|---|
+| Liquidity Sweep + MSS | the confirming `CHOCH`'s `StructureDirection` | `BULLISH` → `BUY`, `BEARISH` → `SELL` |
+| BOS + FVG | the matched `BOS` event's `StructureDirection` | `BULLISH` → `BUY`, `BEARISH` → `SELL` |
+| Trend Continuation | `evidence.structure.trend` (already gated to directional-only) | `TRENDING_UP` → `BUY`, `TRENDING_DOWN` → `SELL` |
+| Range Reversal | the nearest confluence zone's `sources` label (already tagged `"support"`/`"resistance"` by `support_resistance.py`'s own `sourced_prices` construction) | `"support"` present → `BUY` (bounce), `"resistance"` present → `SELL` (rejection); if neither label is present, fall back to comparing the zone's price against the midpoint of `session_high`/`session_low` (both already on `SupportResistanceContext`) |
+| Session Breakout | the most recently confirmed `StructureEvent.direction` in `evidence.structure.events` (highest `confirmed_index`); if none exist, falls back to `evidence.structure.trend` if directional | `BULLISH`/`TRENDING_UP` → `BUY`, `BEARISH`/`TRENDING_DOWN` → `SELL`; **if no directional fact is available at all, the strategy returns `NOT_QUALIFIED`** (fail-closed — this strategy never guesses a direction merely to have one) |
+
+No strategy queries raw `Bar` data or anything not already exposed on
+`EvidenceSnapshot`/`MarketIntelligenceSnapshot`. `Evidence Engine` is
+untouched — it still produces zero `BUY`/`SELL` vocabulary anywhere in
+its own package (verified by that package's own unchanged architecture
+test).
+
+## Where `TradeIntent` lives
+
+- `QualificationResult` gains `trade_intent: TradeIntent = TradeIntent.NONE`
+  (defaulted — every existing `NOT_QUALIFIED`/`NOT_ELIGIBLE` return
+  across all five strategies and `eligibility.py` is unchanged code and
+  now implicitly correct: no qualified thesis, no intent). Each
+  strategy sets a real value only on its `QUALIFIED` path.
+- `StrategySnapshot` gains `trade_intent: TradeIntent = TradeIntent.NONE`
+  (also defaulted, for the same backward-compatibility reason — every
+  existing test fixture across `risk_engine`, `compliance_engine`, and
+  `validation_engine` that hand-builds a `StrategySnapshot` keeps
+  working unchanged). `build_strategy_snapshot()` sets it to
+  `winning_strategy.qualification.trade_intent` when a strategy won,
+  `NONE` when the pair was rejected.
+- Selection (`selection.py`) is unchanged. Exactly one strategy still
+  wins per pair per cycle; its `trade_intent` simply travels with it.
+  The 6-step cascade never considers direction — it was never asked to.
+
+## Downstream contract (binds Phase 3A's Runtime Orchestrator, not this package)
+
+Runtime passes `StrategySnapshot.trade_intent` unchanged through Risk
+Engine and Compliance Engine — neither reads nor modifies it (their own
+snapshot types gain no new field; this is purely a Strategy Engine
+output that Runtime carries alongside, not through, Risk/Compliance's
+own evaluation). If Compliance rejects, Runtime never constructs a
+`TradeCommand`. If Compliance approves or reduces, Runtime submits the
+`TradeCommand` using the unchanged `trade_intent`. This contract is
+Runtime's responsibility to honor (see `docs/adr/ADR-031-runtime-
+orchestrator.md`); it is recorded here only because it is the reason
+this amendment exists.
+
+## No new engine
+
+This amendment does not create a Direction Engine, does not place
+direction-deciding logic in Runtime, and does not reinterpret Evidence
+Engine's trend classification as a trade signal from outside the
+Strategy Engine. `TradeIntent` belongs exclusively to, and is computed
+exclusively within, `phantom/strategy_engine/`.
+
+## Testing
+
+- One test per strategy verifying its `QUALIFIED` path produces the
+  correct `TradeIntent` for both a bullish and a bearish qualifying
+  fixture, matching the table above exactly.
+- A rejected/`NOT_QUALIFIED` result always carries `TradeIntent.NONE`.
+- Session Breakout's fail-closed path: a qualifying setup with no
+  structural event and a non-directional trend returns `NOT_QUALIFIED`,
+  never a guessed direction.
+- The existing architecture test's forbidden-identifier list drops
+  `BUY`/`SELL` (now legitimate `TradeIntent` members) but keeps every
+  execution/sizing term (`position_size`, `stop_loss`, `take_profit`,
+  `order_type`, `place_order`, `submit_order`, `lot_size`) forbidden,
+  plus the existing "no `select_direction`/`choose_direction` method"
+  check on `StrategyEngine`'s public surface (already present,
+  unchanged) — confirming direction is a derived data field, never a
+  method a caller invokes to pick one.
+- Full pre-amendment `strategy_engine` suite (all tests that existed
+  before this amendment) must continue to pass unmodified, since every
+  new field is additive and defaulted.
+
+## Acceptance criteria
+
+- ✓ `TradeIntent` derived only from facts each strategy already computed
+  (table above), never a new detection.
+- ✓ Evidence Engine unmodified; still produces zero `BUY`/`SELL`.
+- ✓ Runtime never chooses a direction — it only forwards
+  `StrategySnapshot.trade_intent`.
+- ✓ Backward compatible: every pre-amendment call site of
+  `QualificationResult`/`StrategySnapshot` still compiles and passes
+  unchanged (defaulted fields).
