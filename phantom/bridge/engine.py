@@ -172,7 +172,9 @@ class BridgeEngine:
         return state
 
     def deactivate_emergency_stop(self) -> EmergencyStopState:
-        return self._queue.set_emergency_stop(False, None, None)
+        state = self._queue.set_emergency_stop(False, None, None)
+        log_emergency_stop(state)
+        return state
 
     # -- Read models -----------------------------------------------------
 

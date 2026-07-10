@@ -105,7 +105,13 @@ def log_error_report(error: ErrorReport) -> None:
     _safe_log(
         logging.WARNING,
         "bridge.error_report",
-        {"error_code": error.error_code, "message": error.message},
+        # "message" collides with a `logging.LogRecord`'s own reserved
+        # attribute -- passing it via `extra` raises `KeyError: "Attempt
+        # to overwrite 'message' in LogRecord"`, silently swallowed by
+        # `_safe_log`'s bare except, so every error report was logged as
+        # a no-op. Renamed to avoid the collision (confirmed via Phase
+        # 1.5 validation: this event never appeared in captured logs).
+        {"error_code": error.error_code, "error_message": error.message},
     )
 
 

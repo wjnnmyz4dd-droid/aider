@@ -302,6 +302,21 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
     return Handler
 
 
+class _BridgeHTTPServer(ThreadingHTTPServer):
+    """`ThreadingHTTPServer`'s default `request_queue_size` (5, inherited
+    from `socketserver.TCPServer`) is the `socket.listen()` backlog --
+    how many not-yet-accepted connections the OS will hold before
+    resetting new ones. Under Phase 1.5 stress validation (60 concurrent
+    client threads), the default size produced reproducible "Connection
+    reset by peer" errors; raising it eliminated them in an isolated,
+    controlled A/B test with no other change. A real MT5 deployment is a
+    single EA making sequential requests, far below this bound, but the
+    fix costs nothing and removes a real, reproduced failure mode under
+    burst load (e.g. several telemetry POSTs firing close together)."""
+
+    request_queue_size = 128
+
+
 def serve(
     engine: BridgeEngine,
     config: BridgeConfig,
@@ -310,7 +325,7 @@ def serve(
     port: int = 8787,
 ) -> ThreadingHTTPServer:
     resolved_clock = clock or (lambda: datetime.now(timezone.utc))
-    return ThreadingHTTPServer((host, port), make_handler(engine, config, resolved_clock))
+    return _BridgeHTTPServer((host, port), make_handler(engine, config, resolved_clock))
 
 
 def registered_routes():

@@ -3,6 +3,7 @@ detection, and emergency-stop control (Phase 1)."""
 
 from __future__ import annotations
 
+import logging
 import unittest
 from datetime import timedelta
 
@@ -236,6 +237,35 @@ class TestEmergencyStop(unittest.TestCase):
         engine.deactivate_emergency_stop()
         self.assertFalse(engine.emergency_stop_state.active)
         self.assertIsNone(queue.enqueue(make_command(correlation_id="c1"), is_ready=True))
+
+    def test_deactivate_is_logged_same_as_activate(self):
+        """Phase 1.5 hotfix: deactivate_emergency_stop() previously
+        produced no log record at all, while activate_emergency_stop()
+        did -- an administrative action with zero audit trail, found
+        during Phase 1.5 observability validation."""
+        logger = logging.getLogger("phantom.bridge")
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture()
+        logger.addHandler(handler)
+        try:
+            engine, _, _, _ = make_engine()
+            engine.activate_emergency_stop("operator_requested", T0)
+            engine.deactivate_emergency_stop()
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+
+        stop_events = [r for r in records if r.msg == "bridge.emergency_stop"]
+        self.assertEqual(len(stop_events), 2, "expected one log record for activate and one for deactivate")
+        self.assertTrue(stop_events[0].active)
+        self.assertFalse(stop_events[1].active)
 
 
 if __name__ == "__main__":
