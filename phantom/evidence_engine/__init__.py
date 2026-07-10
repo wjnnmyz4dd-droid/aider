@@ -34,6 +34,7 @@ from .models import (
     EvidenceReport,
     EvidenceScore,
     EvidenceSnapshot,
+    FairValueGap,
     IndicatorResult,
     LiquidityPool,
     LiquidityResult,
@@ -57,7 +58,13 @@ from .models import (
 from .ranking import rank_pairs
 from .scoring import compute_component_scores, compute_evidence_score
 from .session import analyze_session, session_for_hour
-from .structure import analyze_market_structure, detect_structure_events, find_swing_points, support_resistance
+from .structure import (
+    analyze_market_structure,
+    detect_fair_value_gaps,
+    detect_structure_events,
+    find_swing_points,
+    support_resistance,
+)
 from .support_resistance import build_support_resistance_context
 from .trend import classify_trend
 from .volatility import analyze_volatility, atr, atr_series, true_ranges
@@ -95,8 +102,10 @@ __all__ = [
     "PsychologicalLevel",
     "ConfluenceZone",
     "SupportResistanceContext",
+    "FairValueGap",
     "EvidenceSnapshot",
     "build_support_resistance_context",
+    "detect_fair_value_gaps",
     "RESERVED_FUTURE_INDICATOR_NAMES",
     "Indicator",
     "DuplicateIndicatorError",

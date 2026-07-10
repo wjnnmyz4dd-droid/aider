@@ -319,6 +319,22 @@ class SupportResistanceContext:
 
 
 @dataclass(frozen=True)
+class FairValueGap:
+    """(Amendment 2) A 3-candle price imbalance: candle 1 and candle 3
+    never overlap, leaving a gap most of candle 2's range created.
+    `filled` is true once any later bar has traded back into the gap
+    zone."""
+
+    direction: StructureDirection
+    start_index: int  # candle 1
+    end_index: int  # candle 3
+    gap_high: float
+    gap_low: float
+    filled: bool
+    fill_index: Optional[int]
+
+
+@dataclass(frozen=True)
 class EvidenceSnapshot:
     """(Amendment 1) The raw facts behind an `EvidenceReport` -- every
     intermediate analysis result `evaluate()` already computes
@@ -334,6 +350,7 @@ class EvidenceSnapshot:
     volatility: VolatilityState
     session: SessionState
     support_resistance: SupportResistanceContext
+    fair_value_gaps: Tuple[FairValueGap, ...] = ()
 
 
 __all__ = [
@@ -365,5 +382,6 @@ __all__ = [
     "PsychologicalLevel",
     "ConfluenceZone",
     "SupportResistanceContext",
+    "FairValueGap",
     "EvidenceSnapshot",
 ]

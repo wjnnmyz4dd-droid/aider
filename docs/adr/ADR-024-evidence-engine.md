@@ -28,6 +28,20 @@ unchanged — verified by re-running the full pre-amendment test suite
 unmodified. Additions appear in §2, §3 (new Hard Rule 9), and Testing,
 each marked "Amendment 1."
 
+**Amendment 2 (2026-07-10, same trigger):** while implementing the
+"BOS + Fair Value Gap" strategy, Strategy Engine needs Fair Value Gap
+(FVG) detection -- a 3-candle price-imbalance concept this engine never
+computed, and (per Amendment 1's same resolution) not something
+Strategy Engine may derive itself from raw bars, since its declared
+inputs are the two snapshots only, never raw bars. Resolved identically
+to Amendment 1, under the same explicit user direction ("expand the
+EvidenceSnapshot, not create a second analyzer") already given for this
+exact class of gap: adds `detect_fair_value_gaps()` to `structure.py`
+and a new `fair_value_gaps` field on `EvidenceSnapshot` (not on
+`MarketStructureResult`, which stays byte-for-byte unchanged) computed
+from the same single analysis pass. Purely additive; the full
+pre-amendment-2 suite passes unmodified.
+
 Owner: Software Architect (per `.claude/agents/TEAM.md`'s precedent for
 cross-cutting evaluation components — same accountable role as
 ADR-002/ADR-004)

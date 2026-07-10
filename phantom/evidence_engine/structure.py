@@ -13,6 +13,7 @@ from typing import List, Optional, Sequence, Tuple
 from .config import EvidenceEngineConfig
 from .models import (
     Bar,
+    FairValueGap,
     MarketStructureResult,
     PriceLevel,
     StructureDirection,
@@ -160,6 +161,41 @@ def _structural_trend(swings: Sequence[SwingPoint]) -> TrendClassification:
     return TrendClassification.RANGE
 
 
+def detect_fair_value_gaps(bars: Sequence[Bar]) -> Tuple[FairValueGap, ...]:
+    """(Amendment 2) A bullish FVG forms when candle 1's high sits below
+    candle 3's low (price gapped up through candle 2 without trading);
+    a bearish FVG is the mirror. `filled` becomes true the first time
+    any later bar's range overlaps the gap zone at all."""
+    gaps: List[FairValueGap] = []
+    for i in range(2, len(bars)):
+        first, third = bars[i - 2], bars[i]
+        if first.high < third.low:
+            direction = StructureDirection.BULLISH
+            gap_low, gap_high = first.high, third.low
+        elif first.low > third.high:
+            direction = StructureDirection.BEARISH
+            gap_low, gap_high = third.high, first.low
+        else:
+            continue
+
+        filled = False
+        fill_index: Optional[int] = None
+        for j in range(i + 1, len(bars)):
+            later = bars[j]
+            if later.low <= gap_high and later.high >= gap_low:
+                filled = True
+                fill_index = j
+                break
+
+        gaps.append(
+            FairValueGap(
+                direction=direction, start_index=i - 2, end_index=i,
+                gap_high=gap_high, gap_low=gap_low, filled=filled, fill_index=fill_index,
+            )
+        )
+    return tuple(gaps)
+
+
 def analyze_market_structure(bars: Sequence[Bar], config: EvidenceEngineConfig) -> MarketStructureResult:
     internal_swings = find_swing_points(bars, config.swing_lookback)
     external_lookback = max(config.swing_lookback + 1, config.internal_structure_lookback)
@@ -185,5 +221,6 @@ __all__ = [
     "find_swing_points",
     "detect_structure_events",
     "support_resistance",
+    "detect_fair_value_gaps",
     "analyze_market_structure",
 ]

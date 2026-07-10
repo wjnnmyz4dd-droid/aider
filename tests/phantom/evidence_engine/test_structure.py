@@ -6,7 +6,13 @@ from __future__ import annotations
 import unittest
 
 from phantom.evidence_engine.models import StructureDirection, StructureEventType, SwingPoint, SwingType, TrendClassification
-from phantom.evidence_engine.structure import analyze_market_structure, detect_structure_events, find_swing_points, support_resistance
+from phantom.evidence_engine.structure import (
+    analyze_market_structure,
+    detect_fair_value_gaps,
+    detect_structure_events,
+    find_swing_points,
+    support_resistance,
+)
 from tests.phantom.evidence_engine._fixtures import STRUCTURE_SAMPLE, make_bars, make_config
 
 
@@ -120,6 +126,54 @@ class TestAnalyzeMarketStructure(unittest.TestCase):
         r2 = analyze_market_structure(bars, config)
         self.assertEqual(r1, r2)
         self.assertIsInstance(r1.trend, TrendClassification)
+
+
+class TestFairValueGaps(unittest.TestCase):
+    def test_bullish_gap_detected_and_marked_filled(self):
+        bars = make_bars([
+            (1.09, 1.10, 1.08, 1.095),
+            (1.095, 1.15, 1.09, 1.14),
+            (1.14, 1.16, 1.105, 1.15),
+            (1.15, 1.155, 1.102, 1.11),  # dips back into the gap zone
+        ])
+        gaps = detect_fair_value_gaps(bars)
+        self.assertEqual(len(gaps), 1)
+        gap = gaps[0]
+        self.assertEqual(gap.direction, StructureDirection.BULLISH)
+        self.assertEqual((gap.start_index, gap.end_index), (0, 2))
+        self.assertAlmostEqual(gap.gap_low, 1.10)
+        self.assertAlmostEqual(gap.gap_high, 1.105)
+        self.assertTrue(gap.filled)
+        self.assertEqual(gap.fill_index, 3)
+
+    def test_bearish_gap_detected(self):
+        bars = make_bars([
+            (1.15, 1.16, 1.14, 1.145),
+            (1.145, 1.15, 1.09, 1.10),
+            (1.10, 1.105, 1.08, 1.09),
+        ])
+        gaps = detect_fair_value_gaps(bars)
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0].direction, StructureDirection.BEARISH)
+
+    def test_no_gap_when_candles_overlap(self):
+        bars = make_bars([(1.10, 1.11, 1.09, 1.105)] * 5)
+        self.assertEqual(detect_fair_value_gaps(bars), ())
+
+    def test_unfilled_gap_has_no_fill_index(self):
+        bars = make_bars([
+            (1.09, 1.10, 1.08, 1.095),
+            (1.095, 1.15, 1.09, 1.14),
+            (1.14, 1.16, 1.115, 1.15),  # gap 1.10-1.115, never revisited below
+        ])
+        gaps = detect_fair_value_gaps(bars)
+        self.assertEqual(len(gaps), 1)
+        self.assertFalse(gaps[0].filled)
+        self.assertIsNone(gaps[0].fill_index)
+
+    def test_too_short_series_returns_no_gaps(self):
+        bars = make_bars([(1.10, 1.11, 1.09, 1.105)] * 2)
+        self.assertEqual(detect_fair_value_gaps(bars), ())
 
 
 if __name__ == "__main__":
