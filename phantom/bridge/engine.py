@@ -11,8 +11,9 @@ ever relays a command supplied to it via `submit_command()`.
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Deque, Dict, Optional, Sequence, Tuple
 
 from . import validation
 from .command_queue import CommandQueue
@@ -62,8 +63,13 @@ class BridgeEngine:
         self._latest_account_state: Optional[AccountState] = None
         self._latest_positions: Dict[str, PositionReport] = {}
         self._latest_pending_orders: Dict[str, PendingOrderReport] = {}
-        self._errors: List[ErrorReport] = []
-        self._trade_transactions: List[TradeTransactionReport] = []
+        # Phase 1.6: bounded, deterministic FIFO caps (oldest dropped
+        # first once full) -- these two audit-only logs grew unbounded
+        # before this change. `deque.append()` is atomic under CPython's
+        # GIL, same as the `list.append()` it replaces, so no new lock
+        # is needed here (verified by this phase's concurrency tests).
+        self._errors: Deque[ErrorReport] = deque(maxlen=config.max_error_history)
+        self._trade_transactions: Deque[TradeTransactionReport] = deque(maxlen=config.max_trade_transaction_history)
 
     # -- Inbound telemetry --------------------------------------------
 
@@ -205,6 +211,23 @@ class BridgeEngine:
     @property
     def trade_transactions(self) -> Tuple[TradeTransactionReport, ...]:
         return tuple(self._trade_transactions)
+
+    def queue_retention_stats(self) -> Dict[str, int]:
+        """Phase 1.6 observability passthrough -- surfaces
+        `CommandQueue`'s retention/cleanup counters without requiring a
+        caller to reach into the private `_queue` attribute. Additive
+        only; no existing method's signature or behavior changed."""
+        return {
+            "pending_count": self._queue.pending_count(),
+            "completed_count": self._queue.completed_count(),
+            "cached_report_count": self._queue.cached_report_count(),
+            "duplicate_cache_size": self._queue.duplicate_cache_size(),
+            "total_tracked_correlation_ids": self._queue.total_tracked_correlation_ids(),
+            "largest_pending_queue_observed": self._queue.largest_pending_queue_observed(),
+            "cleanup_run_count": self._queue.cleanup_run_count(),
+            "expired_entries_removed_count": self._queue.expired_entries_removed_count(),
+            "estimated_memory_bytes": self._queue.estimated_memory_bytes(),
+        }
 
 
 __all__ = ["BridgeEngine"]

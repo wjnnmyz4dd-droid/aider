@@ -27,6 +27,31 @@ class BridgeConfig:
     command_ttl_seconds: float = 15.0
     log_level: int = 20  # logging.INFO, without importing logging here
 
+    # -- Phase 1.6 long-run retention (all additive, all optional with
+    # defaults -- no existing constructor call site is affected). See
+    # PHANTOM_BRIDGE_PHASE1_6_HARDENING_REPORT.md for the retention
+    # model these govern.
+    execution_report_ttl_seconds: float = 3600.0
+    duplicate_detection_ttl_seconds: float = 900.0
+    correlation_ttl_seconds: float = 7200.0
+    cleanup_interval_seconds: float = 60.0
+    max_completed_commands: int = 10000
+    max_cached_reports: int = 10000
+    # Reserved: ConnectionHealth retains only the single most recent
+    # heartbeat (already the minimum required for fail-closed logic) --
+    # there is no growing heartbeat history in this codebase for this
+    # value to bound. Present because it is part of this phase's
+    # mandated minimum configuration surface, not because anything
+    # currently consumes it.
+    max_heartbeat_history: int = 1
+    # Bounds BridgeEngine's two audit-only append logs (errors,
+    # independent trade-transaction mirror) -- not named in the
+    # mandated minimum list, added because both are exactly the kind of
+    # "retained result collection" this phase's scope explicitly
+    # covers and both grew unbounded before this change.
+    max_error_history: int = 1000
+    max_trade_transaction_history: int = 1000
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "allowed_symbols", tuple(self.allowed_symbols))
 
