@@ -11,6 +11,7 @@ distinguish.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from typing import Callable, Optional
 
@@ -18,32 +19,54 @@ from .config import BridgeConfig
 
 
 class ConnectionHealth:
+    """Thread safety: reached both from `POST /bridge/heartbeat`
+    (`record_heartbeat`) and from every command-submission/poll path
+    (`is_ready`) via `phantom/bridge/server.py`'s
+    `http.server.ThreadingHTTPServer` -- one thread per request -- so
+    reads and writes of `_last_heartbeat_at` can overlap across
+    threads. A single non-reentrant lock guards every access; the
+    shared read logic lives in `_is_ready_locked`, called only while
+    the lock is already held, so `is_fail_closed`'s call into it never
+    needs a second acquisition and no `RLock` is required."""
+
     def __init__(self, config: BridgeConfig, clock: Callable[[], datetime]) -> None:
         self._config = config
         self._clock = clock
+        self._lock = threading.Lock()
         self._last_heartbeat_at: Optional[datetime] = None
 
     def record_heartbeat(self, at: datetime) -> None:
-        self._last_heartbeat_at = at
+        with self._lock:
+            self._last_heartbeat_at = at
 
     @property
     def last_heartbeat_at(self) -> Optional[datetime]:
-        return self._last_heartbeat_at
+        with self._lock:
+            return self._last_heartbeat_at
 
     def is_ready(self) -> bool:
         """`True` only if a heartbeat has been recorded and it is within
         the configured timeout -- fail-closed by default, before any
         heartbeat is ever received."""
+        with self._lock:
+            return self._is_ready_locked()
+
+    def is_fail_closed(self) -> bool:
+        with self._lock:
+            return not self._is_ready_locked()
+
+    def _is_ready_locked(self) -> bool:
+        """Same check `is_ready()` exposes publicly, factored out so
+        `is_fail_closed()` can reuse it without a second lock
+        acquisition. Callers must already hold `self._lock`."""
         if self._last_heartbeat_at is None:
             return False
         elapsed = (self._clock() - self._last_heartbeat_at).total_seconds()
         return elapsed <= self._config.heartbeat_timeout_seconds
 
-    def is_fail_closed(self) -> bool:
-        return not self.is_ready()
-
     def reset(self) -> None:
-        self._last_heartbeat_at = None
+        with self._lock:
+            self._last_heartbeat_at = None
 
 
 __all__ = ["ConnectionHealth"]
