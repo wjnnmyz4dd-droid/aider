@@ -4,6 +4,21 @@
 Engine and everything downstream is explicitly **not** started, per
 this phase's own "STOP" instruction.
 
+**Amendment 1 (2026-07-10, triggered by Phase 2C):** added a new,
+additive `EvidenceSnapshot` type + `EvidenceEngine.evaluate_snapshot()`
+method, plus a new `support_resistance.py` module (Previous Day/Week/
+Month High/Low, Session High/Low, Psychological Levels, Confluence
+Score, Break Quality Score, False Break Probability). `EvidenceReport`
+and `evaluate()` are byte-for-byte unchanged — the full 110-test
+pre-amendment suite passes unmodified, plus 18 new tests (128/128
+total). See `docs/adr/ADR-024-evidence-engine.md` Amendment 1 for the
+full rationale: Strategy Engine (Phase 2C) needed raw structural/
+liquidity/candlestick facts and several S/R concepts this engine never
+exposed, and the explicit resolution (given directly by the user,
+mirroring `ADR-002` Amendment 1's precedent) was to expand this
+engine's snapshot rather than have Strategy Engine build a second,
+duplicate analyzer.
+
 Authority: `docs/adr/ADR-024-evidence-engine.md` (Accepted, this
 session). Scope: `phantom/evidence_engine/` only — a new, independent
 package, built fresh with no reuse of `phantom_pipeline/scanner` or

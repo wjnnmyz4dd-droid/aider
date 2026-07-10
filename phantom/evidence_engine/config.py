@@ -58,6 +58,17 @@ class EvidenceEngineConfig:
     # -- Indicator cache --
     indicator_cache_max_entries: int = 512
 
+    # -- Support/resistance context (Amendment 1) --
+    psychological_level_increment: float = 0.0050  # round-number spacing (FX 4/5-digit convention)
+    psychological_level_count: int = 3  # levels generated above and below the current price
+    confluence_tolerance_pct: float = 0.05  # % price tolerance for clustering S/R sources together
+    confluence_full_score_source_count: int = 4  # distinct sources agreeing for a confluence_score of 100
+    break_quality_default_score: float = 50.0  # neutral score when no structure event exists yet to assess
+    break_quality_atr_reference_multiple: float = 2.0  # confirming-bar-range/ATR ratio for a 100 score
+    false_break_probability_default: float = 0.3  # no sweep observed yet -- moderate, not zero, uncertainty
+    false_break_probability_trap: float = 0.8  # most recent sweep was classified a trap
+    false_break_probability_confirmed: float = 0.15  # most recent sweep had genuine displacement follow-through
+
     def __post_init__(self) -> None:
         total = (
             self.structure_weight

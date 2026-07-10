@@ -2,6 +2,32 @@
 
 Status: **Accepted**
 
+**Amendment 1 (2026-07-10):** expands the engine's output with a new,
+additive `EvidenceSnapshot` type carrying the raw structural/liquidity/
+candlestick facts already computed internally (previously discarded
+after being folded into `ComponentScore`s) plus a new
+`SupportResistanceContext` (Previous Day/Week/Month High/Low, Session
+High/Low, Psychological Levels, Confluence Score, Break Quality Score,
+False Break Probability — concepts this engine never computed before).
+Triggered by Phase 2C (Strategy Engine): that phase's own spec requires
+consuming raw structural/liquidity/candlestick facts and several S/R
+concepts Evidence Engine didn't expose, while simultaneously forbidding
+both modifying Evidence Engine and building a second, duplicate analyzer
+inside Strategy Engine. Put to the user directly; the explicit answer,
+given twice, was **"expand the EvidenceSnapshot, not create a second
+analyzer"** — the same resolution `ADR-002` Amendment 1 already
+established as this project's precedent for exactly this situation
+("resolved as an amendment to this ADR rather than a new pipeline
+stage... to avoid creating a second authority over facts this ADR
+already owns"). **This supersedes the "Do NOT modify Evidence Engine"
+line in the Phase 2C prompt** — the user's direct clarification is a
+more specific, later instruction than that prompt's blanket prerequisite,
+per normal instruction precedence. Purely additive: `EvidenceReport`,
+`evaluate()`, and every existing type/field/test are byte-for-byte
+unchanged — verified by re-running the full pre-amendment test suite
+unmodified. Additions appear in §2, §3 (new Hard Rule 9), and Testing,
+each marked "Amendment 1."
+
 Owner: Software Architect (per `.claude/agents/TEAM.md`'s precedent for
 cross-cutting evaluation components — same accountable role as
 ADR-002/ADR-004)
@@ -133,6 +159,18 @@ independently-computed evidence components — nothing more.
    concurrently must not corrupt shared state and must not recompute the
    same indicator twice for the same symbol/bar-set/parameters within one
    evaluation cycle (caching, keyed by content, not by wall-clock time).
+9. **(Amendment 1) Additive only, one computation per fact.**
+   `EvidenceSnapshot` carries the *exact same* structure/liquidity/
+   candlestick results `evaluate()` already computes internally for the
+   `EvidenceReport` — `evaluate_snapshot()` never runs
+   `analyze_market_structure`/`analyze_liquidity`/`recognize_patterns`
+   a second time for the same bars; it computes once and populates both
+   the existing `EvidenceReport` and the new raw fields from that one
+   pass. The new `support_resistance.py` module is new logic (nothing
+   in `structure.py` computed Previous Day/Week/Month High/Low, Session
+   High/Low, Psychological Levels, Confluence, Break Quality, or False
+   Break Probability before this amendment) — not a duplicate of
+   anything pre-existing.
 
 ---
 
@@ -177,6 +215,20 @@ phantom/evidence_engine/
 No file here imports anything from `phantom_pipeline/`. No file in
 `phantom_pipeline/` is modified by this ADR.
 
+**(Amendment 1) New/changed files:**
+
+```
+    models.py            + EvidenceSnapshot, SupportResistanceContext,
+                        PsychologicalLevel, ConfluenceZone (additive --
+                        every pre-existing type/field unchanged)
+    support_resistance.py  (new) Previous Day/Week/Month High/Low,
+                        Session High/Low, Psychological Levels,
+                        Confluence Score, Break Quality Score, False
+                        Break Probability
+    engine.py            + EvidenceEngine.evaluate_snapshot() (new
+                        method; evaluate() itself is untouched)
+```
+
 ---
 
 # 3. Testing (mandatory before Accepted → Done)
@@ -186,6 +238,11 @@ Per the user's 8-category mandate: unit, property, boundary, performance
 twice), explainability (every score traces to a reason), regression, and
 architecture (no forbidden imports, no trade-decision types, no
 randomness).
+
+**(Amendment 1):** the full pre-amendment suite (110 tests) must pass
+unmodified, proving zero regression, plus new tests for
+`support_resistance.py` and `evaluate_snapshot()` covering the same 8
+categories.
 
 ---
 

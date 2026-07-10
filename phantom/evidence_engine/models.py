@@ -276,6 +276,66 @@ class PairRanking:
     score: float
 
 
+# -- Support/resistance context (Amendment 1) --------------------------------
+
+
+@dataclass(frozen=True)
+class PsychologicalLevel:
+    """A round-number price level -- traders cluster orders around
+    these regardless of any structural swing."""
+
+    price: float
+    distance_pct: float  # 0-100+, distance from the current price
+
+
+@dataclass(frozen=True)
+class ConfluenceZone:
+    """A price zone where two or more independent S/R sources agree."""
+
+    price: float
+    sources: Tuple[str, ...]
+    confluence_score: float  # 0-100
+
+
+@dataclass(frozen=True)
+class SupportResistanceContext:
+    """Every support/resistance fact a downstream consumer (e.g. a
+    future Strategy Engine) is required to have access to, beyond the
+    plain structural support/resistance levels already in
+    `MarketStructureResult`."""
+
+    previous_day_high: Optional[float]
+    previous_day_low: Optional[float]
+    previous_week_high: Optional[float]
+    previous_week_low: Optional[float]
+    previous_month_high: Optional[float]
+    previous_month_low: Optional[float]
+    session_high: float
+    session_low: float
+    psychological_levels: Tuple[PsychologicalLevel, ...]
+    confluence_zones: Tuple[ConfluenceZone, ...]
+    break_quality_score: float  # 0-100
+    false_break_probability: float  # 0-1
+
+
+@dataclass(frozen=True)
+class EvidenceSnapshot:
+    """(Amendment 1) The raw facts behind an `EvidenceReport` -- every
+    intermediate analysis result `evaluate()` already computes
+    internally, exposed additively so a downstream consumer never has
+    to recompute structure/liquidity/candlestick facts itself. `report`
+    is the exact same `EvidenceReport` `evaluate()` would return for the
+    same bars -- nothing here is a second, divergent computation."""
+
+    report: EvidenceReport
+    structure: MarketStructureResult
+    liquidity: LiquidityResult
+    candlesticks: Tuple[CandlestickMatch, ...]
+    volatility: VolatilityState
+    session: SessionState
+    support_resistance: SupportResistanceContext
+
+
 __all__ = [
     "SCHEMA_VERSION",
     "Bar",
@@ -302,4 +362,8 @@ __all__ = [
     "EvidenceScore",
     "EvidenceReport",
     "PairRanking",
+    "PsychologicalLevel",
+    "ConfluenceZone",
+    "SupportResistanceContext",
+    "EvidenceSnapshot",
 ]

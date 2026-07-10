@@ -29,9 +29,11 @@ from .models import (
     CandlestickMatch,
     CandlestickPattern,
     ComponentScore,
+    ConfluenceZone,
     EqualLevel,
     EvidenceReport,
     EvidenceScore,
+    EvidenceSnapshot,
     IndicatorResult,
     LiquidityPool,
     LiquidityResult,
@@ -40,11 +42,13 @@ from .models import (
     PairRanking,
     PatternContext,
     PriceLevel,
+    PsychologicalLevel,
     SessionName,
     SessionState,
     StructureDirection,
     StructureEvent,
     StructureEventType,
+    SupportResistanceContext,
     SwingPoint,
     SwingType,
     TrendClassification,
@@ -54,6 +58,7 @@ from .ranking import rank_pairs
 from .scoring import compute_component_scores, compute_evidence_score
 from .session import analyze_session, session_for_hour
 from .structure import analyze_market_structure, detect_structure_events, find_swing_points, support_resistance
+from .support_resistance import build_support_resistance_context
 from .trend import classify_trend
 from .volatility import analyze_volatility, atr, atr_series, true_ranges
 
@@ -87,6 +92,11 @@ __all__ = [
     "EvidenceScore",
     "EvidenceReport",
     "PairRanking",
+    "PsychologicalLevel",
+    "ConfluenceZone",
+    "SupportResistanceContext",
+    "EvidenceSnapshot",
+    "build_support_resistance_context",
     "RESERVED_FUTURE_INDICATOR_NAMES",
     "Indicator",
     "DuplicateIndicatorError",
