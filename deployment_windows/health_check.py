@@ -1,12 +1,13 @@
 """Phantom deployment health check.
 
 Checks exactly what this deployment layer can honestly check (see
-run_phantom.py's module docstring and KNOWN_GAPS.md for what it
-cannot): Bridge reachability, heartbeat/reliability state (from the
-health.json the running process writes), configuration load and
+start.py's module docstring and KNOWN_GAPS.md for what it cannot):
+Bridge reachability, real MT5 EA connectivity (via the running
+process's own BridgeEngine.is_connection_healthy, not just "is the
+port open"), heartbeat/reliability state, configuration load and
 profile validity, directory writability, and duplicate-process
 detection. Never claims the live trading cycle is running, because it
-isn't (no market-data ingestion component exists yet).
+isn't (no market-data ingestion component is wired in yet).
 
 Exit codes: 0 = HEALTHY, 1 = DEGRADED, 2 = FAILED.
 """
@@ -21,8 +22,9 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent))
+sys.path.insert(0, str(_HERE))
 
 from config_loader import ConfigError, load_settings
 from phantom.runtime.validation import validate_profile
@@ -50,23 +52,33 @@ def _is_pid_alive(pid: int) -> bool:
         return False  # os.kill unavailable -- treat as unknown/not-confirmed
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Phantom deployment health check")
-    parser.add_argument("--config", default=str(Path(__file__).parent / "phantom.config.ini"))
-    args = parser.parse_args()
+def _parse_iso_epoch(iso_string: str) -> float:
+    from datetime import datetime
+    return datetime.fromisoformat(iso_string).timestamp()
+
+
+def _report(checks) -> None:
+    for name, ok, detail in checks:
+        status = "PASS" if ok else "FAIL"
+        print(f"[{status}] {name}{': ' + detail if detail else ''}")
+
+
+def run(config_path: Path) -> int:
+    """Runs every check and prints a PASS/FAIL line for each. Returns
+    0/1/2 (HEALTHY/DEGRADED/FAILED) -- callers (including start.py)
+    should treat this as the authoritative exit code, not re-derive
+    their own."""
 
     checks = []  # (name, ok: bool, detail: str)
 
-    # -- Configuration loads.
     try:
-        settings = load_settings(Path(args.config))
-        checks.append(("configuration loaded", True, str(args.config)))
+        settings = load_settings(config_path)
+        checks.append(("configuration loaded", True, str(config_path)))
     except ConfigError as exc:
         checks.append(("configuration loaded", False, str(exc)))
         _report(checks)
         return 2  # nothing else can be checked without valid config
 
-    # -- Trading profile valid.
     if settings.selected_profile == "custom":
         checks.append(("trading profile valid", False, "selected_profile=custom cannot be auto-validated by health_check"))
     else:
@@ -74,7 +86,6 @@ def main() -> int:
         result = validate_profile(profile, StrategyEngineConfig(), settings.compliance_config)
         checks.append(("trading profile valid", result.valid, f"{profile.profile_id}: {result.issues if not result.valid else 'ok'}"))
 
-    # -- Directories writable.
     for label, path in (("log_dir writable", settings.log_dir), ("state_dir writable", settings.state_dir)):
         try:
             path.mkdir(parents=True, exist_ok=True)
@@ -85,14 +96,12 @@ def main() -> int:
         except OSError as exc:
             checks.append((label, False, f"{path}: {exc}"))
 
-    # -- Bridge reachable.
     try:
         with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
             checks.append(("bridge reachable", True, f"{settings.bridge_host}:{settings.bridge_port}"))
     except OSError as exc:
         checks.append(("bridge reachable", False, f"{settings.bridge_host}:{settings.bridge_port}: {exc}"))
 
-    # -- Process / duplicate-instance state.
     pid_file = settings.state_dir / "phantom.pid"
     if pid_file.exists():
         try:
@@ -105,9 +114,8 @@ def main() -> int:
     else:
         checks.append(("runtime process alive", False, "no pid file -- Phantom is not running"))
 
-    # -- Heartbeat / reliability state (from the running process's own health.json).
-    health_json = settings.state_dir / "health.json"
     cycle_loop_active = False
+    health_json = settings.state_dir / "health.json"
     if health_json.exists():
         try:
             payload = json.loads(health_json.read_text())
@@ -116,36 +124,48 @@ def main() -> int:
             checks.append(("reliability monitor alive", fresh, f"last snapshot {generated_at_age:.1f}s ago"))
             checks.append(("heartbeat state", fresh, f"degradation_level={payload.get('degradation_level')}"))
             checks.append(("bridge reachable (per running process)", payload.get("bridge_reachable", False), ""))
+            # The real, EA-heartbeat-based liveness check (BridgeEngine.
+            # is_connection_healthy), not just "is the port open" --
+            # distinguishes "Bridge process is up" from "MT5 EA has
+            # actually talked to it recently."
+            mt5_connected = payload.get("mt5_connected", False)
+            checks.append(("MT5 bridge connectivity (EA heartbeat)", mt5_connected, "" if mt5_connected else "no recent heartbeat from the MT5 EA -- attach/verify the EA in MT5"))
             cycle_loop_active = payload.get("cycle_loop_active", False)
         except (ValueError, KeyError, OSError) as exc:
             checks.append(("reliability monitor alive", False, f"health.json unreadable: {exc}"))
+            checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "health.json unreadable"))
     else:
         checks.append(("reliability monitor alive", False, "no health.json -- Phantom is not running"))
+        checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "no health.json -- Phantom is not running"))
+
+    # MT5 connectivity is informational at this stage of deployment --
+    # never itself downgrades HEALTHY->DEGRADED/FAILED, since no EA is
+    # expected to be attached during setup/first health check. It is
+    # reported so an operator can see it, not gated on.
+    informational_only = {"MT5 bridge connectivity (EA heartbeat)", "live trading cycle active"}
 
     checks.append((
         "live trading cycle active", cycle_loop_active,
-        "NOT ACTIVE by design -- no market-data ingestion component exists (see KNOWN_GAPS.md)" if not cycle_loop_active else "",
+        "NOT ACTIVE by design -- no market-data ingestion component is wired in (see KNOWN_GAPS.md)" if not cycle_loop_active else "",
     ))
 
-    all_core_ok = all(ok for name, ok, _ in checks if name != "live trading cycle active")
+    all_core_ok = all(ok for name, ok, _ in checks if name not in informational_only)
     _report(checks)
 
     if not all_core_ok:
-        print("\nSTATUS: FAILED")
         return 2
-    print("\nSTATUS: DEGRADED (Bridge + Reliability monitoring healthy; live trading cycle intentionally not wired -- see KNOWN_GAPS.md)")
-    return 1
+    return 1  # DEGRADED -- Bridge+Reliability healthy, trading cycle intentionally not wired (see KNOWN_GAPS.md)
 
 
-def _parse_iso_epoch(iso_string: str) -> float:
-    from datetime import datetime
-    return datetime.fromisoformat(iso_string).timestamp()
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Phantom deployment health check")
+    parser.add_argument("--config", default=str(_HERE / "phantom.config.ini"))
+    args = parser.parse_args()
 
-
-def _report(checks) -> None:
-    for name, ok, detail in checks:
-        status = "PASS" if ok else "FAIL"
-        print(f"[{status}] {name}{': ' + detail if detail else ''}")
+    exit_code = run(Path(args.config))
+    label = {0: "HEALTHY", 1: "DEGRADED", 2: "FAILED"}[exit_code]
+    print(f"\nSTATUS: {label}")
+    return exit_code
 
 
 if __name__ == "__main__":

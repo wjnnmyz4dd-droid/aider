@@ -10,14 +10,17 @@ deployment layer cannot close them without inventing new business
 logic, which was explicitly out of scope for this mission. They are
 recorded here rather than papered over.
 
-## 1. No live market-data ingestion component exists
+## 1. No live market-data ingestion component is wired into a live entry point
 
 **What's missing:** `RuntimeOrchestrator.run_cycle()` /
 `run_cycle_for_pair()` require the caller to already have, for every
 pair, every cycle: OHLC bars, news events, current/average spread,
-portfolio state, trade history, and account state. Nothing in the
-minimum live package fetches any of this from MT5 or an external
-provider.
+portfolio state, trade history, and account state. `phantom/
+market_data_ingestion/` (ADR-033 Part 1) now exists and normalizes raw
+bars/ticks down to the frozen `Bar` type, but nothing in this
+deployment layer's entry point (`start.py`) constructs or drives it —
+it is a tested, standalone package, not yet wired into a running
+process.
 
 **Evidence (traced, not assumed):**
 - `phantom/bridge/server.py`'s entire HTTP protocol is
@@ -29,27 +32,30 @@ provider.
 - `mt5/PhantomBridgeEA.mq5`'s own header comment: *"This EA is a
   transport + execution bridge ONLY: it never generates, scores, or
   [fetches market data]."*
-- Grepped every file in `phantom/bridge`, `phantom/runtime`, and
-  `phantom/evidence_engine` for `CopyRates`, `MetaTrader5`, or any
-  market-data-fetching call — zero hits.
+- `deployment_windows/start.py` constructs the Bridge, the 5 core
+  engines, and the Runtime Orchestrator, but never imports or
+  constructs anything from `phantom/market_data_ingestion/` — grep
+  `start.py` for `market_data_ingestion` to confirm.
 
-**What this deployment layer does instead:** `run_phantom.py` starts
+**What this deployment layer does instead:** `start.py` starts
 the Bridge HTTP service (real, live, reachable by the EA) and
 constructs the Runtime Orchestrator and all 5 engines (proving the
 wiring compiles and the objects are valid), plus starts Reliability
 monitoring the process's own liveness. It does **not** call
 `run_cycle()` in a loop, and does not fabricate bars/news/spread data
-to make one up. `run_phantom.py` and `health_check.py` both report
+to make one up. `start.py` and `health_check.py` both report
 this honestly: status is always **DEGRADED**, never HEALTHY, and both
 print/expose `cycle_loop_active: false` with this exact reason.
 
-**To close this gap:** design and implement a Market Data Ingestion
-component (e.g., MT5's `CopyRates`/`CopyTicks` pushed to the Bridge via
-a new endpoint, or a separate provider feed) and wire its output into
-`RuntimeOrchestrator.run_cycle()`'s per-pair `inputs`. Per this
-repository's own CLAUDE.md workflow (§1.10), that is a new pipeline
-stage and needs its own Accepted ADR before any implementation begins
-— it was not designed or implemented here.
+**To close this gap:** wire `phantom/market_data_ingestion/`'s output
+(or a genuine MT5 feed such as `CopyRates`/`CopyTicks` pushed to the
+Bridge via a new endpoint) into a live trading-cycle loop that calls
+`RuntimeOrchestrator.run_cycle()`'s per-pair `inputs` on a real
+schedule. This deployment layer's `start.py` is not the place to add
+that loop without a mission scoped to it — this task's own mission
+("Replace the Windows batch deployment layer with a Python Deployment
+Manager... Do NOT modify any trading engine, runtime logic, bridge
+logic, or business rules") explicitly excludes it.
 
 ## 2. No multi-provider news system (Trading Economics / Forex Factory)
 

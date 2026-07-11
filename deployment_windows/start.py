@@ -1,4 +1,4 @@
-"""Phantom live runtime entry point (Windows deployment layer).
+"""Phantom live runtime launcher (Python Deployment Manager).
 
 HONESTY NOTE -- read before assuming this starts live trading:
 
@@ -14,31 +14,35 @@ architectural redesign. What it starts:
      Strategy, Risk, Compliance) and the Runtime Orchestrator wired to
      them, per phantom/runtime/engine.py's real constructor signature.
   3. The Reliability Engine, self-monitoring this process's own
-     liveness and the Bridge's reachability.
+     liveness, the Bridge's reachability, and -- via
+     BridgeEngine.is_connection_healthy -- whether the MT5 EA has
+     actually heartbeated recently (not just whether the port is open).
 
 What it deliberately does NOT do, and will not silently pretend to do:
-Phantom's `RuntimeOrchestrator.run_cycle()` requires live bars, news
-events, spreads, portfolio state, and account state to be supplied by
-the CALLER for every cycle. Nothing in the minimum live deployment
-package (confirmed by import-tracing every file in phantom/bridge and
-phantom/runtime) fetches that data from MT5 or any market-data
-provider -- the Bridge's own protocol (heartbeat/account/positions/
-orders/trade-transaction/error/execution-report/commands-poll) is
-entirely about EXECUTION, never market data. The shipped MT5 EA
-self-documents itself as "transport + execution bridge ONLY: it never
-generates, scores, or [fetches market data]."
+`RuntimeOrchestrator.run_cycle()` requires live bars, news events,
+spreads, portfolio state, and account state supplied by the CALLER for
+every cycle. Nothing in the minimum live deployment package fetches
+that from MT5 or a market-data provider -- the Bridge's own protocol
+(heartbeat/account/positions/orders/trade-transaction/error/execution-
+report/commands-poll) is entirely about EXECUTION, never market data.
+Building a live trading cycle loop would require a Market Data
+Ingestion component with its own Accepted ADR (see docs/adr/ADR-033 --
+`phantom/market_data_ingestion/` exists but is not yet wired into a
+live entry point). This script reports its real status --
+**DEGRADED, never HEALTHY** -- both on-screen and in state/health.json,
+and never claims otherwise. See KNOWN_GAPS.md.
 
-Building a live trading cycle loop would therefore require inventing a
-brand-new market-data-ingestion component -- a new architectural
-capability with no Accepted ADR behind it. Per this deployment
-mission's own instruction ("do not silently invent a runtime entry
-point... stop and report the exact missing wiring instead of creating
-business logic"), this script does NOT fabricate one. See
-KNOWN_GAPS.md in this same folder for the precise, actionable gap.
-
-This script's own exit status and printed banner make the above
-unmistakable every time it runs -- it never claims a status it hasn't
-actually achieved.
+Two modes:
+  `python start.py`               -- launches the runtime as a
+                                      detached background process,
+                                      waits briefly, runs a health
+                                      check, prints HEALTHY/DEGRADED/
+                                      FAILED, and returns control to
+                                      the caller.
+  `python start.py --foreground`  -- IS the long-running process
+                                      (what the above mode launches
+                                      internally); blocks until
+                                      stopped.
 """
 
 from __future__ import annotations
@@ -50,13 +54,16 @@ import logging.handlers
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, so `import phantom` works
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent))  # repo root, so `import phantom` works
+sys.path.insert(0, str(_HERE))
 
 from phantom.bridge.command_queue import CommandQueue
 from phantom.bridge.connection_health import ConnectionHealth
@@ -94,6 +101,40 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _venv_python() -> Path:
+    return _HERE / ".venv" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+
+
+def _check_running_under_venv() -> None:
+    """Fail closed if a `.venv` exists next to this script but the
+    currently running interpreter isn't it -- 'activate runtime'.
+
+    Compares `sys.prefix` (where the running interpreter's environment
+    root is), not `sys.executable` -- on POSIX, `venv` creates the
+    interpreter as a symlink to the base install, so resolving symlinks
+    on the executable path collapses both to the same target and the
+    check would never fire. `sys.prefix` still correctly points at
+    `.venv` for a venv-launched interpreter on both POSIX and Windows.
+    """
+    venv_python = _venv_python()
+    if not venv_python.exists():
+        return  # no venv created yet (e.g. deploy.py hasn't run) -- deploy.py's own check owns that gap
+    venv_dir = _HERE / ".venv"
+    try:
+        running_from_venv = Path(sys.prefix).resolve() == venv_dir.resolve()
+    except OSError:
+        running_from_venv = False
+    if not running_from_venv:
+        print(
+            f"FAILED: not running under the local virtual environment.\n"
+            f"        Run: \"{venv_python}\" start.py\n"
+            f"        (found .venv at {venv_python.parent.parent}, but the "
+            f"current interpreter is {sys.executable})",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def _setup_logging(log_dir: Path, level_name: str) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     level = getattr(logging, level_name, logging.INFO)
@@ -119,10 +160,10 @@ def _write_pid_file(state_dir: Path) -> Path:
     if pid_file.exists():
         try:
             existing_pid = int(pid_file.read_text().strip())
-            os.kill(existing_pid, 0)  # raises OSError if no such process (Windows: works via ctypes-backed impl)
+            os.kill(existing_pid, 0)  # raises OSError if no such process
             raise RuntimeError(
                 f"Phantom already appears to be running (pid {existing_pid} in {pid_file}). "
-                "Refusing to start a second instance -- run stop_phantom.bat first if that pid is stale."
+                "Refusing to start a second instance -- run stop.py first if that pid is stale."
             )
         except (ValueError, OSError):
             pass  # stale/unreadable pid file -- safe to overwrite
@@ -138,7 +179,7 @@ def _bridge_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, bridge_host: str, bridge_port: int) -> None:
+def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, bridge_engine: BridgeEngine, bridge_host: str, bridge_port: int) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
     payload = {
@@ -149,17 +190,18 @@ def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, brid
             for c in snapshot.component_health
         ],
         "bridge_reachable": _bridge_reachable(bridge_host, bridge_port),
+        "mt5_connected": bridge_engine.is_connection_healthy,
         "cycle_loop_active": False,
         "cycle_loop_inactive_reason": (
-            "No market-data ingestion component exists in this deployment package -- "
-            "see KNOWN_GAPS.md. Bridge (execution channel) and Reliability (this health "
-            "monitor) are live; the trading decision cycle is not."
+            "No market-data ingestion component is wired into this entry point -- "
+            "see KNOWN_GAPS.md. Bridge (execution channel) and Reliability (this "
+            "health monitor) are live; the trading decision cycle is not."
         ),
     }
     (state_dir / "health.json").write_text(json.dumps(payload, indent=2))
 
 
-def _heartbeat_loop(reliability: ReliabilityEngine, state_dir: Path, bridge_host: str, bridge_port: int) -> None:
+def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine, state_dir: Path, bridge_host: str, bridge_port: int) -> None:
     logger = logging.getLogger("phantom.deploy.heartbeat")
     while not _shutdown_event.is_set():
         now = _utc_now()
@@ -173,18 +215,15 @@ def _heartbeat_loop(reliability: ReliabilityEngine, state_dir: Path, bridge_host
         except Exception:  # noqa: BLE001 -- resource sampling must never crash the loop
             logger.exception("resource usage sampling failed")
         try:
-            _write_health_snapshot(state_dir, reliability, bridge_host, bridge_port)
+            _write_health_snapshot(state_dir, reliability, bridge_engine, bridge_host, bridge_port)
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
         _shutdown_event.wait(_HEARTBEAT_INTERVAL_SECONDS)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Phantom live runtime entry point")
-    parser.add_argument("--config", default=str(Path(__file__).parent / "phantom.config.ini"))
-    args = parser.parse_args()
-
-    config_path = Path(args.config)
+def run_foreground(config_path: Path) -> int:
+    """The actual long-running process -- what `python start.py
+    --foreground` (and, internally, `python start.py`) runs."""
     try:
         settings = load_settings(config_path)
     except ConfigError as exc:
@@ -202,14 +241,13 @@ def main() -> int:
 
     logger.info("Phantom deployment layer starting (pid=%s, config=%s)", os.getpid(), config_path)
 
-    # -- Trading profile: construct + validate before anything else starts.
     strategy_config = StrategyEngineConfig()
     if settings.selected_profile == "custom":
         print(
             "FAILED: selected_profile is 'custom' -- a custom TradingProfile "
             "cannot be built from the config file alone (it needs an explicit "
-            "allowed_pairs/allowed_strategies list). Edit this script's main() "
-            "to call phantom.runtime.profiles.make_custom_profile(...) directly.",
+            "allowed_pairs/allowed_strategies list). Edit this script's "
+            "run_foreground() to call phantom.runtime.profiles.make_custom_profile(...) directly.",
             file=sys.stderr,
         )
         return 2
@@ -221,7 +259,6 @@ def main() -> int:
         return 2
     logger.info("Trading profile %s validated OK", profile.profile_id)
 
-    # -- Bridge: real, existing public interfaces only.
     command_queue = CommandQueue(settings.bridge_config)
     connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
     bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now)
@@ -235,8 +272,6 @@ def main() -> int:
     server_thread.start()
     logger.info("Bridge HTTP service listening on %s:%s", settings.bridge_host, settings.bridge_port)
 
-    # -- The five core engines + Runtime Orchestrator (constructed and
-    # ready; see module docstring -- no live cycle loop is started).
     evidence_engine = EvidenceEngine(EvidenceEngineConfig())
     market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
     strategy_engine = StrategyEngine(strategy_config)
@@ -250,13 +285,12 @@ def main() -> int:
         settings.runtime_config, evidence_engine, market_intelligence_engine,
         strategy_engine, risk_engine, compliance_engine, bridge_submit,
     )
-    logger.info("RuntimeOrchestrator constructed (engine_versions ready; cycle loop NOT started -- see KNOWN_GAPS.md)")
-    del orchestrator  # constructed to prove wiring compiles/works; not driven, per this script's own honesty note
+    logger.info("RuntimeOrchestrator constructed (cycle loop NOT started -- see KNOWN_GAPS.md)")
+    del orchestrator
 
-    # -- Reliability: self-monitoring this process + Bridge reachability.
     reliability = ReliabilityEngine(settings.reliability_config)
     heartbeat_thread = threading.Thread(
-        target=_heartbeat_loop, args=(reliability, settings.state_dir, settings.bridge_host, settings.bridge_port),
+        target=_heartbeat_loop, args=(reliability, bridge_engine, settings.state_dir, settings.bridge_host, settings.bridge_port),
         name="phantom-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
@@ -273,9 +307,9 @@ def main() -> int:
     print(f"  Bridge HTTP service : LIVE on {settings.bridge_host}:{settings.bridge_port}")
     print(f"  Trading profile      : {profile.profile_id} (validated OK)")
     print("  5 core engines       : constructed OK")
-    print("  Reliability monitor  : running (process-liveness heartbeats)")
+    print("  Reliability monitor  : running (process-liveness + Bridge/MT5 heartbeats)")
     print("  LIVE TRADING CYCLE   : NOT ACTIVE -- no market-data ingestion")
-    print("                          component exists in this deployment.")
+    print("                          component is wired into this entry point.")
     print("                          See KNOWN_GAPS.md before relying on this")
     print("                          for real trading.")
     print("=" * 72)
@@ -295,6 +329,84 @@ def main() -> int:
         logger.info("Phantom deployment layer stopped cleanly")
 
     return 0
+
+
+def _existing_pid(state_dir: Path) -> "int | None":
+    pid_file = state_dir / "phantom.pid"
+    if not pid_file.exists():
+        return None
+    try:
+        pid = int(pid_file.read_text().strip())
+    except ValueError:
+        return None
+    try:
+        os.kill(pid, 0)
+        return pid
+    except OSError:
+        return None
+
+
+def launch_and_report(config_path: Path) -> int:
+    """Default mode: spawn `--foreground` as a detached child process,
+    wait, health-check it, print HEALTHY/DEGRADED/FAILED, return."""
+    try:
+        settings = load_settings(config_path)
+    except ConfigError as exc:
+        print(f"FAILED: configuration error: {exc}", file=sys.stderr)
+        return 2
+
+    existing_pid = _existing_pid(settings.state_dir)
+    if existing_pid is not None:
+        print(f"Phantom already appears to be running (pid {existing_pid}).")
+        print("Run health_check.py to check its status, or stop.py to stop it first.")
+        return _run_health_check(config_path)
+
+    python_exe = str(_venv_python()) if _venv_python().exists() else sys.executable
+    creation_flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+    print("Starting Phantom in a new background process...")
+    subprocess.Popen(
+        [python_exe, str(_HERE / "start.py"), "--foreground", "--config", str(config_path)],
+        cwd=str(_HERE), creationflags=creation_flags,
+        stdout=None if os.name == "nt" else subprocess.DEVNULL,
+        stderr=None if os.name == "nt" else subprocess.DEVNULL,
+        start_new_session=(os.name != "nt"),
+    )
+
+    print("Waiting for startup to settle...")
+    time.sleep(5.0)
+
+    print()
+    print("=" * 60)
+    print("Phantom health check")
+    print("=" * 60)
+    return _run_health_check(config_path)
+
+
+def _run_health_check(config_path: Path) -> int:
+    import health_check
+
+    exit_code = health_check.run(config_path)
+    if exit_code == 0:
+        print("STATUS: HEALTHY")
+    elif exit_code == 1:
+        print("STATUS: DEGRADED")
+    else:
+        print("STATUS: FAILED")
+    return exit_code
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Phantom live runtime launcher")
+    parser.add_argument("--config", default=str(_HERE / "phantom.config.ini"))
+    parser.add_argument("--foreground", action="store_true", help="run as the actual long-lived process (used internally)")
+    args = parser.parse_args()
+
+    _check_running_under_venv()
+
+    config_path = Path(args.config)
+    if args.foreground:
+        return run_foreground(config_path)
+    return launch_and_report(config_path)
 
 
 if __name__ == "__main__":
