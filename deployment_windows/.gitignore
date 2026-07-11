@@ -1,0 +1,11 @@
+# Real, secret-bearing configuration -- never commit this. Only
+# config/phantom.config.template.ini (no real secrets) is tracked.
+phantom.config.ini
+
+# Local virtual environment, logs, and runtime state -- machine-local,
+# never part of the deployment package's source of truth.
+.venv/
+logs/
+state/
+__pycache__/
+*.pyc
