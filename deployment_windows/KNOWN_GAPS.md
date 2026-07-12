@@ -80,7 +80,10 @@ toggles), with an explicit comment explaining the gap. It does **not**
 fabricate `trading_economics_*` / `forex_factory_*` config keys that
 the engine would silently ignore — that would be worse than not having
 them, since an operator editing a fake config key would reasonably
-believe it does something.
+believe it does something. `install.py`'s own "Verify news providers"
+step reports this exact gap out loud (status `INFO`, never a fabricated
+`OK`) in both its console output and `INSTALLATION_REPORT.md`, rather
+than silently skipping the requirement or pretending it passed.
 
 **To close this gap:** a genuine multi-provider news feed with real
 primary/backup failover and disagreement detection requires a new

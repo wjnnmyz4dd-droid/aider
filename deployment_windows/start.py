@@ -106,8 +106,16 @@ def _venv_python() -> Path:
 
 
 def _check_running_under_venv() -> None:
-    """Fail closed if a `.venv` exists next to this script but the
-    currently running interpreter isn't it -- 'activate runtime'.
+    """Warn (never block) if a `.venv` exists next to this script but
+    the currently running interpreter isn't it.
+
+    This used to fail closed, but Phantom's live runtime has zero
+    third-party dependencies (see requirements.txt) -- the venv adds no
+    actual functional isolation today, so refusing to run under a
+    different interpreter that can equally well import `phantom/`
+    would only get in the way of the plain `python start.py` /
+    `python stop.py` workflow install.py sets up. Prints a note and
+    continues either way.
 
     Compares `sys.prefix` (where the running interpreter's environment
     root is), not `sys.executable` -- on POSIX, `venv` creates the
@@ -126,13 +134,13 @@ def _check_running_under_venv() -> None:
         running_from_venv = False
     if not running_from_venv:
         print(
-            f"FAILED: not running under the local virtual environment.\n"
-            f"        Run: \"{venv_python}\" start.py\n"
-            f"        (found .venv at {venv_python.parent.parent}, but the "
-            f"current interpreter is {sys.executable})",
-            file=sys.stderr,
+            f"NOTE: not running under the local virtual environment "
+            f"(found .venv at {venv_python.parent.parent}, but the current "
+            f"interpreter is {sys.executable}). Continuing anyway -- "
+            "Phantom's runtime has no third-party dependencies, so this makes "
+            f"no functional difference. Use \"{venv_python}\" start.py instead "
+            "if you ever do add a dependency that only lives in the venv.",
         )
-        raise SystemExit(2)
 
 
 def _setup_logging(log_dir: Path, level_name: str) -> None:

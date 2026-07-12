@@ -2,6 +2,13 @@
 # config/phantom.config.template.ini (no real secrets) is tracked.
 phantom.config.ini
 
+# install.py's auto-generated Bridge API key (a locally-generated
+# shared secret, never a real config value checked into the repo).
+.bridge_api_key.secret
+
+# install.py's installation report (machine/run-specific).
+INSTALLATION_REPORT.md
+
 # Local virtual environment, logs, and runtime state -- machine-local,
 # never part of the deployment package's source of truth.
 .venv/

@@ -88,24 +88,61 @@ def _require(parser: configparser.ConfigParser, section: str, key: str) -> str:
     return value.strip()
 
 
-def _resolve_secret(parser: configparser.ConfigParser, section: str, env_var_key: str, inline_key: str, secret_label: str) -> str:
-    """Environment variable is the supported, secure path: the ini
-    file names *which* environment variable to read (never the secret
-    itself). An inline fallback value is accepted for local/dev
-    convenience only, and is rejected if it still equals the shipped
-    template placeholder -- but its use is always logged as a warning
-    (the message, never the value) so a real deployment doesn't
-    silently ship a secret in a checked-in config file."""
+GENERATED_SECRET_FILENAME = ".bridge_api_key.secret"
+
+
+def generated_secret_path(config_path: Path) -> Path:
+    """Where install.py writes an auto-generated Bridge API key, next to
+    phantom.config.ini itself. Gitignored -- never committed. This is a
+    locally-generated shared secret between this Phantom instance and
+    the one EA it talks to (not a third-party credential), so
+    generating and storing it locally without user interaction is
+    appropriate -- unlike a real external API key, there is nothing to
+    "obtain" from anywhere else."""
+    return config_path.parent / GENERATED_SECRET_FILENAME
+
+
+def _read_generated_secret_file(config_path: Path) -> Optional[str]:
+    path = generated_secret_path(config_path)
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def _resolve_secret(parser: configparser.ConfigParser, section: str, env_var_key: str, inline_key: str, secret_label: str, config_path: Path) -> str:
+    """Three sources, in order, none of which require the operator to
+    edit anything by hand for the common case:
+
+    1. Environment variable named by [section].env_var_key -- the
+       supported, secure path for a real deployment.
+    2. A local, gitignored, auto-generated secret file next to the
+       config file (written once by install.py) -- covers the
+       zero-manual-configuration install flow without ever putting the
+       key in a checked-in-shaped ini file.
+    3. An inline value in the ini file itself -- local/dev convenience
+       only, rejected if it still equals the shipped template
+       placeholder, and always logged as a warning (the message, never
+       the value) so a real deployment doesn't silently ship a secret
+       in a config file.
+    """
 
     env_var_name = parser.get(section, env_var_key, fallback="").strip()
     if env_var_name:
         value = os.environ.get(env_var_name)
         if value:
             return value
+
+    generated = _read_generated_secret_file(config_path)
+    if generated:
+        return generated
+
+    if env_var_name:
         raise ConfigError(
             f"[{section}].{env_var_key} names environment variable {env_var_name!r}, "
-            f"but it is not set. Set it before starting Phantom -- never put the real "
-            f"{secret_label} directly in the config file."
+            f"but it is not set, and no generated secret file was found at "
+            f"{generated_secret_path(config_path)}. Set the environment variable, "
+            f"or re-run install.py, before starting Phantom."
         )
 
     inline_value = parser.get(section, inline_key, fallback="").strip()
@@ -121,8 +158,8 @@ def _resolve_secret(parser: configparser.ConfigParser, section: str, env_var_key
 
     raise ConfigError(
         f"No {secret_label} configured -- set [{section}].{env_var_key} to an "
-        f"environment variable name (recommended) or [{section}].{inline_key} "
-        f"to a real value (local/dev only)."
+        f"environment variable name (recommended), let install.py generate one, "
+        f"or set [{section}].{inline_key} to a real value (local/dev only)."
     )
 
 
@@ -137,7 +174,7 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     parser = configparser.ConfigParser()
     parser.read(config_path, encoding="utf-8")
 
-    api_key = _resolve_secret(parser, "bridge", "api_key_env_var", "api_key", "Bridge API key")
+    api_key = _resolve_secret(parser, "bridge", "api_key_env_var", "api_key", "Bridge API key", config_path)
     allowed_symbols: Tuple[str, ...] = tuple(
         s.strip().upper() for s in _require(parser, "bridge", "allowed_symbols").split(",") if s.strip()
     )
@@ -247,4 +284,4 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     )
 
 
-__all__ = ["DeploymentSettings", "NewsProviderSettings", "ConfigError", "load_settings"]
+__all__ = ["DeploymentSettings", "NewsProviderSettings", "ConfigError", "load_settings", "generated_secret_path"]
