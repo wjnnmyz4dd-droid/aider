@@ -32,10 +32,14 @@ process.
 - `mt5/PhantomBridgeEA.mq5`'s own header comment: *"This EA is a
   transport + execution bridge ONLY: it never generates, scores, or
   [fetches market data]."*
-- `deployment_windows/start.py` constructs the Bridge, the 5 core
-  engines, and the Runtime Orchestrator, but never imports or
-  constructs anything from `phantom/market_data_ingestion/` — grep
-  `start.py` for `market_data_ingestion` to confirm.
+- `start.py` constructs the Bridge, the 5 core engines, and the Runtime
+  Orchestrator, but never imports or constructs anything from
+  `phantom/market_data_ingestion/` — grep `start.py` for
+  `market_data_ingestion` to confirm.
+- `health_check.py`'s "market-data readiness" check always reports
+  **NOT AVAILABLE** for the same reason -- it is not a probe that could
+  someday come back healthy on its own; there is no feed for it to
+  probe.
 
 **What this deployment layer does instead:** `start.py` starts
 the Bridge HTTP service (real, live, reachable by the EA) and
@@ -72,8 +76,8 @@ signal: `news_feed_trusted: bool`, passed to
 `NewsEvent`, no per-provider trust/disagreement/outage logic, and no
 primary/backup failover concept anywhere in the engine.
 
-**What this deployment layer does instead:** `deployment_windows/
-config/phantom.config.template.ini`'s `[news]` section exposes only
+**What this deployment layer does instead:**
+`config/phantom_config.example.json`'s `news` section exposes only
 the fields that actually exist and actually do something
 (`news_feed_trusted`, blackout windows, impact/central-bank blackout
 toggles), with an explicit comment explaining the gap. It does **not**
@@ -90,13 +94,17 @@ primary/backup failover and disagreement detection requires a new
 ADR-025 Amendment and new engine code. Not designed or implemented
 here, per the same CLAUDE.md §1.10 workflow.
 
-## Everything else in this deployment layer is fully implemented
+## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access
-verification, compileall, import smoke test, Bridge startup, Reliability
-monitoring, graceful/forced stop scoped to exactly one recorded pid,
-restart sequencing, health checking, and MT5 file installation (short
-of MetaEditor compilation, which requires the real GUI) are all real,
-working, and were exercised in this environment — see
-`PHANTOM_WINDOWS_DEPLOYMENT_VERIFICATION.md` for exactly what was run
-and what could only be run on a real Windows/MT5 box.
+verification (including the new `data\` folder), compileall, import
+smoke test, Bridge startup and bind verification, Reliability
+monitoring (including real Bridge command-queue depth via
+`ReliabilityEngine.report_queue_depth`), graceful/forced stop scoped to
+exactly one recorded pid, restart sequencing, health checking (Bridge,
+Runtime, Reliability, configuration, API-key-env-var presence,
+news-feed trust state, queue health, duplicate-process detection), MT5
+file installation with automatic `.set` personalization (short of
+MetaEditor compilation, which requires the real GUI), and desktop
+shortcut creation (Windows only) are all real, working, and were
+exercised end-to-end in this environment before this release was sent.

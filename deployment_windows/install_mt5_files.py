@@ -3,7 +3,7 @@
 Locates (or asks for) the active MT5 data folder, copies
 PhantomBridgeEA.mq5 into MQL5/Experts/Phantom/ and a *personalized*
 PhantomBridgeEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv
-filled in from phantom.config.ini, when available) into
+filled in from phantom_config.json, when available) into
 MQL5/Presets/Phantom/, taking a timestamped backup of any file it
 would otherwise overwrite. Does NOT compile the .mq5 -- that step can
 only happen inside MetaEditor on the real Windows/MT5 installation;
@@ -27,7 +27,26 @@ from pathlib import Path
 from typing import Optional
 
 _HERE = Path(__file__).resolve().parent
-_SOURCE_DIR = _HERE.parent / "mt5"
+
+
+def _find_repo_root(here: Path) -> Path:
+    """Locates the installation root -- the folder containing both
+    phantom/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\Phantom\\install_mt5_files.py layout) or
+    one level below it (this repository's own deployment_windows/
+    subfolder, used for development)."""
+    for candidate in (here, here.parent):
+        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the Phantom installation root (a folder containing "
+        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        "release package before running this script."
+    )
+
+
+_REPO_ROOT = _find_repo_root(_HERE)
+_SOURCE_DIR = _REPO_ROOT / "mt5"
 
 # .set files are plain `key=value` text (see mt5/PhantomBridgeEA.set) --
 # these are the keys install.py's auto-generated config has real values
@@ -166,7 +185,7 @@ def run(explicit_mt5_dir: str = "", non_interactive: bool = False, personalize: 
     if personalize:
         _write_personalized_set(set_source, set_dest, personalize)
         print(f"Wrote a personalized PhantomBridgeEA.set to {presets_dir} "
-              f"({', '.join(sorted(personalize))} filled in from phantom.config.ini)")
+              f"({', '.join(sorted(personalize))} filled in from phantom_config.json)")
     else:
         shutil.copy2(set_source, set_dest)
         print(f"Copied PhantomBridgeEA.set to {presets_dir} (unpersonalized -- "

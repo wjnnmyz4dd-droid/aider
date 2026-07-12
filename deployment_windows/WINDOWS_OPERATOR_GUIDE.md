@@ -3,12 +3,14 @@
 Read `KNOWN_GAPS.md` first. This deployment layer brings up Phantom's
 Bridge (execution channel) and Reliability monitoring honestly and
 completely — it does **not** run a live trading decision loop, because
-no market-data ingestion component exists in this codebase yet, and it
-does **not** verify Trading Economics/Forex Factory news providers,
-because no such component exists yet either. Every step below is
-accurate to what actually happens; none of it overclaims readiness for
-live trading. `install.py`'s own `INSTALLATION_REPORT.md` states this
-plainly for your specific run.
+no market-data ingestion component is wired into any entry point yet,
+and it does **not** verify Trading Economics/Forex Factory news
+providers, because no such component exists yet either. Every step
+below is accurate to what actually happens; none of it overclaims
+readiness for live trading. `install.py`'s own `INSTALLATION_REPORT.md`
+states this plainly for your specific run (see
+`INSTALLATION_REPORT_TEMPLATE.md` for the shape of that report before
+you've run anything).
 
 ## Quick start (first-time install)
 
@@ -19,22 +21,34 @@ A first-time user only needs to:
 3. Open MT5.
 4. Attach `PhantomBridgeEA` to a demo chart.
 
-Everything else — creating `phantom.config.ini`, generating the Bridge
+Everything else — creating `phantom_config.json`, generating the Bridge
 API key, creating the virtual environment, installing dependencies,
-creating `logs\`/`state\`, copying and personalizing the MT5 EA files,
-verifying Bridge/Runtime/Reliability, creating desktop shortcuts, and
-starting Phantom itself — happens automatically inside `install.py`.
-Details below.
+creating `logs\`/`state\`/`data\`, copying and personalizing the MT5 EA
+files, verifying Bridge/Runtime/Reliability, creating desktop
+shortcuts, and starting Phantom itself — happens automatically inside
+`install.py`. Details below.
 
 ### 1. Extract the ZIP
 
-Extract `phantom_windows_deployment.zip` anywhere convenient, then move
-its contents so they sit directly under `C:\Phantom`:
+Extract `phantom_windows_complete_release.zip` directly into `C:\Phantom`.
+After extraction you should have:
 
 ```
-C:\Phantom\phantom\               <- the 8 required engine packages
-C:\Phantom\mt5\                   <- PhantomBridgeEA.mq5 + .set
-C:\Phantom\deployment_windows\    <- everything in this guide
+C:\Phantom\install.py
+C:\Phantom\start.py
+C:\Phantom\stop.py
+C:\Phantom\restart.py
+C:\Phantom\health_check.py
+C:\Phantom\install_mt5_files.py
+C:\Phantom\config_loader.py
+C:\Phantom\requirements.txt
+C:\Phantom\config\phantom_config.example.json
+C:\Phantom\phantom\                 <- the 8 required engine packages
+C:\Phantom\mt5\                     <- PhantomBridgeEA.mq5 + .set
+C:\Phantom\logs\  C:\Phantom\state\  C:\Phantom\data\
+C:\Phantom\WINDOWS_OPERATOR_GUIDE.md
+C:\Phantom\KNOWN_GAPS.md
+C:\Phantom\RELEASE_MANIFEST.json
 ```
 
 If you use a different drive/path, everything below still works — just
@@ -50,27 +64,30 @@ to PATH"** during install.
 ### 3. Run install.py
 
 ```
-cd C:\Phantom\deployment_windows
+cd C:\Phantom
 python install.py
 ```
 
 This is the master installer. It runs, in order:
 
-1. **Create configuration** — copies `config/phantom.config.template.ini`
-   to `phantom.config.ini` if it doesn't already exist (default
+1. **Verify running from the full release package** — confirms
+   `phantom\` and `mt5\` sit next to `install.py`.
+2. **Create configuration** — copies `config\phantom_config.example.json`
+   to `phantom_config.json` if it doesn't already exist (default
    settings: `london_conservative` profile, 7 major pairs, an example
-   compliance profile — edit `phantom.config.ini` later to customize;
+   compliance profile — edit `phantom_config.json` later to customize;
    the defaults exist so install can finish with zero manual editing).
-2. **Generate Bridge API key** — generates a random local shared secret
+3. **Generate Bridge API key** — generates a random local shared secret
    (not a third-party credential — just the token Phantom and its one
    EA use to recognize each other) and stores it in a gitignored file
    next to the config.
-3. **Run deploy.py** — verifies your Python version, creates `.venv`,
+4. **Run deploy.py** — verifies your Python version, creates `.venv`,
    installs `requirements.txt` (a fast no-op — the live runtime has zero
-   third-party dependencies), verifies `phantom\`/`mt5\` are present,
-   validates configuration, verifies `logs\`/`state\` are writable,
-   compiles everything, and runs an import smoke test.
-4. **Copy + personalize MT5 EA files** — auto-detects your MT5 data
+   third-party dependencies), verifies `phantom\`/`mt5\`/`config\` are
+   present, validates configuration, creates and verifies
+   `logs\`/`state\`/`data\` are writable, compiles everything, and runs
+   an import smoke test against all 8 live packages.
+5. **Copy + personalize MT5 EA files** — auto-detects your MT5 data
    folder and copies `PhantomBridgeEA.mq5`/`.set` into it, with the
    `.set` file's `ApiKey`/`MagicNumber`/`BackendUrl`/`AllowedSymbolsCsv`
    already filled in from your generated config — no manual typing
@@ -79,22 +96,22 @@ This is the master installer. It runs, in order:
    this step is skipped with instructions to run
    `python install_mt5_files.py` yourself afterward — installation
    still completes; this alone isn't a blocker.
-5. **Verify Bridge** — actually constructs the real `BridgeEngine` and
+6. **Verify Bridge** — actually constructs the real `BridgeEngine` and
    binds its HTTP server on your configured port, confirms it's
    reachable over a real socket connection, then shuts it down.
-6. **Verify Runtime** — actually constructs all 5 core engines and the
+7. **Verify Runtime** — actually constructs all 5 core engines and the
    `RuntimeOrchestrator`.
-7. **Verify Reliability** — actually constructs the `ReliabilityEngine`
+8. **Verify Reliability** — actually constructs the `ReliabilityEngine`
    and calls its health-evaluation method once.
-8. **Verify news providers** — reports honestly that Trading
+9. **Verify news providers** — reports honestly that Trading
    Economics/Forex Factory verification is **not available**, because
    no such component exists in this codebase (see `KNOWN_GAPS.md`
    section 2). This is not a failure; it's an accurate statement of
    what does and doesn't exist yet.
-9. **Create desktop shortcuts** — Start, Stop, Restart, and Health
-   Check, pointing at the right Python interpreter and script. Skipped
-   (not a failure) on anything other than real Windows.
-10. **Launch Phantom** — starts Phantom itself (same as running
+10. **Create desktop shortcuts** — Start, Stop, Restart, and Health
+    Check, pointing at the right Python interpreter and script. Skipped
+    (not a failure) on anything other than real Windows.
+11. **Launch Phantom** — starts Phantom itself (same as running
     `python start.py`), so it's already running by the time you attach
     the EA. Expect **DEGRADED** status — see `KNOWN_GAPS.md`; this is
     by design, not a bug.
@@ -131,9 +148,22 @@ every step's real outcome, and prints next steps.
 python health_check.py
 ```
 
-Look for `[PASS] MT5 bridge connectivity (EA heartbeat)` once the EA is
-attached and running — this checks the Bridge's real signal that the
-EA has actually heartbeated, not just that the port is open.
+Reports, among other things:
+- `bridge reachable` / `MT5 bridge connectivity (EA heartbeat)` — the
+  latter checks the Bridge's real signal that the EA has actually
+  heartbeated, not just that the port is open.
+- `queue health` — the real Bridge command-queue depth against your
+  configured degraded/critical thresholds.
+- `API key environment variable present` and `news-feed trust state` —
+  real configuration state, reported for visibility (informational,
+  never blocking).
+- `market-data readiness` — always reports **NOT AVAILABLE** today (see
+  `KNOWN_GAPS.md` section 1); informational, never blocking.
+
+Also check the "Experts" tab in MT5's Terminal window (bottom panel)
+for the EA's own log lines confirming successful `WebRequest` calls to
+`/bridge/heartbeat`. If you see WebRequest errors, re-check step 5's
+URL allow-list.
 
 ## Day-to-day operation
 
@@ -154,16 +184,20 @@ multi-step setup — that's all one-time, handled by `install.py`.
   Refuses to start a second instance if one is already running.
 - `python stop.py` — stops **only** the one Phantom process recorded in
   `state\phantom.pid` — graceful shutdown first, forced termination
-  only after a bounded wait, never touching any other process. Logs and
-  state are preserved.
+  only after a bounded wait, never touching any other process (it
+  verifies the recorded pid is actually a Python process before
+  touching it, so a stale/reused pid is never killed). Logs and state
+  are preserved.
 - `python restart.py` — calls `stop.py`, confirms shutdown, calls
   `start.py`, reports post-restart health.
 - `python health_check.py` — reports current status without starting or
   stopping anything.
 
-Logs: timestamped files in `logs\` (`log_dir` in `phantom.config.ini`,
+Logs: timestamped files in `logs\` (`log_dir` in `phantom_config.json`,
 default relative to the config file's own folder). Current health
-snapshot: `state\health.json`.
+snapshot: `state\health.json`. `data\` is reserved for a future
+market-data component and is not used by anything today (see
+`data\README.md`).
 
 ## Rollback
 
@@ -184,15 +218,17 @@ piece work individually — you can run the same steps `install.py`
 automates, one at a time:
 
 ```
-cd C:\Phantom\deployment_windows
-copy config\phantom.config.template.ini phantom.config.ini
-notepad phantom.config.ini
+cd C:\Phantom
+copy config\phantom_config.example.json phantom_config.json
+notepad phantom_config.json
 ```
-Edit `[bridge] allowed_symbols`, `[trading_profile] selected_profile`,
-`[compliance] rule_profile_name` as needed. Set a real API key either
-via `setx PHANTOM_BRIDGE_API_KEY "your-secret"` (open a new Command
-Prompt afterward) or by letting `install.py`'s key-generation step run
-on its own (`python -c "import install; install.step_generate_bridge_api_key()"`).
+Edit `bridge.allowed_symbols`, `trading_profile.selected_profile`,
+`compliance.rule_profile_name` as needed (it's a plain JSON file — every
+key is documented inline via `_note`/`_maps_to` comment fields). Set a
+real API key either via `setx PHANTOM_BRIDGE_API_KEY "your-secret"`
+(open a new Command Prompt afterward) or by letting `install.py`'s
+key-generation step run on its own
+(`python -c "import install; install.step_generate_bridge_api_key()"`).
 Then:
 
 ```
@@ -204,3 +240,11 @@ python install_mt5_files.py
 python start.py
 ```
 and attach the EA as in step 5 above.
+
+## Release manifest
+
+`RELEASE_MANIFEST.json` (same folder) records exactly what shipped in
+this package: the source commit, build timestamp, every included file
+with its SHA-256 hash, the Python version requirement, and a summary of
+the known gaps below — useful for confirming a VPS copy matches what
+you extracted, or for auditing what changed between releases.

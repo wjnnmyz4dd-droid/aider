@@ -7,9 +7,9 @@ The whole point of this script: a first-time user should only need to
   3. Open MT5
   4. Attach PhantomBridgeEA
 
-Everything else -- creating phantom.config.ini, generating the Bridge
+Everything else -- creating phantom_config.json, generating the Bridge
 API key, creating the virtual environment, installing dependencies,
-creating logs/state folders, copying the MT5 EA files (personalized
+creating logs/state/data folders, copying the MT5 EA files (personalized
 with the real API key/magic number, so loading the .set file in MT5
 requires no manual typing), verifying that Bridge/Runtime/Reliability
 actually construct and (for Bridge) actually bind a live port, creating
@@ -33,7 +33,7 @@ MetaEditor compilation -- both require the real MT5 GUI, which is
 outside what any Python script can do; see steps 3 and 4 above.
 
 Safe to re-run: every step here is idempotent. An existing
-phantom.config.ini, generated API key, .venv, or MT5 EA files are
+phantom_config.json, generated API key, .venv, or MT5 EA files are
 reused/backed-up rather than silently clobbered or regenerated.
 """
 
@@ -55,7 +55,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_REPO_ROOT = _HERE.parent
+
+
+def _find_repo_root(here: Path) -> Path:
+    """Locates the installation root -- the folder containing both
+    phantom/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\Phantom\\install.py layout) or one level
+    below it (this repository's own deployment_windows/ subfolder, used
+    for development)."""
+    for candidate in (here, here.parent):
+        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the Phantom installation root (a folder containing "
+        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        "release package before running this script."
+    )
+
+
+try:
+    _REPO_ROOT = _find_repo_root(_HERE)
+except RuntimeError as exc:
+    print(f"FAILED: Verify running from the full release package\n       {exc}", file=sys.stderr)
+    raise SystemExit(1)
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
@@ -64,8 +86,8 @@ import install_mt5_files as install_mt5_module
 import start as start_module
 from config_loader import ConfigError, generated_secret_path, load_settings
 
-_CONFIG_TEMPLATE_PATH = _HERE / "config" / "phantom.config.template.ini"
-_CONFIG_PATH = _HERE / "phantom.config.ini"
+_CONFIG_TEMPLATE_PATH = _HERE / "config" / "phantom_config.example.json"
+_CONFIG_PATH = _HERE / "phantom_config.json"
 _REPORT_PATH = _HERE / "INSTALLATION_REPORT.md"
 
 _OK, _INFO, _SKIPPED, _FAILED = "OK", "INFO", "SKIPPED", "FAILED"
@@ -81,6 +103,18 @@ class StepReport:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def step_verify_release_package() -> StepReport:
+    """If this function is even running, module import already found
+    phantom/ and mt5/ next to this script (see _find_repo_root above,
+    which exits before any of this if they're missing) -- this step
+    just makes that fact a visible, reported line instead of an
+    implicit assumption."""
+    return StepReport(
+        "Verify running from the full release package", _OK,
+        f"phantom/ and mt5/ found at {_REPO_ROOT} (installation root)",
+    )
 
 
 def step_create_configuration() -> StepReport:
@@ -344,6 +378,8 @@ def main() -> int:
         if step_report.detail:
             print(f"       {step_report.detail}")
         return step_report.outcome not in _NON_BLOCKING
+
+    run_step(step_verify_release_package())
 
     if run_step(step_create_configuration()):
         _write_report(steps, overall_ok=False)

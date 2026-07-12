@@ -19,7 +19,25 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_REPO_ROOT = _HERE.parent
+
+
+def _find_repo_root(here: Path) -> Path:
+    """Locates the installation root -- the folder containing both
+    phantom/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\Phantom\\deploy.py layout) or one level
+    below it (this repository's own deployment_windows/ subfolder, used
+    for development)."""
+    for candidate in (here, here.parent):
+        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the Phantom installation root (a folder containing "
+        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        "release package before running this script."
+    )
+
+
+_REPO_ROOT = _find_repo_root(_HERE)
 _MIN_PYTHON_VERSION = (3, 9)
 
 _REQUIRED_PHANTOM_PACKAGES = (
@@ -87,7 +105,11 @@ def step_install_requirements() -> str:
 def step_verify_folder_structure() -> str:
     required = [
         _REPO_ROOT / "phantom" / package for package in _REQUIRED_PHANTOM_PACKAGES
-    ] + [_REPO_ROOT / "mt5" / "PhantomBridgeEA.mq5"]
+    ] + [
+        _REPO_ROOT / "mt5" / "PhantomBridgeEA.mq5",
+        _REPO_ROOT / "mt5" / "PhantomBridgeEA.set",
+        _REPO_ROOT / "config" / "phantom_config.example.json",
+    ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise DeploymentError(
@@ -98,11 +120,11 @@ def step_verify_folder_structure() -> str:
 
 
 def step_validate_configuration() -> str:
-    config_path = _HERE / "phantom.config.ini"
+    config_path = _HERE / "phantom_config.json"
     if not config_path.exists():
         raise DeploymentError(
-            f"{config_path} not found. Copy config/phantom.config.template.ini "
-            "to phantom.config.ini and edit it before running deploy.py again."
+            f"{config_path} not found. Copy config/phantom_config.example.json "
+            "to phantom_config.json and edit it before running deploy.py again."
         )
     venv_python = _venv_python()
     check_script = (
@@ -118,19 +140,19 @@ def step_validate_configuration() -> str:
 
 def step_verify_write_permissions() -> str:
     venv_python = _venv_python()
-    config_path = _HERE / "phantom.config.ini"
+    config_path = _HERE / "phantom_config.json"
     check_script = (
         f"import sys; sys.path.insert(0, {str(_REPO_ROOT)!r}); sys.path.insert(0, '.'); "
         "from config_loader import load_settings; from pathlib import Path; "
         f"s = load_settings(Path({str(config_path)!r})); "
         "[(p.mkdir(parents=True, exist_ok=True), "
         "(p / '.deploy_write_probe').write_text('ok'), "
-        "(p / '.deploy_write_probe').unlink()) for p in (s.log_dir, s.state_dir)]"
+        "(p / '.deploy_write_probe').unlink()) for p in (s.log_dir, s.state_dir, s.data_dir)]"
     )
     result = subprocess.run([str(venv_python), "-c", check_script], capture_output=True, text=True, cwd=str(_HERE))
     if result.returncode != 0:
-        raise DeploymentError(f"log_dir/state_dir are not writable:\n{result.stderr.strip()}")
-    return "log_dir/state_dir writable"
+        raise DeploymentError(f"log_dir/state_dir/data_dir are not writable:\n{result.stderr.strip()}")
+    return "log_dir/state_dir/data_dir created and writable"
 
 
 def step_compileall() -> str:

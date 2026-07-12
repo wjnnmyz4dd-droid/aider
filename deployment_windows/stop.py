@@ -28,7 +28,26 @@ import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent))
+
+
+def _find_repo_root(here: Path) -> Path:
+    """Locates the installation root -- the folder containing both
+    phantom/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\Phantom\\stop.py layout) or one level
+    below it (this repository's own deployment_windows/ subfolder, used
+    for development)."""
+    for candidate in (here, here.parent):
+        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the Phantom installation root (a folder containing "
+        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        "release package before running this script."
+    )
+
+
+_REPO_ROOT = _find_repo_root(_HERE)
+sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
 from config_loader import ConfigError, load_settings
@@ -136,7 +155,7 @@ def run(config_path: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Stop the running Phantom deployment")
-    parser.add_argument("--config", default=str(_HERE / "phantom.config.ini"))
+    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
     args = parser.parse_args()
     return run(Path(args.config))
 

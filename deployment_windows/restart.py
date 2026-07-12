@@ -54,7 +54,7 @@ def run(config_path: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Restart the Phantom deployment")
-    parser.add_argument("--config", default=str(_HERE / "phantom.config.ini"))
+    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
     args = parser.parse_args()
     return run(Path(args.config))
 

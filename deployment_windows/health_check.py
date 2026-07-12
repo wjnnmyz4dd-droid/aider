@@ -5,9 +5,13 @@ start.py's module docstring and KNOWN_GAPS.md for what it cannot):
 Bridge reachability, real MT5 EA connectivity (via the running
 process's own BridgeEngine.is_connection_healthy, not just "is the
 port open"), heartbeat/reliability state, configuration load and
-profile validity, directory writability, and duplicate-process
-detection. Never claims the live trading cycle is running, because it
-isn't (no market-data ingestion component is wired in yet).
+profile validity, directory writability, duplicate-process detection,
+Bridge command-queue depth (against the real configured thresholds),
+the Bridge API key's environment-variable presence, and the one real
+news-trust signal that exists (news_feed_trusted). Never claims the
+live trading cycle or a Trading Economics/Forex Factory market-data
+feed is running, because neither is (no market-data ingestion or
+news-provider component is wired in yet -- see KNOWN_GAPS.md).
 
 Exit codes: 0 = HEALTHY, 1 = DEGRADED, 2 = FAILED.
 """
@@ -23,7 +27,26 @@ import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent))
+
+
+def _find_repo_root(here: Path) -> Path:
+    """Locates the installation root -- the folder containing both
+    phantom/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\Phantom\\health_check.py layout) or one
+    level below it (this repository's own deployment_windows/
+    subfolder, used for development)."""
+    for candidate in (here, here.parent):
+        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the Phantom installation root (a folder containing "
+        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        "release package before running this script."
+    )
+
+
+_REPO_ROOT = _find_repo_root(_HERE)
+sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
 from config_loader import ConfigError, load_settings
@@ -86,7 +109,23 @@ def run(config_path: Path) -> int:
         result = validate_profile(profile, StrategyEngineConfig(), settings.compliance_config)
         checks.append(("trading profile valid", result.valid, f"{profile.profile_id}: {result.issues if not result.valid else 'ok'}"))
 
-    for label, path in (("log_dir writable", settings.log_dir), ("state_dir writable", settings.state_dir)):
+    env_var_name = settings.api_key_env_var_name
+    if env_var_name:
+        env_var_present = bool(os.environ.get(env_var_name))
+        checks.append((
+            "API key environment variable present", env_var_present,
+            f"{env_var_name} {'is set' if env_var_present else 'is NOT set -- falling back to the generated secret file or inline config value, if any'}",
+        ))
+    else:
+        checks.append(("API key environment variable present", True, "bridge.api_key_env_var not configured -- using the generated secret file or an inline value instead"))
+
+    checks.append((
+        "news-feed trust state", True,
+        f"news_feed_trusted={settings.news_feed_trusted} "
+        f"({'MI Engine will score news normally' if settings.news_feed_trusted else 'MI Engine fails closed: blackout, score=0 -- this is a safe, deliberate operator choice, not a bug'})",
+    ))
+
+    for label, path in (("log_dir writable", settings.log_dir), ("state_dir writable", settings.state_dir), ("data_dir writable", settings.data_dir)):
         try:
             path.mkdir(parents=True, exist_ok=True)
             probe = path / ".health_check_write_probe"
@@ -131,22 +170,52 @@ def run(config_path: Path) -> int:
             mt5_connected = payload.get("mt5_connected", False)
             checks.append(("MT5 bridge connectivity (EA heartbeat)", mt5_connected, "" if mt5_connected else "no recent heartbeat from the MT5 EA -- attach/verify the EA in MT5"))
             cycle_loop_active = payload.get("cycle_loop_active", False)
+
+            queue_depth = payload.get("bridge_command_queue_depth")
+            if queue_depth is None:
+                checks.append(("queue health", False, "bridge_command_queue_depth missing from health.json"))
+            else:
+                degraded_at = settings.reliability_config.queue_degraded_depth
+                critical_at = settings.reliability_config.queue_critical_depth
+                queue_ok = queue_depth < degraded_at
+                checks.append((
+                    "queue health", queue_ok,
+                    f"depth={queue_depth} (degraded >= {degraded_at}, critical >= {critical_at})"
+                    if queue_ok else
+                    f"depth={queue_depth} has reached or exceeded the degraded threshold ({degraded_at})",
+                ))
         except (ValueError, KeyError, OSError) as exc:
             checks.append(("reliability monitor alive", False, f"health.json unreadable: {exc}"))
             checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "health.json unreadable"))
+            checks.append(("queue health", False, "health.json unreadable"))
     else:
         checks.append(("reliability monitor alive", False, "no health.json -- Phantom is not running"))
         checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "no health.json -- Phantom is not running"))
+        checks.append(("queue health", False, "no health.json -- Phantom is not running"))
 
-    # MT5 connectivity is informational at this stage of deployment --
-    # never itself downgrades HEALTHY->DEGRADED/FAILED, since no EA is
-    # expected to be attached during setup/first health check. It is
-    # reported so an operator can see it, not gated on.
-    informational_only = {"MT5 bridge connectivity (EA heartbeat)", "live trading cycle active"}
+    # MT5 connectivity, market-data readiness, and the trading-cycle
+    # loop are informational at this stage of deployment -- none of
+    # them downgrade HEALTHY->DEGRADED/FAILED, since no EA is expected
+    # to be attached during setup/first health check, and no market-
+    # data ingestion component is wired into this entry point at all
+    # (see KNOWN_GAPS.md). Reported so an operator can see them, not
+    # gated on. news-feed trust state and the API-key-env-var check are
+    # also informational -- they report real state, not pass/fail.
+    informational_only = {
+        "MT5 bridge connectivity (EA heartbeat)", "live trading cycle active",
+        "market-data readiness", "news-feed trust state",
+        "API key environment variable present",
+    }
 
     checks.append((
         "live trading cycle active", cycle_loop_active,
         "NOT ACTIVE by design -- no market-data ingestion component is wired in (see KNOWN_GAPS.md)" if not cycle_loop_active else "",
+    ))
+    checks.append((
+        "market-data readiness", False,
+        "NOT AVAILABLE -- phantom/market_data_ingestion/ (ADR-033 Part 1) exists but is "
+        "not wired into any live entry point; no OHLC bar feed is available to this "
+        "process (see KNOWN_GAPS.md section 1)",
     ))
 
     all_core_ok = all(ok for name, ok, _ in checks if name not in informational_only)
@@ -159,7 +228,7 @@ def run(config_path: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phantom deployment health check")
-    parser.add_argument("--config", default=str(_HERE / "phantom.config.ini"))
+    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
     args = parser.parse_args()
 
     exit_code = run(Path(args.config))

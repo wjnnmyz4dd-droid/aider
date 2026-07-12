@@ -62,7 +62,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent))  # repo root, so `import phantom` works
+
+
+def _find_repo_root(here: Path) -> Path:
+    """Locates the installation root -- the folder containing both
+    phantom/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\Phantom\\start.py layout) or one level
+    below it (this repository's own deployment_windows/ subfolder, used
+    for development)."""
+    for candidate in (here, here.parent):
+        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the Phantom installation root (a folder containing "
+        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        "release package before running this script."
+    )
+
+
+_REPO_ROOT = _find_repo_root(_HERE)
+sys.path.insert(0, str(_REPO_ROOT))  # so `import phantom` works
 sys.path.insert(0, str(_HERE))
 
 from phantom.bridge.command_queue import CommandQueue
@@ -187,7 +206,7 @@ def _bridge_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, bridge_engine: BridgeEngine, bridge_host: str, bridge_port: int) -> None:
+def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, bridge_engine: BridgeEngine, bridge_host: str, bridge_port: int, queue_depth: int) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
     payload = {
@@ -199,6 +218,7 @@ def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, brid
         ],
         "bridge_reachable": _bridge_reachable(bridge_host, bridge_port),
         "mt5_connected": bridge_engine.is_connection_healthy,
+        "bridge_command_queue_depth": queue_depth,
         "cycle_loop_active": False,
         "cycle_loop_inactive_reason": (
             "No market-data ingestion component is wired into this entry point -- "
@@ -209,7 +229,7 @@ def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, brid
     (state_dir / "health.json").write_text(json.dumps(payload, indent=2))
 
 
-def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine, state_dir: Path, bridge_host: str, bridge_port: int) -> None:
+def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine, command_queue: CommandQueue, state_dir: Path, bridge_host: str, bridge_port: int) -> None:
     logger = logging.getLogger("phantom.deploy.heartbeat")
     while not _shutdown_event.is_set():
         now = _utc_now()
@@ -222,8 +242,13 @@ def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine,
             reliability.report_resource_usage(now)
         except Exception:  # noqa: BLE001 -- resource sampling must never crash the loop
             logger.exception("resource usage sampling failed")
+        queue_depth = command_queue.pending_count()
         try:
-            _write_health_snapshot(state_dir, reliability, bridge_engine, bridge_host, bridge_port)
+            reliability.report_queue_depth("bridge_command_queue", queue_depth, now)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to report queue depth")
+        try:
+            _write_health_snapshot(state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth)
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
         _shutdown_event.wait(_HEARTBEAT_INTERVAL_SECONDS)
@@ -298,7 +323,7 @@ def run_foreground(config_path: Path) -> int:
 
     reliability = ReliabilityEngine(settings.reliability_config)
     heartbeat_thread = threading.Thread(
-        target=_heartbeat_loop, args=(reliability, bridge_engine, settings.state_dir, settings.bridge_host, settings.bridge_port),
+        target=_heartbeat_loop, args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, settings.bridge_port),
         name="phantom-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
@@ -405,7 +430,7 @@ def _run_health_check(config_path: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phantom live runtime launcher")
-    parser.add_argument("--config", default=str(_HERE / "phantom.config.ini"))
+    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
     parser.add_argument("--foreground", action="store_true", help="run as the actual long-lived process (used internally)")
     args = parser.parse_args()
 
