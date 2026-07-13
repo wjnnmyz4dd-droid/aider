@@ -1,18 +1,18 @@
-"""Phantom live runtime launcher (Python Deployment Manager).
+"""Titan Protocol live runtime launcher (Python Deployment Manager).
 
 HONESTY NOTE -- read before assuming this starts live trading:
 
 This script wires together every engine's REAL, existing, public
-constructor exactly as the phantom/ test suite and
+constructor exactly as the titan_protocol/ test suite and
 PHANTOM_MT5_DEPLOYMENT_AUDIT.md's own Runtime Startup Order describe --
 it introduces zero new trading logic, zero new engine behavior, and no
 architectural redesign. What it starts:
 
-  1. The Bridge HTTP service (phantom.bridge.server.serve) -- the real,
+  1. The Bridge HTTP service (titan_protocol.bridge.server.serve) -- the real,
      exported, public function the EA's WebRequest calls target.
   2. The five core trading engines (Evidence, Market Intelligence,
      Strategy, Risk, Compliance) and the Runtime Orchestrator wired to
-     them, per phantom/runtime/engine.py's real constructor signature.
+     them, per titan_protocol/runtime/engine.py's real constructor signature.
   3. The Reliability Engine, self-monitoring this process's own
      liveness, the Bridge's reachability, and -- via
      BridgeEngine.is_connection_healthy -- whether the MT5 EA has
@@ -27,7 +27,7 @@ that from MT5 or a market-data provider -- the Bridge's own protocol
 report/commands-poll) is entirely about EXECUTION, never market data.
 Building a live trading cycle loop would require a Market Data
 Ingestion component with its own Accepted ADR (see docs/adr/ADR-033 --
-`phantom/market_data_ingestion/` exists but is not yet wired into a
+`titan_protocol/market_data_ingestion/` exists but is not yet wired into a
 live entry point). This script reports its real status --
 **DEGRADED, never HEALTHY** -- both on-screen and in state/health.json,
 and never claims otherwise. See KNOWN_GAPS.md.
@@ -66,39 +66,39 @@ _HERE = Path(__file__).resolve().parent
 
 def _find_repo_root(here: Path) -> Path:
     """Locates the installation root -- the folder containing both
-    phantom/ and mt5/ -- whether this script lives directly inside it
-    (the shipped, flattened C:\\Phantom\\start.py layout) or one level
+    titan_protocol/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\TitanProtocol\\start.py layout) or one level
     below it (this repository's own deployment_windows/ subfolder, used
     for development)."""
     for candidate in (here, here.parent):
-        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+        if (candidate / "titan_protocol").is_dir() and (candidate / "mt5").is_dir():
             return candidate
     raise RuntimeError(
-        f"Could not locate the Phantom installation root (a folder containing "
-        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        f"Could not locate the Titan Protocol installation root (a folder containing "
+        f"both titan_protocol/ and mt5/) starting from {here} -- extract the full "
         "release package before running this script."
     )
 
 
 _REPO_ROOT = _find_repo_root(_HERE)
-sys.path.insert(0, str(_REPO_ROOT))  # so `import phantom` works
+sys.path.insert(0, str(_REPO_ROOT))  # so `import titan_protocol` works
 sys.path.insert(0, str(_HERE))
 
-from phantom.bridge.command_queue import CommandQueue
-from phantom.bridge.connection_health import ConnectionHealth
-from phantom.bridge.engine import BridgeEngine
-from phantom.bridge.server import serve as bridge_serve
-from phantom.compliance_engine.engine import ComplianceEngine
-from phantom.evidence_engine.config import EvidenceEngineConfig
-from phantom.evidence_engine.engine import EvidenceEngine
-from phantom.market_intelligence.engine import MarketIntelligenceEngine
-from phantom.reliability.engine import ReliabilityEngine
-from phantom.risk_engine.engine import RiskEngine
-from phantom.runtime.engine import RuntimeOrchestrator
-from phantom.runtime.validation import validate_profile
-from phantom.runtime import profiles as trading_profiles
-from phantom.strategy_engine.config import StrategyEngineConfig
-from phantom.strategy_engine.engine import StrategyEngine
+from titan_protocol.bridge.command_queue import CommandQueue
+from titan_protocol.bridge.connection_health import ConnectionHealth
+from titan_protocol.bridge.engine import BridgeEngine
+from titan_protocol.bridge.server import serve as bridge_serve
+from titan_protocol.compliance_engine.engine import ComplianceEngine
+from titan_protocol.evidence_engine.config import EvidenceEngineConfig
+from titan_protocol.evidence_engine.engine import EvidenceEngine
+from titan_protocol.market_intelligence.engine import MarketIntelligenceEngine
+from titan_protocol.reliability.engine import ReliabilityEngine
+from titan_protocol.risk_engine.engine import RiskEngine
+from titan_protocol.runtime.engine import RuntimeOrchestrator
+from titan_protocol.runtime.validation import validate_profile
+from titan_protocol.runtime import profiles as trading_profiles
+from titan_protocol.strategy_engine.config import StrategyEngineConfig
+from titan_protocol.strategy_engine.engine import StrategyEngine
 
 from config_loader import ConfigError, load_settings
 
@@ -128,10 +128,10 @@ def _check_running_under_venv() -> None:
     """Warn (never block) if a `.venv` exists next to this script but
     the currently running interpreter isn't it.
 
-    This used to fail closed, but Phantom's live runtime has zero
+    This used to fail closed, but Titan Protocol's live runtime has zero
     third-party dependencies (see requirements.txt) -- the venv adds no
     actual functional isolation today, so refusing to run under a
-    different interpreter that can equally well import `phantom/`
+    different interpreter that can equally well import `titan_protocol/`
     would only get in the way of the plain `python start.py` /
     `python stop.py` workflow install.py sets up. Prints a note and
     continues either way.
@@ -156,7 +156,7 @@ def _check_running_under_venv() -> None:
             f"NOTE: not running under the local virtual environment "
             f"(found .venv at {venv_python.parent.parent}, but the current "
             f"interpreter is {sys.executable}). Continuing anyway -- "
-            "Phantom's runtime has no third-party dependencies, so this makes "
+            "Titan Protocol's runtime has no third-party dependencies, so this makes "
             f"no functional difference. Use \"{venv_python}\" start.py instead "
             "if you ever do add a dependency that only lives in the venv.",
         )
@@ -175,7 +175,7 @@ def _setup_logging(log_dir: Path, level_name: str) -> None:
 
     timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
     file_handler = logging.handlers.RotatingFileHandler(
-        log_dir / f"phantom_{timestamp}.log", maxBytes=25 * 1024 * 1024, backupCount=10, encoding="utf-8",
+        log_dir / f"titan_protocol_{timestamp}.log", maxBytes=25 * 1024 * 1024, backupCount=10, encoding="utf-8",
     )
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
@@ -183,13 +183,13 @@ def _setup_logging(log_dir: Path, level_name: str) -> None:
 
 def _write_pid_file(state_dir: Path) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)
-    pid_file = state_dir / "phantom.pid"
+    pid_file = state_dir / "titan_protocol.pid"
     if pid_file.exists():
         try:
             existing_pid = int(pid_file.read_text().strip())
             os.kill(existing_pid, 0)  # raises OSError if no such process
             raise RuntimeError(
-                f"Phantom already appears to be running (pid {existing_pid} in {pid_file}). "
+                f"Titan Protocol already appears to be running (pid {existing_pid} in {pid_file}). "
                 "Refusing to start a second instance -- run stop.py first if that pid is stale."
             )
         except (ValueError, OSError):
@@ -230,7 +230,7 @@ def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, brid
 
 
 def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine, command_queue: CommandQueue, state_dir: Path, bridge_host: str, bridge_port: int) -> None:
-    logger = logging.getLogger("phantom.deploy.heartbeat")
+    logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
         now = _utc_now()
         for component in _RESTARTABLE_ENGINES:
@@ -264,7 +264,7 @@ def run_foreground(config_path: Path) -> int:
         return 2
 
     _setup_logging(settings.log_dir, settings.log_level)
-    logger = logging.getLogger("phantom.deploy")
+    logger = logging.getLogger("titan_protocol.deploy")
 
     try:
         pid_file = _write_pid_file(settings.state_dir)
@@ -272,7 +272,7 @@ def run_foreground(config_path: Path) -> int:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 2
 
-    logger.info("Phantom deployment layer starting (pid=%s, config=%s)", os.getpid(), config_path)
+    logger.info("Titan Protocol deployment layer starting (pid=%s, config=%s)", os.getpid(), config_path)
 
     strategy_config = StrategyEngineConfig()
     if settings.selected_profile == "custom":
@@ -280,7 +280,7 @@ def run_foreground(config_path: Path) -> int:
             "FAILED: selected_profile is 'custom' -- a custom TradingProfile "
             "cannot be built from the config file alone (it needs an explicit "
             "allowed_pairs/allowed_strategies list). Edit this script's "
-            "run_foreground() to call phantom.runtime.profiles.make_custom_profile(...) directly.",
+            "run_foreground() to call titan_protocol.runtime.profiles.make_custom_profile(...) directly.",
             file=sys.stderr,
         )
         return 2
@@ -301,7 +301,7 @@ def run_foreground(config_path: Path) -> int:
         logger.error("Bridge HTTP server failed to bind %s:%s -- %s", settings.bridge_host, settings.bridge_port, exc)
         print(f"FAILED: Bridge could not bind {settings.bridge_host}:{settings.bridge_port}: {exc}", file=sys.stderr)
         return 2
-    server_thread = threading.Thread(target=http_server.serve_forever, name="phantom-bridge-http", daemon=True)
+    server_thread = threading.Thread(target=http_server.serve_forever, name="titan_protocol-bridge-http", daemon=True)
     server_thread.start()
     logger.info("Bridge HTTP service listening on %s:%s", settings.bridge_host, settings.bridge_port)
 
@@ -324,7 +324,7 @@ def run_foreground(config_path: Path) -> int:
     reliability = ReliabilityEngine(settings.reliability_config)
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop, args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, settings.bridge_port),
-        name="phantom-reliability-heartbeat", daemon=True,
+        name="titan_protocol-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
 
@@ -336,7 +336,7 @@ def run_foreground(config_path: Path) -> int:
     signal.signal(signal.SIGTERM, _handle_shutdown)
 
     print("=" * 72)
-    print("PHANTOM DEPLOYMENT LAYER -- STATUS: DEGRADED")
+    print("TITAN_PROTOCOL DEPLOYMENT LAYER -- STATUS: DEGRADED")
     print(f"  Bridge HTTP service : LIVE on {settings.bridge_host}:{settings.bridge_port}")
     print(f"  Trading profile      : {profile.profile_id} (validated OK)")
     print("  5 core engines       : constructed OK")
@@ -359,13 +359,13 @@ def run_foreground(config_path: Path) -> int:
             pid_file.unlink()
         except OSError:
             pass
-        logger.info("Phantom deployment layer stopped cleanly")
+        logger.info("Titan Protocol deployment layer stopped cleanly")
 
     return 0
 
 
 def _existing_pid(state_dir: Path) -> "int | None":
-    pid_file = state_dir / "phantom.pid"
+    pid_file = state_dir / "titan_protocol.pid"
     if not pid_file.exists():
         return None
     try:
@@ -390,13 +390,13 @@ def launch_and_report(config_path: Path) -> int:
 
     existing_pid = _existing_pid(settings.state_dir)
     if existing_pid is not None:
-        print(f"Phantom already appears to be running (pid {existing_pid}).")
+        print(f"Titan Protocol already appears to be running (pid {existing_pid}).")
         print("Run health_check.py to check its status, or stop.py to stop it first.")
         return _run_health_check(config_path)
 
     python_exe = str(_venv_python()) if _venv_python().exists() else sys.executable
     creation_flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
-    print("Starting Phantom in a new background process...")
+    print("Starting Titan Protocol in a new background process...")
     subprocess.Popen(
         [python_exe, str(_HERE / "start.py"), "--foreground", "--config", str(config_path)],
         cwd=str(_HERE), creationflags=creation_flags,
@@ -410,7 +410,7 @@ def launch_and_report(config_path: Path) -> int:
 
     print()
     print("=" * 60)
-    print("Phantom health check")
+    print("Titan Protocol health check")
     print("=" * 60)
     return _run_health_check(config_path)
 
@@ -429,8 +429,8 @@ def _run_health_check(config_path: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phantom live runtime launcher")
-    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
+    parser = argparse.ArgumentParser(description="Titan Protocol live runtime launcher")
+    parser.add_argument("--config", default=str(_HERE / "titan_protocol_config.json"))
     parser.add_argument("--foreground", action="store_true", help="run as the actual long-lived process (used internally)")
     args = parser.parse_args()
 

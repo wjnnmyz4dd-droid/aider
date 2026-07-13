@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Software Architect (cross-cutting record of the entire pipeline —
 no single per-stage owner is appropriate, the same reasoning `TEAM.md`
@@ -55,7 +55,7 @@ it happen? Can every decision be reconstructed?"**
 
 **It never changes trading decisions.** Every object it collects is a
 read-only copy of something another stage already, immutably, decided or
-observed. Analytics is Phantom's permanent institutional memory — it
+observed. Analytics is Titan Protocol's permanent institutional memory — it
 owns history, not authority.
 
 ---
@@ -121,7 +121,7 @@ Analytics SHALL collect, as immutable, read-only copies:
 - Strategy version — **derived from the Strategy Registry (`ADR-003`
   §3), never a hand-maintained list.** This is a deliberate, explicit
   architectural requirement, not an implementation detail: `TEAM.md`'s
-  backlog already flags `phantom/analytics.py`'s hand-maintained
+  backlog already flags `titan_protocol/analytics.py`'s hand-maintained
   `STRATEGIES` tuple as a defect (it silently drifted from the real
   roster and crashed on an unlisted playbook) — this ADR closes that
   defect at the architecture level by requiring strategy attribution to
@@ -385,7 +385,7 @@ ADR-010 is acceptable only if it guarantees:
 
 # 15. Reference material — ideas only, not authority
 
-- `phantom/analytics.py`'s `StrategyPerformanceTracker` — the general
+- `titan_protocol/analytics.py`'s `StrategyPerformanceTracker` — the general
   idea of per-strategy win-rate/profit-factor tracking from real recorded
   results only (`"Stats are computed from REAL recorded trade results
   only — nothing is fabricated"`) is the direct idea behind §9's
@@ -394,7 +394,7 @@ ADR-010 is acceptable only if it guarantees:
   defect `TEAM.md`'s backlog flags as relevant to this ADR (§2) — and is
   not reused; strategy attribution here is required to derive from the
   Strategy Registry (`ADR-003` §3) instead.
-- `phantom/analytics.py`'s `StrategyPerformanceTracker._pnl` being an
+- `titan_protocol/analytics.py`'s `StrategyPerformanceTracker._pnl` being an
   unbounded list recomputed in full on every scrape — also a negative
   example (flagged in `TEAM.md`'s backlog as an observability-cost/memory
   concern), not reused; this ADR does not mandate a specific storage

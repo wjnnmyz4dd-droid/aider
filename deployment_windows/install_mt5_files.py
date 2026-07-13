@@ -1,10 +1,10 @@
-"""Phantom MT5 file installer (Python Deployment Manager).
+"""Titan Protocol MT5 file installer (Python Deployment Manager).
 
 Locates (or asks for) the active MT5 data folder, copies
-PhantomBridgeEA.mq5 into MQL5/Experts/Phantom/ and a *personalized*
-PhantomBridgeEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv
-filled in from phantom_config.json, when available) into
-MQL5/Presets/Phantom/, taking a timestamped backup of any file it
+TitanProtocolEA.mq5 into MQL5/Experts/TitanProtocol/ and a *personalized*
+TitanProtocolEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv
+filled in from titan_protocol_config.json, when available) into
+MQL5/Presets/TitanProtocol/, taking a timestamped backup of any file it
 would otherwise overwrite. Does NOT compile the .mq5 -- that step can
 only happen inside MetaEditor on the real Windows/MT5 installation;
 this script prints the exact steps to do it and does not claim to
@@ -31,16 +31,16 @@ _HERE = Path(__file__).resolve().parent
 
 def _find_repo_root(here: Path) -> Path:
     """Locates the installation root -- the folder containing both
-    phantom/ and mt5/ -- whether this script lives directly inside it
-    (the shipped, flattened C:\\Phantom\\install_mt5_files.py layout) or
+    titan_protocol/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\TitanProtocol\\install_mt5_files.py layout) or
     one level below it (this repository's own deployment_windows/
     subfolder, used for development)."""
     for candidate in (here, here.parent):
-        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+        if (candidate / "titan_protocol").is_dir() and (candidate / "mt5").is_dir():
             return candidate
     raise RuntimeError(
-        f"Could not locate the Phantom installation root (a folder containing "
-        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        f"Could not locate the Titan Protocol installation root (a folder containing "
+        f"both titan_protocol/ and mt5/) starting from {here} -- extract the full "
         "release package before running this script."
     )
 
@@ -48,7 +48,7 @@ def _find_repo_root(here: Path) -> Path:
 _REPO_ROOT = _find_repo_root(_HERE)
 _SOURCE_DIR = _REPO_ROOT / "mt5"
 
-# .set files are plain `key=value` text (see mt5/PhantomBridgeEA.set) --
+# .set files are plain `key=value` text (see mt5/TitanProtocolEA.set) --
 # these are the keys install.py's auto-generated config has real values
 # for. Every other line in the shipped template (comments, the less
 # safety-critical tuning knobs) passes through unchanged.
@@ -157,8 +157,8 @@ def run(explicit_mt5_dir: str = "", non_interactive: bool = False, personalize: 
     when the MT5 data folder couldn't be resolved non-interactively
     (not fatal -- the rest of installation still proceeds; see
     install.py, which treats 3 as "skipped, report it, keep going")."""
-    mq5_source = _SOURCE_DIR / "PhantomBridgeEA.mq5"
-    set_source = _SOURCE_DIR / "PhantomBridgeEA.set"
+    mq5_source = _SOURCE_DIR / "TitanProtocolEA.mq5"
+    set_source = _SOURCE_DIR / "TitanProtocolEA.set"
     if not mq5_source.exists():
         print(f"FAILED: {mq5_source} not found.", file=sys.stderr)
         return 2
@@ -170,25 +170,25 @@ def run(explicit_mt5_dir: str = "", non_interactive: bool = False, personalize: 
     if mt5_data_dir is None:
         return 3
 
-    experts_dir = mt5_data_dir / "MQL5" / "Experts" / "Phantom"
-    presets_dir = mt5_data_dir / "MQL5" / "Presets" / "Phantom"
+    experts_dir = mt5_data_dir / "MQL5" / "Experts" / "TitanProtocol"
+    presets_dir = mt5_data_dir / "MQL5" / "Presets" / "TitanProtocol"
     experts_dir.mkdir(parents=True, exist_ok=True)
     presets_dir.mkdir(parents=True, exist_ok=True)
 
-    mq5_dest = experts_dir / "PhantomBridgeEA.mq5"
+    mq5_dest = experts_dir / "TitanProtocolEA.mq5"
     _backup_if_exists(mq5_dest)
     shutil.copy2(mq5_source, mq5_dest)
-    print(f"Copied PhantomBridgeEA.mq5 to {experts_dir}")
+    print(f"Copied TitanProtocolEA.mq5 to {experts_dir}")
 
-    set_dest = presets_dir / "PhantomBridgeEA.set"
+    set_dest = presets_dir / "TitanProtocolEA.set"
     _backup_if_exists(set_dest)
     if personalize:
         _write_personalized_set(set_source, set_dest, personalize)
-        print(f"Wrote a personalized PhantomBridgeEA.set to {presets_dir} "
-              f"({', '.join(sorted(personalize))} filled in from phantom_config.json)")
+        print(f"Wrote a personalized TitanProtocolEA.set to {presets_dir} "
+              f"({', '.join(sorted(personalize))} filled in from titan_protocol_config.json)")
     else:
         shutil.copy2(set_source, set_dest)
-        print(f"Copied PhantomBridgeEA.set to {presets_dir} (unpersonalized -- "
+        print(f"Copied TitanProtocolEA.set to {presets_dir} (unpersonalized -- "
               "edit ApiKey/MagicNumber by hand before loading it in MT5)")
 
     print()
@@ -199,15 +199,15 @@ def run(explicit_mt5_dir: str = "", non_interactive: bool = False, personalize: 
     print()
     print("  1. Open MetaEditor (from MT5: Tools > MetaQuotes Language Editor,")
     print("     or press F4 inside MT5).")
-    print("  2. In MetaEditor's Navigator panel, expand Experts > Phantom")
-    print("     and double-click PhantomBridgeEA.mq5 to open it.")
+    print("  2. In MetaEditor's Navigator panel, expand Experts > TitanProtocol")
+    print("     and double-click TitanProtocolEA.mq5 to open it.")
     print("  3. Press F7 (or the Compile toolbar button) to compile.")
     print('  4. Confirm the status/output window shows "0 error(s)" -- a')
-    print("     PhantomBridgeEA.ex5 file will appear next to the .mq5 file")
+    print("     TitanProtocolEA.ex5 file will appear next to the .mq5 file")
     print(f"     in {experts_dir} only once compilation succeeds.")
     print("  5. Back in MT5, refresh the Navigator panel (right-click >")
     print("     Refresh) so the compiled EA appears under")
-    print("     Expert Advisors > Phantom > PhantomBridgeEA.")
+    print("     Expert Advisors > Titan Protocol > TitanProtocolEA.")
     print()
     print("This script has NOT compiled the EA and has NOT verified MT5")
     print("connectivity -- both require the real MetaEditor/MT5 GUI, which")
@@ -217,7 +217,7 @@ def run(explicit_mt5_dir: str = "", non_interactive: bool = False, personalize: 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Install Phantom's MT5 EA files")
+    parser = argparse.ArgumentParser(description="Install Titan Protocol's MT5 EA files")
     parser.add_argument("mt5_data_dir", nargs="?", default="", help="path to the MT5 data folder (auto-detected if omitted)")
     args = parser.parse_args()
     return run(args.mt5_data_dir)

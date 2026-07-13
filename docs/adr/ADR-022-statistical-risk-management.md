@@ -69,7 +69,7 @@ private-state rule), but `risk_engine` can never read `statistical_risk`.
 # 1. Mission
 
 **Statistical Risk Management answers exactly one question: "What does
-Phantom's own historical trade record say, statistically, about the risk
+Titan Protocol's own historical trade record say, statistically, about the risk
 of the current situation?"**
 
 **It never answers:** Should we trade? Should this trade's risk be
@@ -134,7 +134,7 @@ raise) `RiskDecision.approved_risk_percent` or any other stage's output.
    byte-identical `StatisticalRiskAssessment` output, verified by a
    dedicated replay-determinism test (mirrors every prior stage's own
    determinism test).
-7. **Historical Phantom data only — never fabricated.** Every input is a
+7. **Historical Titan Protocol data only — never fabricated.** Every input is a
    real, already-recorded `TradeProvenanceRecord` (via `AnalyticsEngine`),
    `NormalizedBar` (via `data_pipeline`), or `AccountState`/`OpenPosition`
    (via `risk_engine.models`, caller-supplied the same way `RiskEngine.decide()`

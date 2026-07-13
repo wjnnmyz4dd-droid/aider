@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Software Architect
 
@@ -35,7 +35,7 @@ been updated to reference it. Watchdog remains ADR-011.
 
 This ADR is the single source of truth for **every** external API, data
 feed, service, connector, and third-party dependency used anywhere in
-Phantom — not only market-data feeds. It exists because an institutional
+Titan Protocol — not only market-data feeds. It exists because an institutional
 trading system's reliability is bounded by the weakest external
 dependency it silently trusts. Two properties are non-negotiable:
 
@@ -111,7 +111,7 @@ stage. **Adapters translate only.**
 
 An adapter — the thin translation layer at a pipeline boundary (Market
 Data stage, MT5 Bridge, or Watchdog) that converts a vendor's
-request/response shape into Phantom's own internal data model — SHALL
+request/response shape into Titan Protocol's own internal data model — SHALL
 NEVER contain:
 
 | Forbidden content | Owned instead by |
@@ -219,7 +219,7 @@ fetch, cache, or validate raw feeds itself."
   Architect (feeds a compliance-relevant guard).
 - **Pipeline stages allowed:** Compliance Engine only. Scanner/Strategy
   Engine must never independently consume calendar data — one guard, one
-  owner, no duplicate news logic (Phantom Protocol rule 4).
+  owner, no duplicate news logic (Titan Protocol Protocol rule 4).
 - **Update frequency:** periodic refresh; calendar entries are published
   ahead of time, not tick-driven.
 - **Failure behavior:** fail-closed — missing or stale calendar data
@@ -254,7 +254,7 @@ fetch, cache, or validate raw feeds itself."
   `docs/research/VIBE-TRADING-EVALUATION.md`), not by this ADR's live
   pipeline requirements.
 - **Authentication:** its own isolated credentials, never shared with
-  Phantom's live-pipeline secrets.
+  Titan Protocol's live-pipeline secrets.
 - **Security considerations:** must run fully isolated per the Vibe-
   Trading entry below.
 - **Backup provider:** N/A.
@@ -263,7 +263,7 @@ fetch, cache, or validate raw feeds itself."
 
 ## Source Control — GitHub
 
-- **Purpose:** version control and code review for Phantom's source and
+- **Purpose:** version control and code review for Titan Protocol's source and
   documentation.
 - **Owner:** Software Architect.
 - **Pipeline stages allowed: none.** GitHub is development-time tooling
@@ -327,14 +327,14 @@ fetch, cache, or validate raw feeds itself."
   means a VIBE outage or compromise cannot reach the live pipeline.
 - **Retry / timeout policy:** N/A to the live pipeline.
 - **Authentication:** its own isolated credential set; never shares
-  Phantom's broker or database credentials.
+  Titan Protocol's broker or database credentials.
 - **Security considerations:** must run in a fully separate environment
   (machine/container/venv) with no shared filesystem and no network path
   to MT5, per the existing evaluation's finding that VIBE executes
   LLM-generated code locally — a real prompt-injection-adjacent risk if
   that isolation is ever relaxed.
 - **Backup provider:** N/A.
-- **Replaceability:** fully optional; Phantom's architecture (`ADR-001`
+- **Replaceability:** fully optional; Titan Protocol's architecture (`ADR-001`
   through `ADR-014`) does not require VIBE, or any research lab, to exist.
 
 ## Notifications — Telegram Bot API
@@ -378,7 +378,7 @@ fetch, cache, or validate raw feeds itself."
   pull-only, export-only, additive (mirrors the reference material's
   "additive; changes nothing" discipline).
 - **Update frequency:** scrape-interval driven, Prometheus-side
-  configuration, not a Phantom-side push.
+  configuration, not a Titan Protocol-side push.
 - **Failure behavior:** zero effect on trading if scraping fails or
   Prometheus is down; the exposed metrics endpoint must never hold a lock
   that could block trading logic.
@@ -446,7 +446,7 @@ fetch, cache, or validate raw feeds itself."
   prefer durable queuing over dropping records.
 - **Timeout policy:** bounded per-query timeout, sized empirically.
 - **Authentication:** local file permissions for SQLite; least-privilege
-  database role (read/write only to Phantom's own schema, no superuser)
+  database role (read/write only to Titan Protocol's own schema, no superuser)
   for PostgreSQL, via Secrets.
 - **Security considerations:** encryption at rest worth evaluating for
   PostgreSQL in production; SQLite file permissions restricted; no
@@ -504,7 +504,7 @@ fetch, cache, or validate raw feeds itself."
 - **No automatic parameter optimization** — consistent with the standing
   finding in `TEAM.md` §6 that no agent performs unsupervised parameter
   tuning, and the VIBE evaluation's explicit rejection of unsupervised
-  optimizers being wired into Phantom.
+  optimizers being wired into Titan Protocol.
 - **No social-media sentiment trading** — no Twitter/Reddit/similar
   sentiment feed as a trading input. This explicitly rules out anything
   resembling `phantom_institutional.py`'s reference-only "Sentiment
@@ -551,7 +551,7 @@ same table shape.
 - **Least privilege:** scoped API keys/roles wherever the vendor supports
   them (broker API scope, database role, bot-token chat scope).
 - **Rate limiting:** respected per-vendor (Telegram, any calendar API);
-  Phantom's own exposed endpoints (metrics) must not be a source of
+  Titan Protocol's own exposed endpoints (metrics) must not be a source of
   unbounded load either.
 - **Audit logging:** credential use and rotation events are logged
   (without logging the credential itself); ties into Watchdog's
@@ -596,7 +596,7 @@ same table shape.
 - **Timeout simulation** — verify bounded-timeout behavior under a
   simulated slow/hanging external call.
 - **API contract tests** — verify the adapter layer (§3.1) correctly
-  translates each vendor's actual response shape into Phantom's internal
+  translates each vendor's actual response shape into Titan Protocol's internal
   data model; contract tests catch a vendor's silent API change before it
   reaches the trading pipeline.
 - **Regression tests** — any change to an adapter must prove no change in
@@ -607,7 +607,7 @@ same table shape.
 
 # 12. Future Expansion — approval process for any new external dependency
 
-No new external dependency of any kind may be added to Phantom without
+No new external dependency of any kind may be added to Titan Protocol without
 **all four** of the following, in order:
 
 1. **Engineering Council review** — proposed in the same review pipeline

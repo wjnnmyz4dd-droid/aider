@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Test Results Analyzer (per the Gap Audit's own recommendation,
 `ARCHITECTURE-GAP-AUDIT-2026-07-04.md` §2.5/§3: "statistical/regression
@@ -196,7 +196,7 @@ permanent record of an evaluation, never a mutable working object.
 | **Validated** | Has passed replay-determinism and statistical validation (§8). | All of §8's applicable validations pass. | A `CertificationReport` may be produced. |
 | **Certified** | This agent's full evidentiary assessment is complete. | A complete `CertificationReport` and `PromotionRecommendation` exist. | Presentation to Human Review for a promotion decision — **still no live authority.** |
 | **Production Approved** | A human has explicitly approved promotion. | Human Review approval (`ADR-014` §7), **and** the normal `TEAM.md` engineering process (Minimal Change Engineer implements the new playbook per `ADR-003`, Code Reviewer reviews) — certification never substitutes for that process. | Live deployment, through the normal engineering pipeline — never performed by this agent. |
-| **Retired** | A previously Certified/Production-Approved item has been formally deprecated. | Human Review decision, mirroring `ADR-014` §9's new `Deprecated` ADR-status concept applied to a strategy/change rather than an ADR. | Nothing live; retained for historical/audit reference, never deleted (`CLAUDE.md` Phantom Protocol rule 2). |
+| **Retired** | A previously Certified/Production-Approved item has been formally deprecated. | Human Review decision, mirroring `ADR-014` §9's new `Deprecated` ADR-status concept applied to a strategy/change rather than an ADR. | Nothing live; retained for historical/audit reference, never deleted (`CLAUDE.md` Titan Protocol Protocol rule 2). |
 
 **No level, on its own, ever authorizes live trading.** Only "Production
 Approved," reached through Human Review **and** the normal engineering
@@ -395,7 +395,7 @@ ADR-018 is acceptable only if it guarantees:
 
 - **No legacy replay/certification engine exists anywhere in this
   repository** (verified: no backtesting, walk-forward, or certification
-  tooling in `phantom/` or `phantom_institutional.py` beyond ad hoc
+  tooling in `titan_protocol/` or `phantom_institutional.py` beyond ad hoc
   research-side scripts referenced in `docs/research/
   VIBE-TRADING-EVALUATION.md`). As with every infrastructure-layer ADR
   this session (`ADR-008`, `ADR-009`, `ADR-011`, `ADR-012`, `ADR-013`,

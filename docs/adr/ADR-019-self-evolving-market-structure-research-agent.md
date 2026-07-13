@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Security Architect (research-AI trust boundary is a design-time
 threat-modeling question first, per `.claude/agents/TEAM.md` §4 — same
@@ -36,7 +36,7 @@ patterns appear to have statistical edge?"**
 
 It does not answer:
 
-- Should Phantom trade now?
+- Should Titan Protocol trade now?
 - Should this live setup be approved?
 - Should risk be increased?
 - Should code be changed automatically?
@@ -44,7 +44,7 @@ It does not answer:
 It is a **hypothesis generator for the research lab**, nothing more. Every
 hypothesis it produces is exactly that — a hypothesis, requiring the full
 governance chain in §6 before it can influence anything real. It has the
-same relationship to Phantom's live pipeline that Vibe-Trading has
+same relationship to Titan Protocol's live pipeline that Vibe-Trading has
 (`ADR-015` §6): none, structurally, not merely by policy.
 
 ---
@@ -75,7 +75,7 @@ same relationship to Phantom's live pipeline that Vibe-Trading has
   research here, versus news/macro advisory context there), governed by
   the same philosophy. Per the gap audit's recommendation
   (`ARCHITECTURE-GAP-AUDIT-2026-07-04.md` §2.7, §4), `ADR-015` §7,
-  `ADR-016`, and this ADR together constitute Phantom's complete **AI
+  `ADR-016`, and this ADR together constitute Titan Protocol's complete **AI
   Research Governance boundary** — a cross-reference note should tie all
   three together explicitly.
 - **Gap audit dependencies:** this agent's mandate to study "trade
@@ -137,7 +137,7 @@ live Scanner output.
   validation itself.
 - **`HumanReviewRequest`** — the terminal output type. Every hypothesis,
   regardless of how thoroughly validated, ultimately produces a
-  `HumanReviewRequest` before anything can move toward Phantom (§6).
+  `HumanReviewRequest` before anything can move toward Titan Protocol (§6).
 
 **Forbidden:**
 
@@ -209,14 +209,14 @@ The agent has:
 
 **It may only write research reports** — and, per §7, its own
 research-process state (hypothesis backlog, pattern taxonomy, experiment
-queue, report templates). It has zero write access to the Phantom
+queue, report templates). It has zero write access to the Titan Protocol
 repository's production code, zero write access to any ADR, and zero
 write access to configuration governing the live pipeline.
 
 Additionally, mirroring `ADR-016` §8:
 
 - **Dedicated, isolated credentials** for whatever LLM/data API powers
-  it — never shared with Phantom's live-pipeline secrets (`ADR-015` §6,
+  it — never shared with Titan Protocol's live-pipeline secrets (`ADR-015` §6,
   Secrets).
 - **Network isolation** from MT5 Bridge and any broker-facing component.
 - **Prompt-injection / data-integrity awareness** — this agent processes
@@ -247,7 +247,7 @@ pipeline itself.
 
 **May never update:**
 
-- Phantom production code.
+- Titan Protocol production code.
 - Accepted ADRs.
 - Risk rules.
 - Compliance rules.
@@ -299,7 +299,7 @@ process, even in a component this constrained.
 - This agent never approves, blocks, scores, sizes, or executes a trade.
 - This agent has zero position in the `ADR-001` pipeline — no live
   pipeline access under any circumstance.
-- This agent never writes to Phantom's production code or any ADR
+- This agent never writes to Titan Protocol's production code or any ADR
   document.
 - No hypothesis is ever automatically promoted; every promotion requires
   the complete §5 chain ending in human-approved-engineer implementation.

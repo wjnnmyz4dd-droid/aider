@@ -1,4 +1,4 @@
-# Phantom Installation Report
+# Titan Protocol Installation Report
 
 **This is a template, not a real report.** `install.py` generates the real
 `INSTALLATION_REPORT.md` (same folder) after it actually runs, with every
@@ -12,8 +12,8 @@ Overall result: `SUCCESS` | `INCOMPLETE -- see FAILED step(s) below`
 
 | Step | Outcome | Detail |
 |---|---|---|
-| Verify running from the full release package | OK / FAILED | Confirms `phantom/` and `mt5/` sit next to `install.py` |
-| Create configuration | OK / FAILED | Copies `config/phantom_config.example.json` to `phantom_config.json` if missing |
+| Verify running from the full release package | OK / FAILED | Confirms `titan_protocol/` and `mt5/` sit next to `install.py` |
+| Create configuration | OK / FAILED | Copies `config/titan_protocol_config.example.json` to `titan_protocol_config.json` if missing |
 | Generate Bridge API key | OK / FAILED | Generates and stores a local shared secret if one doesn't already exist |
 | Run deploy.py (venv, dependencies, folders, compile, import smoke test) | OK / FAILED | Runs deploy.py's own 9-step sequence |
 | Copy + personalize MT5 EA files | OK / SKIPPED / FAILED | SKIPPED is not fatal -- see the detail column for what to do manually |
@@ -22,7 +22,7 @@ Overall result: `SUCCESS` | `INCOMPLETE -- see FAILED step(s) below`
 | Verify Reliability | OK / FAILED | Actually calls ReliabilityEngine.evaluate_health() |
 | Verify news providers (Trading Economics primary / Forex Factory backup) | INFO | Always informational -- reports that this component does not exist yet (see KNOWN_GAPS.md) |
 | Create desktop shortcuts | OK / SKIPPED / FAILED | SKIPPED (not a failure) on anything other than real Windows |
-| Launch Phantom | OK / FAILED | Starts Phantom the same way `python start.py` does |
+| Launch Titan Protocol | OK / FAILED | Starts Titan Protocol the same way `python start.py` does |
 
 ## What OK / INFO / SKIPPED / FAILED mean
 
@@ -37,10 +37,10 @@ Overall result: `SUCCESS` | `INCOMPLETE -- see FAILED step(s) below`
 ## Next steps
 
 1. Open MT5.
-2. Compile PhantomBridgeEA.mq5 in MetaEditor (F4 in MT5, then F7) -- this
+2. Compile TitanProtocolEA.mq5 in MetaEditor (F4 in MT5, then F7) -- this
    installer cannot do this for you; it requires the real MetaEditor GUI.
-3. Attach PhantomBridgeEA to a demo chart, and click Load in its settings
-   dialog to load the personalized PhantomBridgeEA.set (already filled in
+3. Attach TitanProtocolEA to a demo chart, and click Load in its settings
+   dialog to load the personalized TitanProtocolEA.set (already filled in
    with the generated API key and matching magic number).
 4. Run `python health_check.py` to confirm `[PASS] MT5 bridge connectivity
    (EA heartbeat)` once the EA is attached and running.

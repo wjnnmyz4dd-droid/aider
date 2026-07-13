@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Software Architect (per the reference material's precedent —
 `.claude/agents/TEAM.md`'s "Scorer" row is Software-Architect-accountable
@@ -466,7 +466,7 @@ ADR-004 is acceptable only if it guarantees:
 
 Studied for ideas only, per `ADR-001`; neither is authoritative:
 
-- `phantom/scorer.py` — the 18-component weighted-scoring shape, the
+- `titan_protocol/scorer.py` — the 18-component weighted-scoring shape, the
   NEUTRAL cap concept, and the "Trade Thesis Summary" (informational,
   never scored) are useful ideas for §5's score-explanation/confidence-
   rationale design. **Explicitly not carried forward:** the reference

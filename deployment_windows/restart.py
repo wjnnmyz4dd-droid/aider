@@ -1,4 +1,4 @@
-"""Phantom restart script (Python Deployment Manager).
+"""Titan Protocol restart script (Python Deployment Manager).
 
 Calls stop.py, confirms shutdown, calls start.py, verifies health.
 Contains no logic of its own beyond sequencing those two approved
@@ -21,7 +21,7 @@ import start as start_module
 
 def run(config_path: Path) -> int:
     print("=" * 60)
-    print("Phantom restart: step 1/3 -- stop")
+    print("Titan Protocol restart: step 1/3 -- stop")
     print("=" * 60)
     stop_exit = stop_module.run(config_path)
     if stop_exit != 0:
@@ -35,26 +35,26 @@ def run(config_path: Path) -> int:
         settings = load_settings(config_path)
     except Exception:  # noqa: BLE001 -- stop already validated config; this is just for the pid check below
         settings = None
-    if settings is not None and (settings.state_dir / "phantom.pid").exists():
-        print("FAILED: phantom.pid still exists after stop reported success. Refusing to start a new instance.", file=sys.stderr)
+    if settings is not None and (settings.state_dir / "titan_protocol.pid").exists():
+        print("FAILED: titan_protocol.pid still exists after stop reported success. Refusing to start a new instance.", file=sys.stderr)
         return 1
     print("Shutdown confirmed.")
 
     print("=" * 60)
-    print("Phantom restart: step 2/3 -- start")
+    print("Titan Protocol restart: step 2/3 -- start")
     print("=" * 60)
     start_exit = start_module.launch_and_report(config_path)
 
     print("=" * 60)
-    print("Phantom restart: step 3/3 -- health verification")
+    print("Titan Protocol restart: step 3/3 -- health verification")
     print("=" * 60)
     print("start.py's own health check already ran above; its exit code is this script's exit code.")
     return start_exit
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Restart the Phantom deployment")
-    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
+    parser = argparse.ArgumentParser(description="Restart the Titan Protocol deployment")
+    parser.add_argument("--config", default=str(_HERE / "titan_protocol_config.json"))
     args = parser.parse_args()
     return run(Path(args.config))
 

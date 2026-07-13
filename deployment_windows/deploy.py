@@ -1,4 +1,4 @@
-"""Phantom deployment/setup script (Python Deployment Manager).
+"""Titan Protocol deployment/setup script (Python Deployment Manager).
 
 Verifies Python, creates the local virtual environment, installs
 dependencies, verifies folders/configuration/write-access, compiles
@@ -7,7 +7,7 @@ touches engine logic. Fails closed: stops at the first failed
 prerequisite and exits non-zero; nothing after a failure runs.
 
 Uses only paths relative to this script's own location (`_HERE`), so
-Phantom can be installed and run from any folder.
+Titan Protocol can be installed and run from any folder.
 """
 
 from __future__ import annotations
@@ -23,16 +23,16 @@ _HERE = Path(__file__).resolve().parent
 
 def _find_repo_root(here: Path) -> Path:
     """Locates the installation root -- the folder containing both
-    phantom/ and mt5/ -- whether this script lives directly inside it
-    (the shipped, flattened C:\\Phantom\\deploy.py layout) or one level
+    titan_protocol/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\TitanProtocol\\deploy.py layout) or one level
     below it (this repository's own deployment_windows/ subfolder, used
     for development)."""
     for candidate in (here, here.parent):
-        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+        if (candidate / "titan_protocol").is_dir() and (candidate / "mt5").is_dir():
             return candidate
     raise RuntimeError(
-        f"Could not locate the Phantom installation root (a folder containing "
-        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        f"Could not locate the Titan Protocol installation root (a folder containing "
+        f"both titan_protocol/ and mt5/) starting from {here} -- extract the full "
         "release package before running this script."
     )
 
@@ -40,7 +40,7 @@ def _find_repo_root(here: Path) -> Path:
 _REPO_ROOT = _find_repo_root(_HERE)
 _MIN_PYTHON_VERSION = (3, 9)
 
-_REQUIRED_PHANTOM_PACKAGES = (
+_REQUIRED_TITAN_PROTOCOL_PACKAGES = (
     "bridge", "evidence_engine", "market_intelligence", "strategy_engine",
     "risk_engine", "compliance_engine", "runtime", "reliability",
 )
@@ -99,32 +99,32 @@ def step_install_requirements() -> str:
     result = subprocess.run([str(venv_python), "-m", "pip", "install", "-r", str(requirements_path)], capture_output=True, text=True)
     if result.returncode != 0:
         raise DeploymentError(f"dependency installation failed: {result.stderr.strip()}")
-    return "Dependencies installed (Phantom's live runtime is standard-library-only)"
+    return "Dependencies installed (Titan Protocol's live runtime is standard-library-only)"
 
 
 def step_verify_folder_structure() -> str:
     required = [
-        _REPO_ROOT / "phantom" / package for package in _REQUIRED_PHANTOM_PACKAGES
+        _REPO_ROOT / "titan_protocol" / package for package in _REQUIRED_TITAN_PROTOCOL_PACKAGES
     ] + [
-        _REPO_ROOT / "mt5" / "PhantomBridgeEA.mq5",
-        _REPO_ROOT / "mt5" / "PhantomBridgeEA.set",
-        _REPO_ROOT / "config" / "phantom_config.example.json",
+        _REPO_ROOT / "mt5" / "TitanProtocolEA.mq5",
+        _REPO_ROOT / "mt5" / "TitanProtocolEA.set",
+        _REPO_ROOT / "config" / "titan_protocol_config.example.json",
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise DeploymentError(
             "required file(s)/folder(s) not found:\n  " + "\n  ".join(missing) +
-            "\nExtract the full deployment package so phantom/ and mt5/ sit alongside deployment_windows/."
+            "\nExtract the full deployment package so titan_protocol/ and mt5/ sit alongside deployment_windows/."
         )
     return f"All {len(required)} required runtime paths present"
 
 
 def step_validate_configuration() -> str:
-    config_path = _HERE / "phantom_config.json"
+    config_path = _HERE / "titan_protocol_config.json"
     if not config_path.exists():
         raise DeploymentError(
-            f"{config_path} not found. Copy config/phantom_config.example.json "
-            "to phantom_config.json and edit it before running deploy.py again."
+            f"{config_path} not found. Copy config/titan_protocol_config.example.json "
+            "to titan_protocol_config.json and edit it before running deploy.py again."
         )
     venv_python = _venv_python()
     check_script = (
@@ -140,7 +140,7 @@ def step_validate_configuration() -> str:
 
 def step_verify_write_permissions() -> str:
     venv_python = _venv_python()
-    config_path = _HERE / "phantom_config.json"
+    config_path = _HERE / "titan_protocol_config.json"
     check_script = (
         f"import sys; sys.path.insert(0, {str(_REPO_ROOT)!r}); sys.path.insert(0, '.'); "
         "from config_loader import load_settings; from pathlib import Path; "
@@ -158,22 +158,22 @@ def step_verify_write_permissions() -> str:
 def step_compileall() -> str:
     venv_python = _venv_python()
     result = subprocess.run(
-        [str(venv_python), "-m", "compileall", "-q", str(_REPO_ROOT / "phantom"), str(_HERE)],
+        [str(venv_python), "-m", "compileall", "-q", str(_REPO_ROOT / "titan_protocol"), str(_HERE)],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise DeploymentError(f"compileall reported syntax errors:\n{result.stdout.strip()}\n{result.stderr.strip()}")
-    return "compileall OK (phantom/ + deployment_windows/)"
+    return "compileall OK (titan_protocol/ + deployment_windows/)"
 
 
 def step_import_smoke_test() -> str:
     venv_python = _venv_python()
-    imports = "; ".join(f"from phantom.{pkg} import engine as _{pkg}_engine" for pkg in _REQUIRED_PHANTOM_PACKAGES)
+    imports = "; ".join(f"from titan_protocol.{pkg} import engine as _{pkg}_engine" for pkg in _REQUIRED_TITAN_PROTOCOL_PACKAGES)
     check_script = f"import sys; sys.path.insert(0, {str(_REPO_ROOT)!r}); {imports}; print('ok')"
     result = subprocess.run([str(venv_python), "-c", check_script], capture_output=True, text=True)
     if result.returncode != 0 or "ok" not in result.stdout:
         raise DeploymentError(f"import smoke test failed:\n{result.stderr.strip()}")
-    return f"All {len(_REQUIRED_PHANTOM_PACKAGES)} required packages import cleanly"
+    return f"All {len(_REQUIRED_TITAN_PROTOCOL_PACKAGES)} required packages import cleanly"
 
 
 _STEPS = [
@@ -191,7 +191,7 @@ _STEPS = [
 
 def main() -> int:
     print("=" * 60)
-    print("Phantom Deployment Manager -- deploy.py")
+    print("Titan Protocol Deployment Manager -- deploy.py")
     print("=" * 60)
 
     results = []

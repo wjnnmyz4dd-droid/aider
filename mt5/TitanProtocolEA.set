@@ -1,0 +1,19 @@
+; TitanProtocolEA.set
+; Default input parameter template for mt5/TitanProtocolEA.mq5 (Phase 1).
+;
+; This is a transport + execution bridge only -- it never generates,
+; scores, or sizes trades. Replace ApiKey before attaching to any
+; account; an empty key causes OnInit() to fail deliberately.
+
+BackendUrl=http://127.0.0.1:8787
+ApiKey=
+HeartbeatIntervalSeconds=5
+AllowedSymbolsCsv=
+MagicNumber=20260709
+MaxSlippagePoints=20
+FailClosedTimeoutSeconds=30
+EmergencyDisable=false
+MaxRetries=3
+RetryDelayMs=250
+MaxRequoteRetries=2
+RequoteRetryDelayMs=100

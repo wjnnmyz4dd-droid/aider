@@ -1,4 +1,4 @@
-"""Phantom deployment health check.
+"""Titan Protocol deployment health check.
 
 Checks exactly what this deployment layer can honestly check (see
 start.py's module docstring and KNOWN_GAPS.md for what it cannot):
@@ -31,16 +31,16 @@ _HERE = Path(__file__).resolve().parent
 
 def _find_repo_root(here: Path) -> Path:
     """Locates the installation root -- the folder containing both
-    phantom/ and mt5/ -- whether this script lives directly inside it
-    (the shipped, flattened C:\\Phantom\\health_check.py layout) or one
+    titan_protocol/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\TitanProtocol\\health_check.py layout) or one
     level below it (this repository's own deployment_windows/
     subfolder, used for development)."""
     for candidate in (here, here.parent):
-        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+        if (candidate / "titan_protocol").is_dir() and (candidate / "mt5").is_dir():
             return candidate
     raise RuntimeError(
-        f"Could not locate the Phantom installation root (a folder containing "
-        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        f"Could not locate the Titan Protocol installation root (a folder containing "
+        f"both titan_protocol/ and mt5/) starting from {here} -- extract the full "
         "release package before running this script."
     )
 
@@ -50,9 +50,9 @@ sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
 from config_loader import ConfigError, load_settings
-from phantom.runtime.validation import validate_profile
-from phantom.runtime import profiles as trading_profiles
-from phantom.strategy_engine.config import StrategyEngineConfig
+from titan_protocol.runtime.validation import validate_profile
+from titan_protocol.runtime import profiles as trading_profiles
+from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
 _PROFILE_FACTORIES = {
     "london_conservative": trading_profiles.make_london_conservative_profile,
@@ -141,17 +141,17 @@ def run(config_path: Path) -> int:
     except OSError as exc:
         checks.append(("bridge reachable", False, f"{settings.bridge_host}:{settings.bridge_port}: {exc}"))
 
-    pid_file = settings.state_dir / "phantom.pid"
+    pid_file = settings.state_dir / "titan_protocol.pid"
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
             alive = _is_pid_alive(pid)
-            checks.append(("no duplicate Phantom processes", True, f"single recorded pid {pid}, alive={alive}"))
+            checks.append(("no duplicate Titan Protocol processes", True, f"single recorded pid {pid}, alive={alive}"))
             checks.append(("runtime process alive", alive, f"pid {pid}"))
         except ValueError:
-            checks.append(("no duplicate Phantom processes", False, f"unreadable pid file {pid_file}"))
+            checks.append(("no duplicate Titan Protocol processes", False, f"unreadable pid file {pid_file}"))
     else:
-        checks.append(("runtime process alive", False, "no pid file -- Phantom is not running"))
+        checks.append(("runtime process alive", False, "no pid file -- Titan Protocol is not running"))
 
     cycle_loop_active = False
     health_json = settings.state_dir / "health.json"
@@ -189,9 +189,9 @@ def run(config_path: Path) -> int:
             checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "health.json unreadable"))
             checks.append(("queue health", False, "health.json unreadable"))
     else:
-        checks.append(("reliability monitor alive", False, "no health.json -- Phantom is not running"))
-        checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "no health.json -- Phantom is not running"))
-        checks.append(("queue health", False, "no health.json -- Phantom is not running"))
+        checks.append(("reliability monitor alive", False, "no health.json -- Titan Protocol is not running"))
+        checks.append(("MT5 bridge connectivity (EA heartbeat)", False, "no health.json -- Titan Protocol is not running"))
+        checks.append(("queue health", False, "no health.json -- Titan Protocol is not running"))
 
     # MT5 connectivity, market-data readiness, and the trading-cycle
     # loop are informational at this stage of deployment -- none of
@@ -213,7 +213,7 @@ def run(config_path: Path) -> int:
     ))
     checks.append((
         "market-data readiness", False,
-        "NOT AVAILABLE -- phantom/market_data_ingestion/ (ADR-033 Part 1) exists but is "
+        "NOT AVAILABLE -- titan_protocol/market_data_ingestion/ (ADR-033 Part 1) exists but is "
         "not wired into any live entry point; no OHLC bar feed is available to this "
         "process (see KNOWN_GAPS.md section 1)",
     ))
@@ -227,8 +227,8 @@ def run(config_path: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phantom deployment health check")
-    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
+    parser = argparse.ArgumentParser(description="Titan Protocol deployment health check")
+    parser.add_argument("--config", default=str(_HERE / "titan_protocol_config.json"))
     args = parser.parse_args()
 
     exit_code = run(Path(args.config))

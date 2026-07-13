@@ -1,4 +1,4 @@
-"""Loads phantom_config.json and maps its values onto the real,
+"""Loads titan_protocol_config.json and maps its values onto the real,
 already-existing, frozen engine config dataclasses (BridgeConfig,
 RuntimeConfig, RiskEngineConfig, ComplianceEngineConfig,
 MarketIntelligenceConfig, ReliabilityConfig) plus this deployment
@@ -8,7 +8,7 @@ This module contains zero trading logic and zero new engine
 behavior -- it only parses a JSON file and calls existing public
 dataclass constructors with the values found. Every field name below
 was verified against the real config.py it targets (deployment_windows/
-config/phantom_config.example.json documents the same trace).
+config/titan_protocol_config.example.json documents the same trace).
 
 Secrets are never read from the config file directly -- the config
 file names an environment variable, and the real value is read from
@@ -25,12 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from phantom.bridge.config import BridgeConfig
-from phantom.compliance_engine.config import ComplianceEngineConfig
-from phantom.market_intelligence.config import MarketIntelligenceConfig
-from phantom.risk_engine.config import RiskEngineConfig
-from phantom.reliability.config import ReliabilityConfig
-from phantom.runtime.config import RuntimeConfig
+from titan_protocol.bridge.config import BridgeConfig
+from titan_protocol.compliance_engine.config import ComplianceEngineConfig
+from titan_protocol.market_intelligence.config import MarketIntelligenceConfig
+from titan_protocol.risk_engine.config import RiskEngineConfig
+from titan_protocol.reliability.config import ReliabilityConfig
+from titan_protocol.runtime.config import RuntimeConfig
 
 _VALID_PROFILES = (
     "london_conservative", "london_aggressive",
@@ -49,7 +49,7 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class NewsProviderSettings:
-    """Reserved for `phantom/news_ingestion/` (ADR-033 Part 2, not yet
+    """Reserved for `titan_protocol/news_ingestion/` (ADR-033 Part 2, not yet
     implemented in this repository). Parsed and validated here so the
     config file format is ready for it, but nothing in this deployment
     layer or any frozen engine consumes these values yet -- Market
@@ -130,8 +130,8 @@ GENERATED_SECRET_FILENAME = ".bridge_api_key.secret"
 
 def generated_secret_path(config_path: Path) -> Path:
     """Where install.py writes an auto-generated Bridge API key, next to
-    phantom_config.json itself. Gitignored -- never committed. This is
-    a locally-generated shared secret between this Phantom instance and
+    titan_protocol_config.json itself. Gitignored -- never committed. This is
+    a locally-generated shared secret between this Titan Protocol instance and
     the one EA it talks to (not a third-party credential), so
     generating and storing it locally without user interaction is
     appropriate -- unlike a real external API key, there is nothing to
@@ -181,14 +181,14 @@ def _resolve_secret(bridge_section: Dict[str, Any], env_var_key: str, inline_key
             f"bridge.{env_var_key} names environment variable {env_var_name!r}, "
             f"but it is not set, and no generated secret file was found at "
             f"{generated_secret_path(config_path)}. Set the environment variable, "
-            f"or re-run install.py, before starting Phantom."
+            f"or re-run install.py, before starting Titan Protocol."
         )
 
     inline_value = _get_str(bridge_section, inline_key, "").strip()
     if inline_value and inline_value != "REPLACE_WITH_YOUR_BRIDGE_API_KEY":
         import logging
 
-        logging.getLogger("phantom.deploy.config").warning(
+        logging.getLogger("titan_protocol.deploy.config").warning(
             "%s is set inline in the config file (via bridge.%s), not via an "
             "environment variable -- fine for local testing, not recommended "
             "for a real deployment.", secret_label, inline_key,
@@ -206,8 +206,8 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     if not config_path.exists():
         raise ConfigError(
             f"configuration file not found: {config_path}\n"
-            "Copy config/phantom_config.example.json to phantom_config.json "
-            "(same folder as this script) and edit it before starting Phantom, "
+            "Copy config/titan_protocol_config.example.json to titan_protocol_config.json "
+            "(same folder as this script) and edit it before starting Titan Protocol, "
             "or run install.py, which does this for you."
         )
 
@@ -295,7 +295,7 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
 
     news_providers_section = _section(data, "news_providers")
     news_provider_settings = NewsProviderSettings(
-        trading_economics_api_key_env_var=_get_str(news_providers_section, "trading_economics_api_key_env_var", "PHANTOM_TRADING_ECONOMICS_API_KEY"),
+        trading_economics_api_key_env_var=_get_str(news_providers_section, "trading_economics_api_key_env_var", "TITAN_PROTOCOL_TRADING_ECONOMICS_API_KEY"),
         trading_economics_base_url=_get_str(news_providers_section, "trading_economics_base_url", "https://api.tradingeconomics.com"),
         forex_factory_base_url=_get_str(news_providers_section, "forex_factory_base_url", ""),
     )
@@ -314,7 +314,7 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         queue_critical_depth=_get_int(reliability_section, "queue_critical_depth", 500),
     )
 
-    # Relative to the config file's own folder by default -- so Phantom
+    # Relative to the config file's own folder by default -- so Titan Protocol
     # can be installed anywhere and still find its own logs/state/data
     # without an absolute, install-location-specific path baked in.
     logging_section = _section(data, "logging")

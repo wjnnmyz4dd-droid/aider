@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` §5
 RACI, Dashboard row; also already named in `ADR-015`'s Grafana section
@@ -70,7 +70,7 @@ Prometheus/Analytics → Dashboard.
 # 1. Mission
 
 **The Dashboard answers exactly one question: "What is the current state
-of Phantom?"**
+of Titan Protocol?"**
 
 **It never answers:** Should we trade? Should we modify risk? Should we
 execute? Should we restart services? Those are, respectively, the

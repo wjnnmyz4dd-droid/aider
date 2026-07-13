@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-11
 
-Accepted By: Software Architect / Phantom Engineering Council (full
+Accepted By: Software Architect / Titan Protocol Engineering Council (full
 spec supplied in one message, per the `ADR-029`/`ADR-030`/`ADR-031`/
 `ADR-032` "complete spec accepted in one pass" precedent).
 
@@ -43,19 +43,19 @@ document (§11) via `git diff --stat`, not merely asserted.
 Both new packages are built to be consumed by, not merged into, the
 frozen pipeline:
 
-- **`phantom/market_data_ingestion/`** owns transport, validation,
+- **`titan_protocol/market_data_ingestion/`** owns transport, validation,
   normalization, ordering, freshness, deduplication, and warmup
   tracking for OHLCV bars (and, where genuinely required, ticks). Its
-  only output relevant to Evidence Engine is `phantom.evidence_engine.
+  only output relevant to Evidence Engine is `titan_protocol.evidence_engine.
   models.Bar` — the exact, unmodified, already-existing type Evidence
   Engine's `evaluate()`/`evaluate_snapshot()` already accept. Evidence
   Engine remains the only authority that interprets market data (ADR-
   024 Hard Rule, unchanged); this package never scores, classifies
   trend, or detects structure.
-- **`phantom/news_ingestion/`** owns the Trading Economics/Forex
+- **`titan_protocol/news_ingestion/`** owns the Trading Economics/Forex
   Factory provider abstraction, health tracking, and the failover state
   machine. Its only output relevant to Market Intelligence is
-  `phantom.market_intelligence.models.NewsEvent` (adapted down from a
+  `titan_protocol.market_intelligence.models.NewsEvent` (adapted down from a
   richer internal `NormalizedNewsEvent`) plus the existing
   `news_feed_trusted: bool` flag `MarketIntelligenceEngine.evaluate()`
   already accepts. Market Intelligence Engine's own news/blackout/
@@ -66,7 +66,7 @@ frozen pipeline:
 
 Both packages integrate with the frozen Reliability Engine **only**
 through its existing public API (`report_heartbeat(component, now)`) —
-no new field, method, or behavior is added to `phantom/reliability/`.
+no new field, method, or behavior is added to `titan_protocol/reliability/`.
 Richer feed/provider health detail (per-symbol freshness, provider
 trust state, failover count) lives entirely in each new package's own
 health-snapshot type, mirroring how `RuntimeAuditRecord`/`CycleReport`
@@ -78,7 +78,7 @@ already takes bars/events/spread/portfolio/account state as caller-
 supplied arguments — that is precisely the seam this ADR's new
 packages feed. Actually driving a continuous live cycle loop (wiring
 ingestion output into a running supervisory loop) is `deployment_
-windows/run_phantom.py`'s concern, extended in this phase (see §9);
+windows/run_titan_protocol.py`'s concern, extended in this phase (see §9);
 still not a Runtime code change.
 
 ## 1. Mission
@@ -92,13 +92,13 @@ services, or commercial capability.
 ## 2. Data ownership (unchanged division of responsibility)
 
 - **MT5 owns raw broker data** — ticks, bars, timestamps, bid/ask. This
-  ADR does not change what MT5 sends; it changes how Phantom receives
+  ADR does not change what MT5 sends; it changes how Titan Protocol receives
   and prepares it.
-- **`phantom/market_data_ingestion/` owns**: transport (receiving raw
+- **`titan_protocol/market_data_ingestion/` owns**: transport (receiving raw
   bar/tick payloads), validation, normalization (to `Bar`), ordering
   (sequence/out-of-order/duplicate detection), freshness (staleness
   detection), deduplication, and warmup tracking.
-- **`phantom/news_ingestion/` owns**: provider transport (HTTP to
+- **`titan_protocol/news_ingestion/` owns**: provider transport (HTTP to
   Trading Economics/Forex Factory), schema validation, normalization
   (to `NormalizedNewsEvent`, then adapted to `NewsEvent`), provider
   health tracking, and the failover state machine.
@@ -107,7 +107,7 @@ services, or commercial capability.
   candlestick patterns, or any score.
 - **Market Intelligence Engine remains the only authority that
   interprets news/session/liquidity/market-safety facts into pair
-  safety.** `phantom/news_ingestion/` never computes a blackout
+  safety.** `titan_protocol/news_ingestion/` never computes a blackout
   decision, a news score, or a trade-readiness verdict — it only
   supplies events and a trust boolean.
 - **Runtime coordinates calls but never interprets prices or news.**
@@ -128,7 +128,7 @@ symbol.
 
 ### 3.2 Public interface
 
-`phantom.market_data_ingestion.engine.MarketDataIngestionEngine`:
+`titan_protocol.market_data_ingestion.engine.MarketDataIngestionEngine`:
 
 - `ingest_bar(raw: RawBar, now: datetime) -> IngestionResult` —
   validates, checks ordering/duplication, updates warmup and freshness
@@ -171,7 +171,7 @@ above: this package has no authority over position management at all
 
 ### 3.4 Warmup
 
-`phantom.market_data_ingestion.warmup.WarmupTracker`: per (symbol,
+`titan_protocol.market_data_ingestion.warmup.WarmupTracker`: per (symbol,
 timeframe), tracks count of real, validated, closed bars received
 against `MarketDataIngestionConfig.min_warmup_bars_by_timeframe`. The
 minimum is derived from Evidence Engine's own real lookback
@@ -186,7 +186,7 @@ is exposed per (symbol, timeframe) via `warmup_status()`.
 
 ### 4.1 Provider abstraction
 
-`phantom.news_ingestion.providers.base.NewsProvider` (a `Protocol`):
+`titan_protocol.news_ingestion.providers.base.NewsProvider` (a `Protocol`):
 one method, `fetch(now: datetime) -> Tuple[NormalizedNewsEvent, ...]`,
 raising one of `ProviderUnavailable`, `ProviderTimeout`,
 `ProviderRateLimited`, `ProviderAuthenticationFailed`, or
@@ -196,14 +196,14 @@ on knowing *why* a provider failed.
 
 Two concrete implementations, `TradingEconomicsProvider` and
 `ForexFactoryProvider`, both stdlib-only (`urllib.request`), both
-taking an **injectable `http_get` callable** (mirrors `phantom.
+taking an **injectable `http_get` callable** (mirrors `titan_protocol.
 reliability.resource_monitor`'s injected-sampler pattern) so tests
 never perform a real network call, while a real default implementation
 exists for production use.
 
 ### 4.2 Primary/backup behavior
 
-`phantom.news_ingestion.failover.NewsFailoverEngine`:
+`titan_protocol.news_ingestion.failover.NewsFailoverEngine`:
 
 - Uses Trading Economics whenever `ProviderHealth.trust_state` for it
   is `TRUSTED` (last fetch succeeded within `stale_after_seconds`, no
@@ -226,12 +226,12 @@ exists for production use.
 
 ### 4.3 Normalized news event
 
-`phantom.news_ingestion.models.NormalizedNewsEvent`: `event_id,
+`titan_protocol.news_ingestion.models.NormalizedNewsEvent`: `event_id,
 currency, country, event_name, category, impact, scheduled_time,
 actual, forecast, previous, revision, source, source_timestamp,
 ingestion_timestamp, confidence, freshness, status` — every field the
-mission named. `phantom.news_ingestion.adapter.to_market_intelligence_
-event()` maps this down to the existing, unmodified `phantom.
+mission named. `titan_protocol.news_ingestion.adapter.to_market_intelligence_
+event()` maps this down to the existing, unmodified `titan_protocol.
 market_intelligence.models.NewsEvent` (`event_id, currency, category,
 impact, scheduled_at, released, released_at`) via `category_mapping.py`
 (free-text provider category/impact strings → the existing
@@ -242,7 +242,7 @@ silently assumed harmless).
 
 ### 4.4 Pair-specific news (unchanged, since MI already does this)
 
-`phantom/news_ingestion/` never introduces a global news score —
+`titan_protocol/news_ingestion/` never introduces a global news score —
 matching MI's own existing per-pair design (`pair_currencies()`
 filters events to a pair's own two currencies before any blackout/score
 computation, ADR-025 Hard Rule 2, untouched). Pair-specific blackout
@@ -252,7 +252,7 @@ this ADR supplies it better events, never new blackout rules.
 
 ### 4.5 News health
 
-`phantom.news_ingestion.models.NewsFeedHealthSnapshot`: active
+`titan_protocol.news_ingestion.models.NewsFeedHealthSnapshot`: active
 provider, per-provider `ProviderHealth` (last successful fetch, latency,
 timeout count, parse-failure count, stale-data age, authentication
 state, trust state), `FailoverState` (failover count, recovery count,
@@ -294,7 +294,7 @@ decision surface at all).
   retry loop.
 - **Bounded caches** — `NewsIngestionConfig.cache_max_entries` caps the
   in-memory normalized-event cache, evicting oldest first (mirrors
-  `phantom.market_intelligence.engine._NewsFeedCache`'s own bounded-
+  `titan_protocol.market_intelligence.engine._NewsFeedCache`'s own bounded-
   cache pattern).
 - **Timeouts** on every HTTP call (`request_timeout_seconds`).
 - **Reject unexpected content types** — a response whose
@@ -318,10 +318,10 @@ report for exact counts and results.
 
 ## 8. Acceptance criteria
 
-- Zero modification to `phantom/evidence_engine/`, `phantom/
-  market_intelligence/`, `phantom/strategy_engine/`, `phantom/
-  risk_engine/`, `phantom/compliance_engine/`, `phantom/runtime/`,
-  `phantom/bridge/`, `phantom/reliability/` (verified by `git diff
+- Zero modification to `titan_protocol/evidence_engine/`, `titan_protocol/
+  market_intelligence/`, `titan_protocol/strategy_engine/`, `titan_protocol/
+  risk_engine/`, `titan_protocol/compliance_engine/`, `titan_protocol/runtime/`,
+  `titan_protocol/bridge/`, `titan_protocol/reliability/` (verified by `git diff
   --stat`).
 - Both new packages compile clean, zero third-party dependencies,
   zero import of `phantom_pipeline`.

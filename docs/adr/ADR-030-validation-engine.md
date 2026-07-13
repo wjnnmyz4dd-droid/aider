@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-10
 
-Accepted By: Software Architect / Phantom Engineering Council (full spec
+Accepted By: Software Architect / Titan Protocol Engineering Council (full spec
 supplied in one message, per the same "complete spec accepted in one
 pass" precedent `ADR-029` established for the Research & Learning
 Engine — no Proposed→Accepted rewrite cycle was needed).
@@ -42,7 +42,7 @@ Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 
 **Cross-cutting, like Watchdog (`ADR-011`), Dashboard (`ADR-012`), and
 the Research & Learning Engine (`ADR-029`) — not part of the live
-trading pipeline.** It sits alongside the six `phantom/` engines built
+trading pipeline.** It sits alongside the six `titan_protocol/` engines built
 this session (Evidence, Market Intelligence, Strategy, Risk,
 Compliance, Research & Learning) and verifies them; it never sits
 between them.
@@ -90,7 +90,7 @@ between them.
   redefined) — the only new code is the thin `TournamentEntry` wrapper
   adding `recovery_factor` (already a `StatisticalMetrics` field,
   `ADR-027`) that `Ranking` doesn't itself surface.
-- **No legacy validation/replay/tournament engine exists in `phantom/`.**
+- **No legacy validation/replay/tournament engine exists in `titan_protocol/`.**
   `phantom_institutional.py` has no equivalent. This stage is designed
   from first principles for the six engines it validates, reusing their
   neighbors' already-accepted pure functions rather than inventing a
@@ -100,7 +100,7 @@ between them.
 
 # 1. Mission
 
-**The Validation Engine is Phantom's independent verification authority
+**The Validation Engine is Titan Protocol's independent verification authority
 for the six engines built this session.** It answers exactly one
 question per capability: "does the recorded evidence show these engines
 behaving correctly, consistently, and explainably?" It never trades,

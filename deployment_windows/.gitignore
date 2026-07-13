@@ -1,6 +1,6 @@
 # Real, secret-bearing configuration -- never commit this. Only
-# config/phantom.config.template.ini (no real secrets) is tracked.
-phantom.config.ini
+# config/titan_protocol_config.example.json (no real secrets) is tracked.
+titan_protocol_config.json
 
 # install.py's auto-generated Bridge API key (a locally-generated
 # shared secret, never a real config value checked into the repo).

@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Backend Architect (analogous to `ADR-005`/`ADR-008` — reliability
 and lifecycle-state ownership)
@@ -428,7 +428,7 @@ ADR-009 is acceptable only if it guarantees:
 
 - **No break-even, trailing-stop, partial-close, or position-lifecycle
   management code exists anywhere in this repository** (verified: no
-  matches for trailing/break-even/partial-close logic in `phantom/` or
+  matches for trailing/break-even/partial-close logic in `titan_protocol/` or
   `phantom_institutional.py`). As with `ADR-008`, there is no legacy
   position-management module to mine for ideas — this stage is designed
   entirely from first principles.
@@ -437,7 +437,7 @@ ADR-009 is acceptable only if it guarantees:
   studied only as an idea of what a minimal open-position ledger looks
   like; it is sizing-input bookkeeping, not lifecycle management, and is
   not otherwise reused here.
-- `phantom/trade_router.py` and `phantom_institutional.py` more broadly —
+- `titan_protocol/trade_router.py` and `phantom_institutional.py` more broadly —
   studied as the same negative example every prior ADR's reference
   review has identified: no distinct position-lifecycle stage exists,
   separate from sizing/decision logic.

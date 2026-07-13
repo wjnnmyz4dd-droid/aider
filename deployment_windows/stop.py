@@ -1,6 +1,6 @@
-"""Phantom stop script (Python Deployment Manager).
+"""Titan Protocol stop script (Python Deployment Manager).
 
-Stops ONLY the single Phantom process recorded in state/phantom.pid --
+Stops ONLY the single Titan Protocol process recorded in state/titan_protocol.pid --
 never a broad "kill every python.exe," which would kill unrelated
 processes too. Graceful shutdown first, bounded wait, then forced
 termination only if graceful shutdown did not take effect in time.
@@ -32,16 +32,16 @@ _HERE = Path(__file__).resolve().parent
 
 def _find_repo_root(here: Path) -> Path:
     """Locates the installation root -- the folder containing both
-    phantom/ and mt5/ -- whether this script lives directly inside it
-    (the shipped, flattened C:\\Phantom\\stop.py layout) or one level
+    titan_protocol/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\TitanProtocol\\stop.py layout) or one level
     below it (this repository's own deployment_windows/ subfolder, used
     for development)."""
     for candidate in (here, here.parent):
-        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+        if (candidate / "titan_protocol").is_dir() and (candidate / "mt5").is_dir():
             return candidate
     raise RuntimeError(
-        f"Could not locate the Phantom installation root (a folder containing "
-        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        f"Could not locate the Titan Protocol installation root (a folder containing "
+        f"both titan_protocol/ and mt5/) starting from {here} -- extract the full "
         "release package before running this script."
     )
 
@@ -108,9 +108,9 @@ def run(config_path: Path) -> int:
         print(f"FAILED: configuration error: {exc}", file=sys.stderr)
         return 2
 
-    pid_file = settings.state_dir / "phantom.pid"
+    pid_file = settings.state_dir / "titan_protocol.pid"
     if not pid_file.exists():
-        print(f"No {pid_file} found -- Phantom does not appear to be running.")
+        print(f"No {pid_file} found -- Titan Protocol does not appear to be running.")
         return 0
 
     try:
@@ -129,13 +129,13 @@ def run(config_path: Path) -> int:
         pid_file.unlink(missing_ok=True)
         return 0
 
-    print(f"Stopping Phantom (pid {pid}) -- graceful shutdown...")
+    print(f"Stopping Titan Protocol (pid {pid}) -- graceful shutdown...")
     _graceful_stop(pid)
 
     elapsed = 0.0
     while elapsed < _GRACEFUL_WAIT_SECONDS:
         if not _pid_alive(pid):
-            print(f"Phantom stopped gracefully after {elapsed:.1f}s.")
+            print(f"Titan Protocol stopped gracefully after {elapsed:.1f}s.")
             pid_file.unlink(missing_ok=True)
             return 0
         time.sleep(_POLL_INTERVAL_SECONDS)
@@ -145,7 +145,7 @@ def run(config_path: Path) -> int:
     _force_stop(pid)
     time.sleep(1.0)
     if not _pid_alive(pid):
-        print("Phantom force-stopped.")
+        print("Titan Protocol force-stopped.")
         pid_file.unlink(missing_ok=True)
         return 0
 
@@ -154,8 +154,8 @@ def run(config_path: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Stop the running Phantom deployment")
-    parser.add_argument("--config", default=str(_HERE / "phantom_config.json"))
+    parser = argparse.ArgumentParser(description="Stop the running Titan Protocol deployment")
+    parser.add_argument("--config", default=str(_HERE / "titan_protocol_config.json"))
     args = parser.parse_args()
     return run(Path(args.config))
 

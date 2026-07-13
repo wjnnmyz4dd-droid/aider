@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` §RACI
 row "MT5 Bridge")
@@ -103,7 +103,7 @@ The MT5 Bridge SHALL:
 
 - Accept only `ExecutionDecision` APPROVE requests.
 - Reject every request lacking `ExecutionDecision` approval.
-- Translate Phantom objects (`CandidateTrade`, `RiskDecision`,
+- Translate Titan Protocol objects (`CandidateTrade`, `RiskDecision`,
   `ExecutionDecision`) into MT5 order requests — a direct field mapping,
   never a re-derivation.
 - Submit orders.
@@ -113,7 +113,7 @@ The MT5 Bridge SHALL:
 - Receive fill information.
 - Receive position updates.
 - Receive account updates.
-- Maintain synchronization between Phantom's expectations and MT5's
+- Maintain synchronization between Titan Protocol's expectations and MT5's
   actual state.
 - **(Amendment 1) Translate `PositionAdjustmentRequest`** (`ADR-009` §5)
   **into MT5 modify requests** — a direct field mapping, never a
@@ -190,12 +190,12 @@ produces several of these over its lifetime, not one combined record):
 - **`ExecutionReceipt`** — confirmation that an order was executed by the
   broker.
 - **`BrokerError`** — a rejection reason returned by the broker, distinct
-  from a Phantom-side reject (which never reaches the broker at all).
+  from a Titan Protocol-side reject (which never reaches the broker at all).
 - **`FillReport`** — fill price, fill size, fill timestamp.
 - **`ConnectionStatus`** — current connection state-machine position
   (§6), updated on every transition.
 - **`SynchronizationStatus`** — the outcome of the most recent
-  reconciliation between Phantom's expected state and MT5's actual state
+  reconciliation between Titan Protocol's expected state and MT5's actual state
   (§9); the signal Position Manager (`ADR-009`) is expected to consume
   before acting on positions.
 
@@ -306,7 +306,7 @@ deliberate: either one failing alone must not produce a duplicate order.
   silently lost trade.
 - **If synchronization fails: safe halt.** No new order is submitted
   while `SynchronizationStatus` (§9) indicates a discrepancy between
-  Phantom's expected state and MT5's actual state. Resolving an existing
+  Titan Protocol's expected state and MT5's actual state. Resolving an existing
   discrepancy is Position Manager's (`ADR-009`) responsibility, not this
   stage's — the Bridge's own authority here is limited to detecting the
   discrepancy and halting new submissions, never to deciding how to
@@ -322,7 +322,7 @@ deliberate: either one failing alone must not produce a duplicate order.
 - **Order synchronization** — every order this stage tracks (§6) is
   reconciled against the broker's own order/position records on
   reconnect and on a periodic cadence, not only at submission time.
-- **Position synchronization** — Phantom's expected open positions are
+- **Position synchronization** — Titan Protocol's expected open positions are
   compared against MT5's actual open positions; a mismatch is reported
   via `SynchronizationStatus`, not silently resolved by this stage.
 - **Account synchronization** — equity/margin/balance are compared
@@ -400,7 +400,7 @@ discipline established at every prior stage.
 - Broker latency
 - Reconnect count
 - Timeout count
-- Reject count (broker-side, distinct from Phantom-side pre-submission
+- Reject count (broker-side, distinct from Titan Protocol-side pre-submission
   rejects)
 - Fill latency
 - Heartbeat status
@@ -507,11 +507,11 @@ ADR-008 is acceptable only if it guarantees:
 
 - **No dedicated MT5 broker-communication module exists anywhere in this
   repository** (verified: no `MetaTrader5` import, no `order_send`, no
-  broker-facing code in `phantom/` or `phantom_institutional.py`). Unlike
+  broker-facing code in `titan_protocol/` or `phantom_institutional.py`). Unlike
   every prior ADR, there is no legacy "bridge" file to mine for ideas —
   this stage is designed entirely from first principles, consistent with
   the instruction that no legacy implementation is authoritative.
-- `phantom/trade_router.py`'s account-feed staleness handling
+- `titan_protocol/trade_router.py`'s account-feed staleness handling
   (`"stale account feed"`, `"account-feed-error (fail-closed)"`) — the
   direct idea behind this ADR's fail-closed philosophy (§8) and its
   synchronization staleness handling (§9), generalized from account-feed

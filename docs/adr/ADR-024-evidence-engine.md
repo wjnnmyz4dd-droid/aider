@@ -72,21 +72,21 @@ This is the decision this ADR exists to record, made explicitly with the
 user before any code was written (three direct questions, three direct
 answers):
 
-1. **Location:** `phantom/evidence_engine/` — a new, independent package
-   alongside `phantom/bridge/`, not `phantom_pipeline/evidence_engine/`.
+1. **Location:** `titan_protocol/evidence_engine/` — a new, independent package
+   alongside `titan_protocol/bridge/`, not `phantom_pipeline/evidence_engine/`.
 2. **Relationship to `ADR-002-scanner.md` (Accepted, implemented in
    `phantom_pipeline/scanner/`) and `ADR-004-scoring-engine.md`
    (Accepted, implemented in `phantom_pipeline/scoring_engine/`):**
    fully fresh, clean-room implementation. **No code, module, or class is
    ported or imported from `phantom_pipeline/`.** This mirrors the
-   relationship `phantom/bridge/` already has to
+   relationship `titan_protocol/bridge/` already has to
    `phantom_pipeline/ea_bridge/` (ADR-023) — a second, independent
-   implementation track under `phantom/`, built and hardened
+   implementation track under `titan_protocol/`, built and hardened
    turn-by-turn this session, deliberately not reusing the
    `phantom_pipeline/` codebase.
 3. **ADR gate:** this document — drafted and marked Accepted in the same
    session as the implementation, per the established precedent of
-   `ADR-020` through `ADR-023`, satisfying the Phantom Protocol's rule
+   `ADR-020` through `ADR-023`, satisfying the Titan Protocol Protocol's rule
    that no pipeline-stage implementation begins without an Accepted ADR
    for that stage (CLAUDE.md §1.10).
 
@@ -100,10 +100,10 @@ overlapping market-structure scope, to avoid a second authority over the
 same facts — this ADR takes the opposite resolution, per explicit user
 direction, because `Evidence Engine` is not extending `phantom_pipeline/`'s
 single authority; it is part of a **separate, independent track**
-(`phantom/`) that does not participate in `phantom_pipeline/`'s pipeline
+(`titan_protocol/`) that does not participate in `phantom_pipeline/`'s pipeline
 at all. There is exactly one authority for each fact **within each
 track**; the two tracks are not wired together by this ADR, and nothing
-in `phantom/evidence_engine/` calls, imports, or is called by anything in
+in `titan_protocol/evidence_engine/` calls, imports, or is called by anything in
 `phantom_pipeline/`.
 
 ---
@@ -141,7 +141,7 @@ independently-computed evidence components — nothing more.
 
 1. **No trade decision anywhere in this package.** No `BUY`/`SELL`
    enum, no position size, no stop loss / take profit, no order,
-   anywhere in `phantom/evidence_engine/`. A structural test enforces
+   anywhere in `titan_protocol/evidence_engine/`. A structural test enforces
    this (see Testing).
 2. **No duplicate scoring.** Every one of the seven component scores
    (structure, liquidity, candlestick, trend, volatility, session,
@@ -191,7 +191,7 @@ independently-computed evidence components — nothing more.
 # 2. Architecture
 
 ```
-phantom/evidence_engine/
+titan_protocol/evidence_engine/
     models.py          Bar, SwingPoint, StructureEvent, LiquidityPool,
                         LiquiditySweep, CandlestickMatch, TrendState,
                         VolatilityState, SessionState, IndicatorResult,
@@ -220,9 +220,9 @@ phantom/evidence_engine/
                         orchestrates the above, thread-safe, caches
                         indicator results per (symbol, bar signature)
     logging_sink.py       structured logging (same conventions as
-                        phantom/bridge/logging_sink.py)
+                        titan_protocol/bridge/logging_sink.py)
     metrics.py           counters/gauges (same conventions as
-                        phantom/bridge/metrics.py)
+                        titan_protocol/bridge/metrics.py)
     __init__.py          public exports
 ```
 

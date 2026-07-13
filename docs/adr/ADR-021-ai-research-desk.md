@@ -1,4 +1,4 @@
-# ADR-021 — Phantom AI Research Desk
+# ADR-021 — Titan Protocol AI Research Desk
 
 Status: Accepted
 
@@ -42,7 +42,7 @@ Knowledge's already-produced outputs only.
 
 # 1. Mission
 
-**The Research Desk answers: "What does Phantom's own history and the
+**The Research Desk answers: "What does Titan Protocol's own history and the
 current market tell us, and what might be worth investigating?"** It
 never answers "what should we trade" — that remains the deterministic
 pipeline's exclusive authority, unchanged since `ADR-001`.
@@ -78,7 +78,7 @@ pipeline's exclusive authority, unchanged since `ADR-001`.
    Rule 4, restated for this ADR's own Knowledge Dashboard item (item 9
    of the originating request).
 5. **No fabricated data.** Where the requested analysis needs an input
-   Phantom does not yet produce — a rich macro-news feed (only
+   Titan Protocol does not yet produce — a rich macro-news feed (only
    `compliance_engine.models.NewsCalendarState.blackout_windows`
    exists, a narrow blackout-window list per `ADR-006` §8, not a macro
    analysis feed), a full economic calendar (same field), or
@@ -158,7 +158,7 @@ signal-shaped field).
 
 # 6. Explicitly out of scope (this ADR)
 
-- A rich macro-news/economic-calendar analysis feed — Phantom has no
+- A rich macro-news/economic-calendar analysis feed — Titan Protocol has no
   such data source; `MarketResearchAgent`'s macro/calendar methods
   operate only on `NewsCalendarState.blackout_windows` and say so.
 - Backtest/optimization ingestion — no backtest or optimization module

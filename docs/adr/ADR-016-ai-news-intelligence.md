@@ -13,7 +13,7 @@ Date: 2026-07-04
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `docs/adr/ADR-015-external-data-sources-api-governance.md` (Proposed)
@@ -33,7 +33,7 @@ over any trade, any score, any size, or any execution decision.
 
 It is explicitly **not** a replacement for, or an enhancement to,
 Compliance Engine's rule-based news guard (ADR-006, Accepted,
-conceptually mirroring `phantom/guards.py`'s news-blackout idea per
+conceptually mirroring `titan_protocol/guards.py`'s news-blackout idea per
 `ADR-001`). It is a separate, advisory-only system that happens to look
 at related source material for an entirely different purpose: producing
 readable context for humans, never a blocking input for machines.
@@ -143,7 +143,7 @@ incapable of holding any forbidden field — verified by a dedicated test
 
 # 6. Pipeline position
 
-This layer runs **beside** Phantom, not inside the execution path. It has
+This layer runs **beside** Titan Protocol, not inside the execution path. It has
 **no position whatsoever** in the `ADR-001` pipeline diagram (Market Data
 → Scanner → ... → Analytics). It is a parallel, independent system with
 exactly two consumers:
@@ -166,7 +166,7 @@ awareness that this layer exists.
 
 # 7. Failure behavior
 
-If this layer fails, times out, or is entirely unavailable, **Phantom
+If this layer fails, times out, or is entirely unavailable, **Titan Protocol
 continues using the rule-based calendar/news guard exactly as if this
 layer did not exist.** This is not a graceful-degradation mechanism to
 build — it is a structural guarantee that follows directly from §6's
@@ -185,7 +185,7 @@ absence never blocks trading, and its presence never authorizes it).
   permissions** — this layer has no path to any of them, structurally,
   per §6's isolation.
 - **Dedicated, isolated credentials** for whatever news/LLM API it uses —
-  never shared with Phantom's live-pipeline secrets (`ADR-015` §6,
+  never shared with Titan Protocol's live-pipeline secrets (`ADR-015` §6,
   Secrets), mirroring the isolation already required of the Vibe-Trading
   research lab.
 - **Network isolation** from the MT5 Bridge and any broker-facing
@@ -236,7 +236,7 @@ absence never blocks trading, and its presence never authorizes it).
 AI news summaries may inform future research — the same
 human-approval-gated path already established for Vibe-Trading
 (`docs/research/VIBE-TRADING-EVALUATION.md` §9: research idea → analysis
-→ report → human approval → Phantom implementation, never an automated
+→ report → human approval → Titan Protocol implementation, never an automated
 pipe). **Live trading decisions remain entirely rule-based**, produced
 only by Scanner → Strategy Engine → Scoring Engine → Risk Engine →
 Compliance Engine → Execution Validator, none of which read this layer's

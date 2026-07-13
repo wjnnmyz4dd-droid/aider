@@ -51,7 +51,7 @@ etc.), exactly as `paper_trading` and `orchestrator.py` already do.
 # 1. Mission
 
 **The Knowledge/RAG subsystem answers exactly one question: "What does
-Phantom's own history and documentation say about X?"**
+Titan Protocol's own history and documentation say about X?"**
 
 **It never answers:** Should we trade? Should we execute? Should we
 modify a position? Should we change risk, compliance, or scoring? Those

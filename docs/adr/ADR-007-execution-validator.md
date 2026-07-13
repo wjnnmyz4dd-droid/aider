@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Backend Architect (reliability-pattern precedent from `ADR-005`/
 `ADR-006`)
@@ -67,7 +67,7 @@ appear to conflict:
   learning.
 - **Nothing may bypass this stage.** No hidden execution path. **No
   emergency override.** If a human genuinely needs to act outside this
-  gate, that happens entirely outside Phantom (e.g. manually in the MT5
+  gate, that happens entirely outside Titan Protocol (e.g. manually in the MT5
   terminal) — never through a "force approve" mechanism built into this
   stage. This is an absolute architectural invariant, not a configurable
   policy.
@@ -206,7 +206,7 @@ out for a session-window clock. The Execution Validator must maintain a
 bounded, TTL-pruned record of recently-processed trade requests (keyed by
 `trace_id` or an equivalent idempotency key) to detect a duplicate
 submission attempt for the same trade. This state must be explicitly
-bounded and pruned, mirroring `phantom/orb.py`'s `state_ttl_days` idea —
+bounded and pruned, mirroring `titan_protocol/orb.py`'s `state_ttl_days` idea —
 unbounded growth here would repeat the same class of defect flagged
 elsewhere in the reference material.
 
@@ -347,13 +347,13 @@ ADR-007 is acceptable only if it guarantees:
 
 # 15. Reference material — ideas only, not authority
 
-- `phantom/orb.py`'s idempotency mechanism (`_confirmed_sessions`,
+- `titan_protocol/orb.py`'s idempotency mechanism (`_confirmed_sessions`,
   `_processed_signal_ids`, TTL-pruned via `state_ttl_days`) — the direct
   idea behind §7's duplicate-request handling. Its specific session-
   confirmation semantics are ORB-strategy-specific (already excluded from
   Scanner per `ADR-002` §6) and are not what's reused here — only the
   general shape of a bounded, pruned idempotency record is.
-- `phantom/trade_router.py`'s fail-closed patterns
+- `titan_protocol/trade_router.py`'s fail-closed patterns
   (`"compliance-state-error (fail-closed)"`,
   `"account-feed-error (fail-closed)"`) — the direct idea behind this
   ADR's fail-safe philosophy (§8), generalized from account-feed errors

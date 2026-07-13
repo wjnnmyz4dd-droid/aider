@@ -22,7 +22,7 @@ Date: 2026-07-10
 
 Depends on: `ADR-024-evidence-engine.md` (Accepted — this engine
 consumes `EvidenceReport` as a read-only input and reuses
-`phantom.evidence_engine.session.analyze_session()` directly rather
+`titan_protocol.evidence_engine.session.analyze_session()` directly rather
 than reimplementing session-boundary classification; it does not
 depend on, import, or modify anything else in that package).
 
@@ -58,11 +58,11 @@ Readiness ... does NOT approve trades"):
   `blackout_active` field on its output is a **label describing its own
   snapshot**, not a gate on any other system, exactly as `TradeReadiness`
   is explicitly "advisory only."
-- This mirrors `phantom/bridge/`'s relationship to
-  `phantom_pipeline/ea_bridge/` (`ADR-023`) and `phantom/evidence_engine/`'s
+- This mirrors `titan_protocol/bridge/`'s relationship to
+  `phantom_pipeline/ea_bridge/` (`ADR-023`) and `titan_protocol/evidence_engine/`'s
   relationship to `phantom_pipeline/scanner`+`scoring_engine` (`ADR-024`
   §0): a second, independent, advisory-only implementation track under
-  `phantom/`, built fresh, never wired to or reusing
+  `titan_protocol/`, built fresh, never wired to or reusing
   `phantom_pipeline/compliance_engine/`'s actual authority or code.
 
 **2. `ADR-016` AI News Intelligence Layer (Accepted, not yet
@@ -74,10 +74,10 @@ and consumed by nothing yet — no overlap in mechanism or consumer, only
 a shared subject-matter (news). No conflict.
 
 **Resolution:** this is a fresh, independent, advisory-only package —
-`phantom/market_intelligence/` — with no reuse of and no wiring into
+`titan_protocol/market_intelligence/` — with no reuse of and no wiring into
 `phantom_pipeline/compliance_engine/` or `ADR-016`'s layer. The one
 exception (permitted, not a duplication): it calls
-`phantom.evidence_engine.session.analyze_session()` directly for
+`titan_protocol.evidence_engine.session.analyze_session()` directly for
 session-boundary classification, rather than re-deriving those hour
 boundaries a second time, per the task's own "never duplicate Evidence
 Engine responsibilities" instruction — importing and reusing the exact
@@ -132,7 +132,7 @@ pair — nothing more.
    fails closed (returns a snapshot describing itself as untrustworthy/
    blocked), never silently defaults to "safe."
 6. **Zero authority, zero wiring.** This package imports nothing from
-   `phantom_pipeline/`, `phantom/bridge/`, or any strategy/risk/
+   `phantom_pipeline/`, `titan_protocol/bridge/`, or any strategy/risk/
    compliance code. It consumes `EvidenceReport` (`ADR-024`) read-only
    and its own directly-supplied news/liquidity/market-safety inputs;
    it produces `MarketIntelligenceSnapshot` and nothing else.
@@ -142,7 +142,7 @@ pair — nothing more.
 # 2. Architecture
 
 ```
-phantom/market_intelligence/
+titan_protocol/market_intelligence/
     models.py              NewsImpact, NewsCategory, NewsEvent,
                            PegPolicyEventType, PegPolicyStatus,
                            PairNewsIntelligence, SessionIntelligence,
@@ -171,8 +171,8 @@ phantom/market_intelligence/
     logging_sink.py, metrics.py, __init__.py
 ```
 
-No file here imports `phantom_pipeline/` or `phantom/bridge/`. No file
-in `phantom/evidence_engine/` is modified.
+No file here imports `phantom_pipeline/` or `titan_protocol/bridge/`. No file
+in `titan_protocol/evidence_engine/` is modified.
 
 ---
 
@@ -194,6 +194,6 @@ regression.
   force score `0`, verified by dedicated tests, never bypassed by a
   weighted blend.
 - `scripts/check_architecture.py`-equivalent dedicated test confirms no
-  import from `phantom_pipeline/` or `phantom/bridge/`, and confirms the
-  one permitted import (`phantom.evidence_engine.session`).
+  import from `phantom_pipeline/` or `titan_protocol/bridge/`, and confirms the
+  one permitted import (`titan_protocol.evidence_engine.session`).
 - No trade is ever placed, sized, or approved by this package.

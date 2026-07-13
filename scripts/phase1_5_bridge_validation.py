@@ -1,6 +1,6 @@
 """Phase 1.5 Bridge Integration & Stability Validation harness.
 
-Exercises the REAL phantom.bridge server (ThreadingHTTPServer + real
+Exercises the REAL titan_protocol.bridge server (ThreadingHTTPServer + real
 sockets) end to end: sustained load, fault injection (network gaps,
 slow clients, MT5/Terminal-outage proxy via heartbeat gaps, Python
 process-restart proxy), stress/concurrency, security, and observability
@@ -28,13 +28,13 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from phantom.bridge.command_queue import CommandQueue
-from phantom.bridge.config import BridgeConfig
-from phantom.bridge.connection_health import ConnectionHealth
-from phantom.bridge.engine import BridgeEngine
-from phantom.bridge.metrics import BridgeMetrics
-from phantom.bridge.models import CommandKind, SCHEMA_VERSION, TradeCommand
-from phantom.bridge.server import API_KEY_HEADER, serve
+from titan_protocol.bridge.command_queue import CommandQueue
+from titan_protocol.bridge.config import BridgeConfig
+from titan_protocol.bridge.connection_health import ConnectionHealth
+from titan_protocol.bridge.engine import BridgeEngine
+from titan_protocol.bridge.metrics import BridgeMetrics
+from titan_protocol.bridge.models import CommandKind, SCHEMA_VERSION, TradeCommand
+from titan_protocol.bridge.server import API_KEY_HEADER, serve
 
 API_KEY = "phase1_5-secret"
 MAGIC = 20260709
@@ -303,7 +303,7 @@ def phase_mt5_recovery_proxy(engine, config, now_holder):
         out["submit_during_outage_rejected_as"] = out["submit_during_outage_rejected_as"].value
 
     # Simulate EA/terminal reconnecting.
-    from phantom.bridge.models import HeartbeatMessage
+    from titan_protocol.bridge.models import HeartbeatMessage
     engine.handle_heartbeat(HeartbeatMessage(
         schema_version=SCHEMA_VERSION, magic_number=MAGIC, account_login=12345,
         terminal_connected=True, received_at=now_holder[0],
@@ -317,7 +317,7 @@ def phase_mt5_recovery_proxy(engine, config, now_holder):
     out["delivered_ids_unique"] = len({c.correlation_id for c in delivered}) == len(delivered)
 
     # No duplicated execution: report the same command's result twice.
-    from phantom.bridge.models import ExecutionReport
+    from titan_protocol.bridge.models import ExecutionReport
     report = ExecutionReport(
         schema_version=SCHEMA_VERSION, correlation_id="mt5-outage-1", magic_number=MAGIC,
         success=True, broker_ticket="t-outage-1", filled_price=1.1, filled_volume=0.2,
@@ -531,7 +531,7 @@ def main():
     now_holder = [datetime(2026, 7, 10, 0, 0, 0, tzinfo=timezone.utc)]
     config, engine, queue, health, metrics = make_engine(now_holder)
 
-    root_logger = logging.getLogger("phantom.bridge")
+    root_logger = logging.getLogger("titan_protocol.bridge")
     root_logger.setLevel(logging.DEBUG)
     handler = _CapturingHandler()
     root_logger.addHandler(handler)

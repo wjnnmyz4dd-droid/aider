@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Software Architect (per `TEAM.md` §1's own definition of the
 role: "Cross-module design, dependency direction, ADRs" — this ADR is
@@ -40,7 +40,7 @@ formalizes what `TEAM.md` already practices, it does not replace it)
 (`ADR-011`) and Dashboard (`ADR-012`), it is cross-cutting — but where
 Watchdog governs infrastructure *health* and Dashboard governs
 infrastructure *visibility*, this ADR governs **who is authorized to
-take which action, anywhere in Phantom** — engineering, runtime,
+take which action, anywhere in Titan Protocol** — engineering, runtime,
 research, or human. It touches every prior ADR by classifying the actor
 each one already defined; it changes none of them.
 
@@ -49,7 +49,7 @@ each one already defined; it changes none of them.
 # 1. Mission
 
 **The Multi-Agent Governance layer answers exactly one question: "Who
-is allowed to perform which actions inside Phantom?"**
+is allowed to perform which actions inside Titan Protocol?"**
 
 **It never answers:** Should we trade? Should we score? Should we
 execute? Should we manage positions? Those are, respectively, Strategy/
@@ -119,7 +119,7 @@ This ADR governs:
 | **Governance Agents** | The ten `TEAM.md` Council roles (Software Architect, Backend Architect, Code Reviewer, Minimal Change Engineer, Multi-Agent Systems Architect, SRE, Security Architect, AppSec Engineer, API Tester, Test Results Analyzer) | `TEAM.md` §1–§7 | **No** — governs the *development process* (code review, ADR drafting, merge gating), never a live trading decision |
 | **Research Agents** | `ADR-019`'s Self-Evolving Research Agent; any future Vibe-Trading-isolated process | `ADR-019`, `ADR-015` §6 | **No** — research-lab-only, human-approval-gated promotion to a real Strategy Engine playbook (`ADR-019` §"promotion chain") |
 | **Advisory Agents** | `ADR-016`'s AI News Intelligence Layer; any future similar system | `ADR-016` | **No** — advisory, human-and-Analytics-facing only (`ADR-016` §1, §5) |
-| **Human Review** | The Phantom Engineering Council acting through a human — never an agent acting alone | §7 | **Ultimate** — the only class that can accept an ADR, approve production, or authorize an emergency action outside Phantom |
+| **Human Review** | The Titan Protocol Engineering Council acting through a human — never an agent acting alone | §7 | **Ultimate** — the only class that can accept an ADR, approve production, or authorize an emergency action outside Titan Protocol |
 
 **This table classifies; it does not grant.** A Pipeline Agent's actual
 authority is defined exhaustively by its own ADR — this table names
@@ -206,7 +206,7 @@ practice, formalized here rather than newly invented:
 
 - **Architecture approval** — acceptance of `ADR-001` itself, and any
   future pipeline-shape change. Exercised once, already.
-- **ADR acceptance** — the "Accepted By: Software Architect / Phantom
+- **ADR acceptance** — the "Accepted By: Software Architect / Titan Protocol
   Engineering Council" line on every Accepted ADR in this repository —
   a human instruction, every time, never a Governance Agent acting
   alone (Hard Rules).
@@ -223,9 +223,9 @@ practice, formalized here rather than newly invented:
   reverse; not a separate, faster path that skips review.
 - **Emergency approval** — **this is not an in-system override
   mechanism.** Per `ADR-007`'s absolute invariant ("no emergency
-  override... that happens entirely outside Phantom, e.g. manually in
+  override... that happens entirely outside Titan Protocol, e.g. manually in
   the MT5 terminal"), Emergency approval means a human acting **outside**
-  Phantom entirely — never a special agent authority, a "break-glass"
+  Titan Protocol entirely — never a special agent authority, a "break-glass"
   API, or an elevated permission granted to any agent class inside this
   system. This ADR does not create such a mechanism and forbids any
   future one from being added without a dedicated ADR and Security
@@ -297,11 +297,11 @@ practice, formalized here rather than newly invented:
   for context only" without deleting it. No existing ADR's status
   changes as a result of defining this value.
 - **Agent removal** — deleting an agent's governing ADR outright is not
-  a lighter-weight version of deprecation; per `CLAUDE.md`'s Phantom
+  a lighter-weight version of deprecation; per `CLAUDE.md`'s Titan Protocol
   Protocol rule 2 ("never remove existing functionality unless explicitly
   instructed"), removal requires the same Human Review as any other
   architecture change, and the historical ADR is retained, not deleted,
-  consistent with `ADR-001`'s own treatment of `phantom/` and
+  consistent with `ADR-001`'s own treatment of `titan_protocol/` and
   `phantom_institutional.py` as retained reference material rather than
   deleted code.
 - **Versioning** — each Pipeline/Infrastructure Agent's output objects
@@ -447,7 +447,7 @@ ADR-014 is acceptable only if it guarantees:
   source of this ADR's classification and permission model; none of
   their content is authoritative *over* this ADR or vice versa — this
   ADR classifies what they already established.
-- No legacy Phantom implementation defines any multi-agent governance
+- No legacy Titan Protocol implementation defines any multi-agent governance
   concept — this is designed entirely from first principles, consistent
   with every infrastructure-layer ADR this session (`ADR-008`, `ADR-009`,
   `ADR-011`, `ADR-012`, `ADR-013`) having found no reference-material
@@ -470,7 +470,7 @@ genuinely reusable idea — a named, artifact-producing Research → Plan →
 Implement gate — worth adopting. The source repository's own agent
 roster (`product-manager`, `ux-designer`, `requirement-parser`, etc.) was
 evaluated and rejected: it is built for general product features, not a
-trading system, and every one of its roles either has no Phantom
+trading system, and every one of its roles either has no Titan Protocol
 equivalent worth adding or duplicates a `TEAM.md` role that already
 exists. Per `TEAM.md` §6's binding "do not add an 11th agent without
 demonstrating a clear, measurable benefit" precedent (restated as this

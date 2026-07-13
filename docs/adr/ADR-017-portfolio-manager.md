@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Security Architect (per the Gap Audit's own recommendation,
 `ARCHITECTURE-GAP-AUDIT-2026-07-04.md` §3's Missing Capability Matrix —
@@ -206,7 +206,7 @@ discipline `ADR-005` §6 already established for risk budgeting:
   inputs to `CapitalBudget`/`PortfolioRecommendation` (§5), never
   self-executing.
 - Multi-account support — Portfolio Manager may aggregate across more
-  than one trading account if Phantom operates on multiple accounts;
+  than one trading account if Titan Protocol operates on multiple accounts;
   this is a scope note, not a new authority — every per-account
   constraint remains that account's own Risk Engine/Compliance Engine
   instance's responsibility.
@@ -254,7 +254,7 @@ drawing a precise boundary that this ADR must honor, not blur:
 - **Correlation calculation ownership** — the underlying methodology
   (what counts as a correlation bucket, how correlated exposure is
   measured) belongs to Risk Engine (`ADR-005` §11, itself citing
-  `phantom/guards.py`'s correlation-bucket concept as an idea). **This
+  `titan_protocol/guards.py`'s correlation-bucket concept as an idea). **This
   ADR reuses that same methodology and definitions, never a
   competing, independently-defined notion of correlation** — the same
   "shared methodology, different aggregation scope, not duplicated
@@ -414,8 +414,8 @@ ADR-017 is acceptable only if it guarantees:
 # 18. Reference material — ideas only, not authority
 
 - **No legacy portfolio-management implementation exists anywhere in
-  this repository** (verified: `phantom/guards.py`'s correlation-bucket
-  concept and `phantom/risk.py`'s per-candidate sizing are the closest
+  this repository** (verified: `titan_protocol/guards.py`'s correlation-bucket
+  concept and `titan_protocol/risk.py`'s per-candidate sizing are the closest
   analogues, and both are already cited as reference-only ideas by
   `ADR-005`). As with every infrastructure-layer ADR this session
   (`ADR-008`, `ADR-009`, `ADR-011`, `ADR-012`, `ADR-013`, `ADR-014`,

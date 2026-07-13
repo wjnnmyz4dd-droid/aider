@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Backend Architect (per `.claude/agents/TEAM.md` RACI, Risk Engine
 row — Accountable)
@@ -183,7 +183,7 @@ per-trade ceiling, daily budget remaining, portfolio heat, currency
 exposure, correlation exposure, volatility adjustment, loss-streak
 behavior, and drawdown-aware scaling. This generalizes the reference
 material's `risk_pct = min(config_ceiling, engine_output)` pattern
-(`phantom/trade_router.py`, cited as an idea only) to multiple
+(`titan_protocol/trade_router.py`, cited as an idea only) to multiple
 simultaneous constraints, all combined by taking the tightest.
 
 All rule versions and weight/threshold values are configuration, versioned
@@ -235,7 +235,7 @@ blocking exposure gate remains Compliance Engine's (ADR-006).
 # 11. Correlation exposure
 
 The same discipline applied to correlation buckets (the reference
-material's correlation-bucket concept, `phantom/guards.py`, cited as an
+material's correlation-bucket concept, `titan_protocol/guards.py`, cited as an
 idea only, not authority). Sizing-only, per §5. **If correlation cannot
 be evaluated, risk is zero** (Hard Rules) — never assumed safe.
 
@@ -254,7 +254,7 @@ volatility conditions. Architecture only, no specific formula.
 
 Consumes rolling trade-outcome history (§2) to detect consecutive losses
 and reduce risk accordingly. Mirrors the reference material's
-consecutive-loss tracking (`phantom/risk.py`, cited as an idea only) —
+consecutive-loss tracking (`titan_protocol/risk.py`, cited as an idea only) —
 architecture only, no specific thresholds.
 
 ---
@@ -390,17 +390,17 @@ ADR-005 is acceptable only if it guarantees:
 
 # 21. Reference material — ideas only, not authority
 
-- `phantom/risk.py` — the risk-tier concept (defensive/normal/aggressive-
+- `titan_protocol/risk.py` — the risk-tier concept (defensive/normal/aggressive-
   style modes), the progressive-drawdown-level concept, and the
   fail-safe-to-minimum-on-error philosophy are useful ideas. Explicitly
   not authoritative: its specific numeric bands, thresholds, and tier
   triggers.
-- `phantom/trade_router.py` — the `risk_pct = min(config_ceiling,
+- `titan_protocol/trade_router.py` — the `risk_pct = min(config_ceiling,
   engine_output)` pattern is the direct idea behind §6's
   minimum-across-constraints rule; its authority/compliance ordering
   (compliance final, risk-engine-can-only-reduce) is the same ordering
   this ADR establishes between Risk Engine and Compliance Engine.
-- `phantom/guards.py` — the correlation-bucket and exposure-cap concepts
+- `titan_protocol/guards.py` — the correlation-bucket and exposure-cap concepts
   are useful ideas for §10/§11's sizing-only treatment; the guard's own
   blocking behavior is explicitly not carried into this ADR (§5) — that
   belongs to Compliance Engine (ADR-006).

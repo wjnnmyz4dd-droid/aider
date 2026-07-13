@@ -59,8 +59,8 @@ architecture's split (deterministic sizing kept separate from
 statistical analysis, which stayed advisory-only), made because the
 task explicitly requires it. It resolves exactly the way `ADR-024`
 through `ADR-026` already resolved the same class of question for this
-session's `phantom/` track: **fresh, independent, no reuse.**
-`phantom/risk_engine/` is built clean-room, imports nothing from
+session's `titan_protocol/` track: **fresh, independent, no reuse.**
+`titan_protocol/risk_engine/` is built clean-room, imports nothing from
 `phantom_pipeline/`, and does not share a model, config, constraint
 function, or Monte Carlo implementation with either
 `phantom_pipeline/risk_engine/` or `phantom_pipeline/statistical_risk/`.
@@ -123,9 +123,9 @@ the correct analogous move instead.
 Per `ADR-001`, this is pipeline stage 5: **Market Data → Scanner →
 Strategy Engine → Scoring Engine → Risk Engine → Compliance Engine →
 Execution Validator → MT5 Bridge → Position Manager → Analytics.** This
-implementation occupies the Risk Engine slot for the `phantom/` track.
+implementation occupies the Risk Engine slot for the `titan_protocol/` track.
 Not wired into any execution pipeline yet — no orchestrator exists in
-`phantom/` at this phase. Per the user's stated sequence, this is Phase
+`titan_protocol/` at this phase. Per the user's stated sequence, this is Phase
 2D; Prop Firm Compliance Engine, Research & Learning Engine, and
 Validation remain unimplemented and out of scope here.
 
@@ -221,7 +221,7 @@ own upstream-import boundary.
 # 4. Architecture
 
 ```
-phantom/risk_engine/
+titan_protocol/risk_engine/
     __init__.py
     models.py            all dataclasses/enums (see §5)
     config.py             RiskEngineConfig -- every threshold named, confidence
@@ -254,7 +254,7 @@ phantom/risk_engine/
     engine.py              RiskEngine.evaluate()/evaluate_batch()
     logging_sink.py, metrics.py
 
-tests/phantom/risk_engine/
+tests/titan_protocol/risk_engine/
     _fixtures.py, test_gate.py, test_confidence.py, test_exposure.py,
     test_correlation.py, test_statistics.py, test_monte_carlo.py,
     test_position_sizing.py, test_safety_limits.py, test_reservation.py,

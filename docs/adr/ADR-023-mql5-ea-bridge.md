@@ -13,7 +13,7 @@ already used to accept `ADR-020` through `ADR-022`.
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — a
 new transport/protocol boundary between an external process and the
 pipeline is exactly this role's mandate), Application Security Engineer
-(Consulted — this ADR introduces Phantom's first network-facing
+(Consulted — this ADR introduces Titan Protocol's first network-facing
 inbound surface; API-key auth, replay/idempotency, and input validation
 are reviewed as a security boundary, not just a transport detail)
 
@@ -64,13 +64,13 @@ choice a deployer may select instead.**
 # 1. Mission
 
 **The EA bridge answers exactly one question: "How does an
-already-Phantom-approved order reach a MetaTrader 5 terminal, and how
-does its result get back to Phantom?"**
+already-Titan Protocol-approved order reach a MetaTrader 5 terminal, and how
+does its result get back to Titan Protocol?"**
 
 **It never answers:** Should this trade happen? How much risk? Is this
 compliant? Is execution currently safe? Those remain each existing
 stage's own question, entirely unchanged. The EA is a terminal-side
-transport and execution relay — it receives a command Phantom has
+transport and execution relay — it receives a command Titan Protocol has
 already fully decided, executes exactly that command via MQL5's
 `OrderSend`, and reports back what happened. It has no branch anywhere
 in its logic that originates, sizes, or re-prices a trade.
@@ -80,7 +80,7 @@ in its logic that originates, sizes, or re-prices a trade.
 # Hard Rules
 
 1. **Bridge only, structurally.** No file in `phantom_pipeline/ea_bridge/`
-   and no code path in `mt5/PhantomBridgeEA.mq5` computes a score, a
+   and no code path in `mt5/TitanProtocolEA.mq5` computes a score, a
    risk percent, a compliance verdict, or an execution verdict. The EA's
    only trade-initiating action is executing a command it received from
    `/ea/commands/poll` — there is no local signal-generation code in the
@@ -103,7 +103,7 @@ in its logic that originates, sizes, or re-prices a trade.
    the same "another feed source, same public entry point" posture
    `data_pipeline.market_data_adapter.MarketDataAdapter` already
    established (`ADR-013`/Phase 3).
-4. **Every command the EA executes must already be Phantom-approved.**
+4. **Every command the EA executes must already be Titan Protocol-approved.**
    The only way an `ExecutionCommand` is created is inside
    `EABrokerAdapter.send_request()`, translating an already-produced
    `BrokerRequest` (itself only ever constructed by `mt5_bridge.checks.translate_order()`/
@@ -117,7 +117,7 @@ in its logic that originates, sizes, or re-prices a trade.
    new command is ever placed on the queue while disconnected
    (`command_queue.py` refuses to enqueue when the bridge is not
    `READY`, mirroring `MT5Bridge._send_and_record`'s own connection-state
-   gate). EA side: `PhantomBridgeEA.mq5` treats a failed poll (network
+   gate). EA side: `TitanProtocolEA.mq5` treats a failed poll (network
    error, non-200, or a stale/absent heartbeat acknowledgement beyond its
    own `FailClosedTimeoutSeconds` input) as "stop opening anything new" —
    it never falls back to local decision-making.
@@ -138,7 +138,7 @@ in its logic that originates, sizes, or re-prices a trade.
 8. **No live deployment, no real trades, in this ADR's scope.** This ADR
    and its implementation are a bridge and its test suite only. Wiring
    `EABrokerAdapter` into a live `MT5Bridge` instance against a real
-   account, and running `PhantomBridgeEA.mq5` against a live/funded
+   account, and running `TitanProtocolEA.mq5` against a live/funded
    terminal, are explicitly deferred operator actions — not performed or
    simulated against a real broker anywhere in this work.
 
@@ -148,7 +148,7 @@ in its logic that originates, sizes, or re-prices a trade.
 
 ```
 MetaTrader 5 terminal (Windows/Wine)
-  └─ PhantomBridgeEA.mq5  (attached to one chart; OnTimer-driven)
+  └─ TitanProtocolEA.mq5  (attached to one chart; OnTimer-driven)
        │  HTTP (localhost or LAN, API-key authenticated)
        ▼
 phantom_pipeline/ea_bridge/http_server.py   (stdlib-only, 9 routes)
@@ -179,22 +179,22 @@ data feed with no decision content) is touched.
 
 Attach to an MT5 chart; send heartbeat; send account state; send
 symbol/tick data; send M15/H1/H4/D1 bars; receive approved execution
-commands; execute only commands Phantom has already approved; send
+commands; execute only commands Titan Protocol has already approved; send
 execution results back; send position updates back; fail closed if
-Phantom is offline.
+Titan Protocol is offline.
 
 ## 2.2 EA prohibitions (must never)
 
 Generate trades; score trades; override risk, compliance, or the
-execution validator; open trades without a signed/approved Phantom
-command; change lot size; change SL/TP unless commanded by Phantom;
-continue trading if the Phantom backend is offline.
+execution validator; open trades without a signed/approved Titan Protocol
+command; change lot size; change SL/TP unless commanded by Titan Protocol;
+continue trading if the Titan Protocol backend is offline.
 
 ---
 
 # 3. Security model
 
-- **API key required** on every request (`X-Phantom-Api-Key` header,
+- **API key required** on every request (`X-Titan-Protocol-Api-Key` header,
   checked against `EABridgeConfig.api_key`; constant-time comparison).
 - **Command IDs are idempotent** — keyed by `execution_id`; a poll never
   redelivers an already-delivered command, an execution report for an
@@ -235,12 +235,12 @@ mark-executed, refuses to enqueue unless the bridge considers itself
 returning `Optional[str]` reason, mirroring `execution_validator.checks`'s
 own "value in, reason-or-None out" convention), `broker_adapter.py`
 (`EABrokerAdapter(BrokerAdapter)`), `http_server.py` (`EABridgeHTTPServer`,
-stdlib `http.server`-based, mirroring `phantom/api.py`'s "Python stdlib
+stdlib `http.server`-based, mirroring `titan_protocol/api.py`'s "Python stdlib
 only" precedent), `engine.py` (`EABridgeEngine` — the top-level
 orchestrator wiring `DataPipeline`, `CommandQueue`, and the read-model
 stores together), `logging_sink.py`, `metrics.py`, `__init__.py`.
 
-`mt5/PhantomBridgeEA.mq5` (the EA source) and `mt5/PhantomBridgeEA.set`
+`mt5/TitanProtocolEA.mq5` (the EA source) and `mt5/TitanProtocolEA.set`
 (a default input-parameter template) — outside `phantom_pipeline/`
 entirely, since MQL5 is not Python and is never imported or compiled by
 anything in this repository; it is source a deployer compiles inside the
@@ -289,7 +289,7 @@ issuance). A structural boundary test confirms `EABrokerAdapter` is the
   themselves, exactly as `PaperTradingRunner.observe_account()` already
   does for the existing `MT5Adapter` path. `ea_bridge` does not duplicate
   that computation.
-- **Wiring `EABrokerAdapter` into `orchestrator.py`/`start_phantom.py` by
+- **Wiring `EABrokerAdapter` into `orchestrator.py`/`start_titan_protocol.py` by
   default.** Both remain constructed with whichever `BrokerAdapter` a
   deployer chooses, exactly as today; this ADR adds a second available
   choice, it does not change the default.
@@ -337,11 +337,11 @@ Not adopted, because:
    MT5 functionality (indicators, chart plotting, arbitrary history
    export, generic tick/bar streaming) to any external client. `ADR-023`'s
    Hard Rule 1 requires the opposite posture — the narrowest possible
-   surface, carrying only already-Phantom-approved commands and their
+   surface, carrying only already-Titan Protocol-approved commands and their
    results, with no general-purpose query/control surface at all.
 
 Both remain legitimate alternatives a future deployer could choose
-instead of `phantom_pipeline/ea_bridge/` + `PhantomBridgeEA.mq5` — e.g.
+instead of `phantom_pipeline/ea_bridge/` + `TitanProtocolEA.mq5` — e.g.
 if they want ZeroMQ's lower latency/streaming ticks for a use case this
 ADR does not target — but neither is what this ADR implements, and no
 code from either is vendored into this repository.

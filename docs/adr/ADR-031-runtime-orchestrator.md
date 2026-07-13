@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-10
 
-Accepted By: Software Architect / Phantom Engineering Council (full
+Accepted By: Software Architect / Titan Protocol Engineering Council (full
 spec supplied in one message, per the `ADR-029`/`ADR-030` "complete
 spec accepted in one pass" precedent).
 
@@ -45,7 +45,7 @@ possible; see §3), `ADR-011-watchdog-recovery.md` (Accepted,
   owns exactly the "detect engine/runtime/snapshot/bridge timeout,
   restart bounded infrastructure actions, never bypass Compliance"
   mission this ADR's own Watchdog-integration requirement describes.
-  **It is not imported.** Every `phantom/` package built this session
+  **It is not imported.** Every `titan_protocol/` package built this session
   (`ADR-024` through `ADR-030`) enforces, via its own architecture
   test, "zero import of `phantom_pipeline`" — importing
   `phantom_pipeline.watchdog` here would be the first exception to a
@@ -53,11 +53,11 @@ possible; see §3), `ADR-011-watchdog-recovery.md` (Accepted,
   and would make a reference-only tree (`ADR-001`'s own resolution: `
   phantom_pipeline` is "mined for proven ... mechanisms," never a
   running authority) into a live dependency of the pipeline that
-  resolution built. Instead, `phantom/runtime/watchdog_integration.py`
+  resolution built. Instead, `titan_protocol/runtime/watchdog_integration.py`
   is a **fresh, minimal module mirroring `ADR-011`'s vocabulary**
   (component/kind/timeout-detection shape) without importing it. A
   future ADR could formally bridge the two trees; not assumed here.
-- **No legacy runtime orchestrator exists in `phantom/`.** Designed
+- **No legacy runtime orchestrator exists in `titan_protocol/`.** Designed
   from first principles for the six engines this session built,
   reusing their already-accepted, real public interfaces — never a
   second implementation of anything they already compute.
@@ -67,7 +67,7 @@ possible; see §3), `ADR-011-watchdog-recovery.md` (Accepted,
 # Pipeline position
 
 **The Runtime Orchestrator is the live coordinator — the first
-component in this session's `phantom/` build that is actually wired
+component in this session's `titan_protocol/` build that is actually wired
 end-to-end.** Trading Profiles and Configuration Management are its
 supporting configuration surface; neither computes a trading decision.
 
@@ -92,7 +92,7 @@ Runtime MUST NEVER:
 5. Override any engine.
 
 It is an orchestrator only — verified structurally: no function in
-`phantom/runtime/` contains a decision-shaped name, and every
+`titan_protocol/runtime/` contains a decision-shaped name, and every
 conditional branch in the sequencing module is an equality/membership
 check against a value another engine's public interface already
 returned (mirrors `docs/specs/00_runtime_orchestrator.md` §7's test
@@ -118,7 +118,7 @@ Runtime only appends a `ClosedTrade`-shaped record for it to consume
 later, never calls `ResearchEngine.evaluate()` itself). **Validation
 Engine never participates in live execution** — it has no runtime
 handle at all; the sequencing module does not import
-`phantom.validation_engine`.
+`titan_protocol.validation_engine`.
 
 Per pair, per cycle, using each engine's real `evaluate()`/
 `evaluate_snapshot()` signature (`ADR-024`-`ADR-028`, unchanged):
@@ -131,7 +131,7 @@ Per pair, per cycle, using each engine's real `evaluate()`/
 4. `RiskEngine.evaluate(pair, evidence, market_intelligence, strategy, portfolio_state, trade_history, now) -> RiskSnapshot`
 5. `ComplianceEngine.evaluate(pair, evidence, market_intelligence, strategy, risk, portfolio_state, account_state, now) -> ComplianceSnapshot`
 6. If `compliance.ready_for_bridge`: construct a `TradeCommand`
-   (`phantom.bridge.models`) and call a caller-supplied
+   (`titan_protocol.bridge.models`) and call a caller-supplied
    `bridge_submit(command, now) -> Optional[ErrorCode]` — **Runtime
    never constructs a `BridgeEngine` itself** (connection lifecycle is
    out of scope for an orchestrator; the caller wires in the bound
@@ -170,7 +170,7 @@ restated for the real engines):
 - `stop_loss` / `take_profit`: `None`. No engine in this pipeline
   currently computes an absolute stop-loss/take-profit *price* (Risk
   Engine's `PositionSizeRecommendation` expresses risk in R-multiples
-  and lot size only) — `phantom.bridge.validation.
+  and lot size only) — `titan_protocol.bridge.validation.
   check_stop_loss_take_profit` already accepts `None` for both
   (verified: it only rejects a *non-None* value `<= 0`), so this is a
   valid, disclosed scope boundary, not an invented value. A future
@@ -257,7 +257,7 @@ ever constructed from an incomplete chain.
 
 # 9. Watchdog integration
 
-`phantom/runtime/watchdog_integration.py` (fresh module, §0) detects
+`titan_protocol/runtime/watchdog_integration.py` (fresh module, §0) detects
 four timeout kinds — Engine, Runtime, Snapshot, Bridge — by comparing
 each stage's recorded duration (§7) against `RuntimeConfig`'s
 configured thresholds, and exposes a bounded, explicit
@@ -320,7 +320,7 @@ categories.
 
 # 14. Acceptance criteria
 
-- ✓ No decision-shaped name anywhere in `phantom/runtime/` (§2, AST test).
+- ✓ No decision-shaped name anywhere in `titan_protocol/runtime/` (§2, AST test).
 - ✓ Every early exit stops the cycle immediately, no later stage called (§3).
 - ✓ `TradeCommand` construction uses only already-computed values;
   `stop_loss`/`take_profit` disclosed as `None` this phase (§3).

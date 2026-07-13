@@ -23,8 +23,8 @@ Depends on: `ADR-024-evidence-engine.md` (Accepted, Amendment 1),
 `ADR-025-market-intelligence-engine.md` (Accepted),
 `ADR-026-strategy-engine.md` (Accepted),
 `ADR-027-portfolio-statistical-risk-engine.md` (Accepted — this stage
-necessarily imports `phantom.risk_engine.models` for `RiskSnapshot` and
-`PortfolioState`, and reuses `phantom.risk_engine.exposure`'s pure
+necessarily imports `titan_protocol.risk_engine.models` for `RiskSnapshot` and
+`PortfolioState`, and reuses `titan_protocol.risk_engine.exposure`'s pure
 currency/exposure utilities rather than reimplementing them — see §4).
 
 ---
@@ -33,17 +33,17 @@ currency/exposure utilities rather than reimplementing them — see §4).
 
 **`ADR-006` Compliance Engine (`phantom_pipeline/`)** already exists as
 a guard-based FTMO/prop-firm rule package (`guards.py`,
-`ComplianceEngine`). Per the established `phantom/` track precedent
+`ComplianceEngine`). Per the established `titan_protocol/` track precedent
 (`ADR-024`–`ADR-027` §0, each disclosing the same class of overlap and
 resolving it identically): **fresh, independent, no reuse.**
-`phantom/compliance_engine/` is built clean-room, mined for proven rule
+`titan_protocol/compliance_engine/` is built clean-room, mined for proven rule
 shapes only, never importing `phantom_pipeline/compliance/` or sharing
 its guard registry.
 
-Unlike every prior `phantom/` stage, this one **necessarily** imports
-from another `phantom/` package: `RiskSnapshot` and `PortfolioState`
-are defined in `phantom.risk_engine.models` and are two of this
-engine's six named inputs (§2), so `phantom.risk_engine` is an
+Unlike every prior `titan_protocol/` stage, this one **necessarily** imports
+from another `titan_protocol/` package: `RiskSnapshot` and `PortfolioState`
+are defined in `titan_protocol.risk_engine.models` and are two of this
+engine's six named inputs (§2), so `titan_protocol.risk_engine` is an
 unavoidable, explicitly-named upstream dependency — not a boundary
 violation, since ADR-027 already established these as the read-only,
 frozen public types of a stage this one sits immediately downstream of
@@ -57,7 +57,7 @@ Per `ADR-001`, this is pipeline stage 6: **Market Data → Scanner →
 Strategy Engine → Scoring Engine → Risk Engine → Compliance Engine →
 Execution Validator → MT5 Bridge → Position Manager → Analytics.** Not
 wired into any execution pipeline yet — no orchestrator exists in
-`phantom/` at this phase. Per the user's stated sequence, this is Phase
+`titan_protocol/` at this phase. Per the user's stated sequence, this is Phase
 2E; Research & Learning Engine and Validation remain unimplemented and
 out of scope here.
 
@@ -105,7 +105,7 @@ Consume ONLY:
   reject.
 - `PortfolioState` (`ADR-027` type, read-only) — reused directly, not
   redefined; feeds this engine's own, independently-configured position/
-  exposure limits via `phantom.risk_engine.exposure.compute_exposure_summary`
+  exposure limits via `titan_protocol.risk_engine.exposure.compute_exposure_summary`
   (the same pure utility Risk Engine itself uses — calling it a second
   time with Compliance's own thresholds is not a duplicate
   calculation, since the fact being read, `PortfolioState`, was
@@ -123,7 +123,7 @@ Consume ONLY:
 
 Never communicates directly with: MT5, Bridge, Trading Economics, Forex
 Factory. AST-verified (`test_architecture.py`), the same pattern every
-prior `phantom/` stage established for its own forbidden imports.
+prior `titan_protocol/` stage established for its own forbidden imports.
 
 ---
 
@@ -136,7 +136,7 @@ count, the FTMO-style consistency rule's daily-profit-vs-total-profit
 ratio, or the compliance lock/emergency-stop state). Rather than invent
 a seventh input type or silently expand `PortfolioState` (which is
 Risk Engine's type, not this engine's to redefine), this ADR defines
-`AccountState` in `phantom/compliance_engine/models.py` — exactly the
+`AccountState` in `titan_protocol/compliance_engine/models.py` — exactly the
 same move `ADR-027` made for `PortfolioState`/`TradeHistory` when its
 own named inputs didn't cover everything its rules required.
 
@@ -193,7 +193,7 @@ lock of its own required.
 4. **No duplicate calculations.** Evidence, strategy, risk, and market-
    intelligence facts are read from the four upstream snapshots exactly
    as computed — never recomputed. Position/currency exposure math
-   reuses `phantom.risk_engine.exposure`'s existing pure functions
+   reuses `titan_protocol.risk_engine.exposure`'s existing pure functions
    rather than a second implementation (§2).
 5. **No MT5 or Bridge communication**, direct or indirect.
 6. **Pure deterministic logic, thread safe.** No mutable state held by
@@ -294,7 +294,7 @@ News/Trading Economics/Forex Factory itself.
 Maximum open positions, maximum positions per pair, maximum currency
 exposure, maximum symbol exposure, maximum pending orders (from
 `AccountState.pending_orders_count`), maximum simultaneous risk —
-computed from `PortfolioState` via `phantom.risk_engine.exposure`'s
+computed from `PortfolioState` via `titan_protocol.risk_engine.exposure`'s
 existing pure functions plus this engine's own, independently
 configured thresholds (distinct from Risk Engine's own limits, which
 represent a different authority's risk-management posture, not a
@@ -352,7 +352,7 @@ size, timestamp), `compliance_score`, `lock_recommendation`,
 # 8. Architecture
 
 ```
-phantom/compliance_engine/
+titan_protocol/compliance_engine/
     __init__.py
     models.py              AccountState, ComplianceLockState, ComplianceDecision,
                           ComplianceRuleProfile, AuditEntry, ComplianceSnapshot, etc.
@@ -370,7 +370,7 @@ phantom/compliance_engine/
     engine.py                ComplianceEngine.evaluate()/evaluate_batch() (pure, stateless)
     logging_sink.py, metrics.py
 
-tests/phantom/compliance_engine/
+tests/titan_protocol/compliance_engine/
     _fixtures.py, test_daily_loss.py, test_drawdown.py, test_profit_protection.py,
     test_consecutive_loss.py, test_rule_profile.py, test_position_limits.py,
     test_market_conditions.py, test_lock.py, test_compliance_score.py,

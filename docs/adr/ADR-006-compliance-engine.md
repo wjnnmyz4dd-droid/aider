@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Security Architect (per `.claude/agents/TEAM.md` RACI, Compliance
 row — Accountable; this is the system's final, non-bypassable authority
@@ -51,7 +51,7 @@ It does not answer:
 
 Every one of those belongs elsewhere (Scoring Engine, Risk Engine,
 Position Manager, Scanner, Scoring Engine again). The Compliance Engine
-is Phantom's **final, non-bypassable policy authority** per `ADR-001` —
+is Titan Protocol's **final, non-bypassable policy authority** per `ADR-001` —
 the one stage in the entire pipeline whose job is a binary permit/deny
 decision, not a fact, a hypothesis, a score, or a budget. Everything
 before it describes and evaluates a trade; this is where the system
@@ -181,7 +181,7 @@ without a human-reviewed version bump.
 
 A configured, versioned daily drawdown threshold. Breaching it BLOCKs new
 trades for the remainder of the defined period (a daily lockout) —
-mirrors the reference material's daily-lockout concept (`phantom/
+mirrors the reference material's daily-lockout concept (`titan_protocol/
 guards.py`'s `ComplianceEngine`, cited as an idea only). The lockout
 resets on a defined boundary (e.g. next trading day), but **the reset
 itself is a policy rule, not an assumption** — if the reset condition
@@ -209,7 +209,7 @@ absent check.
 
 Blocks trades within a configured blackout window around high-impact
 news events for currencies relevant to the candidate's symbol, sourced
-exclusively from the live MT5 Calendar (§2). Mirrors `phantom/guards.py`'s
+exclusively from the live MT5 Calendar (§2). Mirrors `titan_protocol/guards.py`'s
 news-blackout concept as an idea. If the live calendar feed is stale or
 unavailable, the check cannot be evaluated and Compliance BLOCKs (Hard
 Rules) — never defaults to "no news" when the feed is simply absent.
@@ -242,7 +242,7 @@ happen to share an underlying fact.
 # 11. Spread validation
 
 Blocks trades where the current spread (§2) exceeds a configured,
-symbol-aware threshold — mirrors `phantom/guards.py`'s symbol-aware spread
+symbol-aware threshold — mirrors `titan_protocol/guards.py`'s symbol-aware spread
 guard as an idea. **This is a pre-trade policy check** — whether the
 spread observed right now is within acceptable bounds to permit trading
 at all. It is distinct from any post-fill slippage handling, which would
@@ -267,7 +267,7 @@ for this ADR — forward-referenced to Execution Validator/MT5 Bridge.
 # 13. Maximum positions
 
 Blocks a new same-direction position when a configured per-symbol or
-account-wide position-count limit is already reached — mirrors `phantom/
+account-wide position-count limit is already reached — mirrors `titan_protocol/
 guards.py`'s exposure/stacking guard as an idea. **Distinct from Risk
 Engine's portfolio-heat sizing (`ADR-005` §9)**: Risk Engine *reduces*
 budget as heat rises; Compliance Engine *blocks outright* once a hard
@@ -280,7 +280,7 @@ Compliance's count limit is a separate, harder backstop.
 # 14. Kill switch
 
 A **permanent**, latched state triggered by a total-drawdown breach (§7).
-Once triggered, it does not clear on its own — mirrors `phantom/
+Once triggered, it does not clear on its own — mirrors `titan_protocol/
 guards.py`'s permanent `_killed` flag as an idea, in contrast to §6's
 daily lockout, which resets automatically. **Kill-switch state must
 persist across process restarts** — a Compliance Engine that forgets it
@@ -399,13 +399,13 @@ ADR-006 is acceptable only if it guarantees:
 
 # 21. Reference material — ideas only, not authority
 
-- `phantom/guards.py`'s `ComplianceEngine` — the live-equity peak
+- `titan_protocol/guards.py`'s `ComplianceEngine` — the live-equity peak
   tracking, daily/total drawdown calculation, permanent kill-switch, and
   daily-lockout-with-automatic-reset design are useful ideas, directly
   informing §6/§7/§14. Its legacy no-equity fallback path is explicitly
   **not** carried forward — this ADR's Hard Rules make that fallback
   structurally impossible (§7).
-- `phantom/guards.py`'s spread, correlation, and exposure guards — useful
+- `titan_protocol/guards.py`'s spread, correlation, and exposure guards — useful
   ideas for §11 and §13; the correlation guard specifically overlaps with
   `ADR-005` §11's sizing-only treatment — this ADR's Maximum Positions
   check (§13) is deliberately narrower (a hard count limit only), leaving

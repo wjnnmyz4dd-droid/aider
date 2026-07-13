@@ -8,7 +8,7 @@ Date: 2026-07-04
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect, Phantom Engineering Council
+Accepted By: Software Architect, Titan Protocol Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted)
 
@@ -220,7 +220,7 @@ The Scanner does **not**:
 - Execute a trade or communicate with a broker/MT5.
 - Apply prop-firm compliance, drawdown, or kill-switch logic.
 - **Contain playbook-specific logic.** This is a correction over the
-  reference material: `phantom/orb.py`'s opening-range tracking is
+  reference material: `titan_protocol/orb.py`'s opening-range tracking is
   strategy-specific state (idempotency, session-confirmation bookkeeping)
   that does not belong in the Scanner. The Scanner reports generic,
   playbook-agnostic facts (a breakout of a session's opening range is a
@@ -267,7 +267,7 @@ scope):
   timeframe.
 - `structure` — list of structural signals, each with kind, direction,
   and a human-readable detail string (mirrors the shape of
-  `phantom/structure.py`'s `StructureSignal` as an idea, not as an
+  `titan_protocol/structure.py`'s `StructureSignal` as an idea, not as an
   authoritative type).
 - `volatility` — classified state plus underlying ratio.
 - `session` — active session name(s) and window position.
@@ -320,7 +320,7 @@ On any failure mode in §9, the Scanner emits a `ScannerObservation` with
 `data_quality_flag` set to the specific condition, and every other field
 either omitted or set to an explicit "unknown" state — **it never
 fabricates a plausible-looking structure, trend, or volatility reading
-from incomplete data.** This generalizes `phantom/regime.py`'s
+from incomplete data.** This generalizes `titan_protocol/regime.py`'s
 `INSUFFICIENT_DATA` handling (an idea worth keeping) to every field in
 the observation, not just regime.
 
@@ -367,7 +367,7 @@ reason).
   itself interpreting them.
 - All metrics are export-only: incrementing them must have zero effect on
   the returned observation, mirroring the "additive, changes nothing"
-  discipline already established for `phantom/metrics.py`.
+  discipline already established for `titan_protocol/metrics.py`.
 
 ---
 
@@ -390,7 +390,7 @@ reason).
   material's per-symbol `_last_decision` dict pattern is acceptable in
   spirit — bounded by symbol count — but any new state must be
   explicitly bounded or TTL-pruned, per the existing `state_ttl_days`
-  idea in `phantom/config.py`).
+  idea in `titan_protocol/config.py`).
 - **Amendment 1:** every composite field introduced in Amendment 1
   (external/internal structure, swing hierarchy, equal highs/lows, range
   structure, accumulation/distribution, trend acceleration/exhaustion,
@@ -479,7 +479,7 @@ Elaborated:
 - Input validation must treat all supplied market data as untrusted
   (malformed candles, adversarial gaps, spoofed session/market-status
   flags) and fail closed per §10 rather than propagate garbage downstream.
-- No network egress, consistent with `phantom/`'s existing stdlib-only,
+- No network egress, consistent with `titan_protocol/`'s existing stdlib-only,
   no-third-party-dependency posture — worth preserving as a security
   property, not just a style preference.
 
@@ -490,15 +490,15 @@ Elaborated:
 The following inform this design and are explicitly **not** authoritative
 over it, per ADR-001:
 
-- `phantom/regime.py` — EMA-based trend read, ATR-ratio volatility
+- `titan_protocol/regime.py` — EMA-based trend read, ATR-ratio volatility
   classification, `INSUFFICIENT_DATA` as its own state rather than a
   degraded `NEUTRAL`. Useful ideas; thresholds and exact formulas are not
   binding.
-- `phantom/structure.py` — swing-pivot-based BOS/CHOCH/liquidity-sweep/
+- `titan_protocol/structure.py` — swing-pivot-based BOS/CHOCH/liquidity-sweep/
   FVG/order-block detection shape (`StructureSignal(found, direction,
   detail)`). Useful shape; the repeated `swing_points()` computation
   pattern is explicitly rejected (§13).
-- `phantom/orb.py` — the idea that a session's opening range is a
+- `titan_protocol/orb.py` — the idea that a session's opening range is a
   meaningful liquidity/structure fact is useful; its idempotency/
   session-confirmation state is explicitly rejected from the Scanner
   (§6) and belongs, if kept at all, in the Strategy Engine (ADR-003).
@@ -515,7 +515,7 @@ over it, per ADR-001:
 - **Amendment 1:** Smart Money Concepts (SMC) / Wyckoff market-phase
   terminology — external/internal structure, equal highs/lows, and
   accumulation/distribution/markup/markdown phase labels are established
-  technical-analysis concepts, not proprietary to Phantom. The
+  technical-analysis concepts, not proprietary to Titan Protocol. The
   independent `smartmoneyconcepts` PyPI package (already noted in
   `docs/research/VIBE-TRADING-EVALUATION.md` §11 as a cross-check
   reference) is a useful idea-source for this expanded scope's

@@ -1,4 +1,4 @@
-# Phantom Architecture Gap Audit
+# Titan Protocol Architecture Gap Audit
 
 Date: 2026-07-04
 
@@ -121,7 +121,7 @@ Compliance Engine) is the part with no architecture at all yet.
   EURUSD-adjacent instruments) could each individually pass single-trade
   Risk/Compliance checks while collectively creating dangerous
   concentrated exposure — precisely the "no uncontrolled pyramiding"
-  failure mode the project's own Phantom Protocol rules were written to
+  failure mode the project's own Titan Protocol Protocol rules were written to
   prevent, with no structural guarantee anything catches it.
 
 ## 2.3 Trade Decision Memory
@@ -138,7 +138,7 @@ Compliance Engine) is the part with no architecture at all yet.
   "reads everything, decides nothing" stage per `ADR-001`, and this
   capability is a natural extension of that mission — but it must be
   called out explicitly, since the reference material's narrow
-  `phantom/analytics.py` (win-rate/P&L only) is the wrong scope to default
+  `titan_protocol/analytics.py` (win-rate/P&L only) is the wrong scope to default
   to.
 - **Owning stage:** Analytics (ADR-010).
 - **Owning Council member:** Backend Architect (Analytics RACI owner).
@@ -409,7 +409,7 @@ signal.
 
 # 10. Final recommendation
 
-**The question as posed — "can Phantom safely begin implementation after
+**The question as posed — "can Titan Protocol safely begin implementation after
 ADR-010?" — has a false premise: ADR-005 through ADR-010 don't exist yet
 (§0).** The real question is whether implementation can safely begin now,
 given what actually exists.

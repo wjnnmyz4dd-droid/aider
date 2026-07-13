@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: SRE (Accountable per `.claude/agents/TEAM.md` §5 RACI, Watchdog
 row — this ADR is that row's own governance, made concrete)
@@ -47,7 +47,7 @@ depends on every stage to produce the health/metrics signals it observes.
 
 # 1. Mission
 
-**The Watchdog answers exactly one question: "Is the Phantom system
+**The Watchdog answers exactly one question: "Is the Titan Protocol system
 healthy enough to continue operating safely?"**
 
 **It never answers:** Should we trade? Should we execute? Should we
@@ -509,7 +509,7 @@ ADR-011 is acceptable only if it guarantees:
 # 18. Reference material — ideas only, not authority
 
 - **No legacy Watchdog implementation exists anywhere in this repository**
-  (verified: no `watchdog.py` or equivalent in `phantom/` or
+  (verified: no `watchdog.py` or equivalent in `titan_protocol/` or
   `phantom_institutional.py`). As with `ADR-008` and `ADR-009`, there is
   no legacy module to mine for ideas — this stage is designed entirely
   from first principles.

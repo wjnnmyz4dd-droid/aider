@@ -41,8 +41,8 @@ Shift` is conceptually adjacent to `liquidity_reversal.py`; only `BOS +
 Fair Value Gap` has no existing counterpart. This is a real overlap,
 disclosed rather than hidden — and it resolves exactly the way
 `ADR-024`/`ADR-025` already resolved the same class of question for
-this session's `phantom/` track: **fresh, independent, no reuse.**
-`phantom/strategy_engine/` is built clean-room, imports nothing from
+this session's `titan_protocol/` track: **fresh, independent, no reuse.**
+`titan_protocol/strategy_engine/` is built clean-room, imports nothing from
 `phantom_pipeline/`, and does not share a playbook registry, scoring
 model, or selection algorithm with `phantom_pipeline/strategy_engine/`.
 The two tracks remain fully separate authorities within their own,
@@ -77,12 +77,12 @@ is produced.**
 
 1. **No trade decision anywhere in this package.** No `BUY`/`SELL`, no
    position size, no order, no FTMO/compliance verdict, anywhere in
-   `phantom/strategy_engine/` — verified by a structural test.
+   `titan_protocol/strategy_engine/` — verified by a structural test.
 2. **Two inputs only.** `evaluate()` accepts an `EvidenceSnapshot` and a
    `MarketIntelligenceSnapshot` for one pair — nothing else. No file in
-   this package imports `phantom_pipeline/`, `phantom.bridge`, or
-   recomputes anything `phantom.evidence_engine`/
-   `phantom.market_intelligence` already computed (no duplicate
+   this package imports `phantom_pipeline/`, `titan_protocol.bridge`, or
+   recomputes anything `titan_protocol.evidence_engine`/
+   `titan_protocol.market_intelligence` already computed (no duplicate
    structure/liquidity/candlestick/news calculations).
 3. **Every strategy self-qualifies.** A strategy never evaluates a
    market outside its declared regime; `qualify()` returns a
@@ -119,7 +119,7 @@ is produced.**
 # 2. Architecture
 
 ```
-phantom/strategy_engine/
+titan_protocol/strategy_engine/
     models.py             StrategyId, MarketRegime, QualificationStatus,
                           QualificationResult, StrategyDefinition,
                           EligibilityMatrix, WinningStrategy,
@@ -144,9 +144,9 @@ phantom/strategy_engine/
     logging_sink.py, metrics.py, __init__.py
 ```
 
-No file here imports `phantom_pipeline/` or `phantom.bridge`. The only
-upstream imports are `phantom.evidence_engine.models.EvidenceSnapshot`
-and `phantom.market_intelligence.models.MarketIntelligenceSnapshot`
+No file here imports `phantom_pipeline/` or `titan_protocol.bridge`. The only
+upstream imports are `titan_protocol.evidence_engine.models.EvidenceSnapshot`
+and `titan_protocol.market_intelligence.models.MarketIntelligenceSnapshot`
 (types only, read-only).
 
 ---
@@ -268,7 +268,7 @@ This amendment does not create a Direction Engine, does not place
 direction-deciding logic in Runtime, and does not reinterpret Evidence
 Engine's trend classification as a trade signal from outside the
 Strategy Engine. `TradeIntent` belongs exclusively to, and is computed
-exclusively within, `phantom/strategy_engine/`.
+exclusively within, `titan_protocol/strategy_engine/`.
 
 ## Testing
 

@@ -12,7 +12,7 @@ Date: 2026-07-04
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Depends on: `ADR-001-single-authority-architecture.md` (Accepted),
 `ADR-002-scanner.md` (Accepted)
@@ -249,13 +249,13 @@ alongside it; they never rewrite it (§18).
 - **No hard-coded strategy lists.** The engine itself must not contain an
   explicit list of playbook names or classes. This directly prevents the
   class of defect already on record in the reference material —
-  `phantom/analytics.py`'s `STRATEGIES` tuple drifted out of sync with the
+  `titan_protocol/analytics.py`'s `STRATEGIES` tuple drifted out of sync with the
   actual playbook roster (`.claude/agents/TEAM.md` §8) — from recurring
   at this stage.
 - **Automatic discovery** — playbooks register themselves, or are
   discovered via a defined convention, without the engine needing a
   manually maintained list. (The reference material's
-  `phantom/strategies/orchestrator.py` discovery pattern is a useful idea
+  `titan_protocol/strategies/orchestrator.py` discovery pattern is a useful idea
   here, not an authority, per `ADR-001`.)
 - **Version controlled** — the registry records each playbook's declared
   version (§5); upgrading a playbook is a version bump, not a silent
@@ -308,7 +308,7 @@ playbooks register under the same Strategy ID.
 Reserved Strategy IDs and conceptual roles only. No logic, no thresholds,
 no implementation code. Note: these are fresh, first-principles
 placeholders, not a renaming of the reference material's five playbooks —
-per `ADR-001`, neither `phantom/` nor `phantom_institutional.py` is
+per `ADR-001`, neither `titan_protocol/` nor `phantom_institutional.py` is
 authoritative, so no 1:1 mapping to the old playbook set should be
 assumed.
 
@@ -586,17 +586,17 @@ ADR-003 is acceptable only if it guarantees:
 
 Studied for ideas only, per `ADR-001`; neither is authoritative:
 
-- `phantom/strategies/base.py` — the `StrategyContext`/`StrategySignal`
+- `titan_protocol/strategies/base.py` — the `StrategyContext`/`StrategySignal`
   shape (facts handed to a strategy, a signal handed back) is a useful
   idea for §5/§6's boundary; not an authoritative type.
-- `phantom/strategies/orchestrator.py` — the discovery-and-registration
+- `titan_protocol/strategies/orchestrator.py` — the discovery-and-registration
   pattern (`discover_strategy_classes()`) is a useful idea for §7; its
   specific canonical-ordering mechanism is not binding.
-- `phantom/strategies/engine.py` — its `resolve()` consolidation/
+- `titan_protocol/strategies/engine.py` — its `resolve()` consolidation/
   conflict-dampening logic is explicitly **not** carried forward into this
   stage (§9); it is relocated to Scoring Engine (ADR-004) as a deliberate
   architectural correction, not an oversight.
-- `phantom/strategies/{orb_strategy,liquidity_reversal,session_breakout,
+- `titan_protocol/strategies/{orb_strategy,liquidity_reversal,session_breakout,
   support_resistance,momentum_continuation}.py` — studied only for the
   general shape of "what a playbook looks at"; no thresholds, scoring
   weights, or logic are authoritative or referenced for the placeholders

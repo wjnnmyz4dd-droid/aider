@@ -10,11 +10,11 @@ Date: 2026-07-04
 
 # Problem
 
-Phantom currently contains two independent decision authorities.
+Titan Protocol currently contains two independent decision authorities.
 
 Examples:
 
-- phantom/
+- titan_protocol/
 
 - phantom_institutional.py
 
@@ -44,7 +44,7 @@ A prop firm system must never allow conflicting authorities.
 
 There will only be ONE authoritative pipeline.
 
-**Neither `phantom/` nor `phantom_institutional.py` becomes that pipeline.**
+**Neither `titan_protocol/` nor `phantom_institutional.py` becomes that pipeline.**
 Both are retired to reference material — mined for proven ideas,
 algorithms, and safety mechanisms, but neither is the permanent authority.
 The new architecture is designed from first principles, via ADRs, before
@@ -225,7 +225,7 @@ Phase 1 — Architecture
 
 One ADR per pipeline stage (Scanner, Strategy Engine, Scoring Engine, Risk
 Engine, Compliance Engine, Execution Validator, MT5 Bridge, Position
-Manager, Analytics), each naming what's mined from `phantom/` /
+Manager, Analytics), each naming what's mined from `titan_protocol/` /
 `phantom_institutional.py` as reference vs. built new, before any code.
 
 Phase 2 — Implementation
@@ -240,7 +240,7 @@ once all stages exist.
 
 Phase 4 — Deployment
 
-Only after Phase 3 passes in full. `phantom/` and `phantom_institutional.py`
+Only after Phase 3 passes in full. `titan_protocol/` and `phantom_institutional.py`
 are archived (never deleted, per the existing Archive Policy in `AUDIT.md`)
 once the new pipeline supersedes them functionally.
 
@@ -278,7 +278,7 @@ And additionally, matching the resolved pipeline:
 
 ✓ Performance analytics
 
-No stage's responsibility appears in more than one module. `phantom/` and
+No stage's responsibility appears in more than one module. `titan_protocol/` and
 `phantom_institutional.py` are reference-only inputs to this design, not
 running authorities, once the new pipeline exists.
 
@@ -317,7 +317,7 @@ ADR-014 Multi-Agent Governance (Engineering Council process itself)
 
 ADR-015 External Data Sources & API Governance (added 2026-07-04 — not
 part of the original per-stage list above; covers every external
-service/API/vendor used anywhere in Phantom, including ones with no
+service/API/vendor used anywhere in Titan Protocol, including ones with no
 pipeline stage of their own, e.g. source control, AI development tooling,
 and the VIBE research lab's isolation boundary)
 
@@ -345,7 +345,7 @@ access, governed by the same AI Research Governance boundary as ADR-015
 
 Both open questions below were put to the project owner directly. Answers:
 
-1. **Primary implementation: neither.** `phantom/` and
+1. **Primary implementation: neither.** `titan_protocol/` and
    `phantom_institutional.py` are both retired to reference-only status —
    mined for proven algorithms and safety mechanisms, but neither becomes
    the permanent authority. The system is designed from first principles
@@ -388,7 +388,7 @@ architecture review:
   `/can-trade` (fail-closed), and is the subject of `RELEASE.md`'s
   `v1.0-forward-test` freeze — i.e. it is the live authority right now, not
   a candidate.
-- **`phantom/`** is the newer, modular, fully-tested package (13/13
+- **`titan_protocol/`** is the newer, modular, fully-tested package (13/13
   `validate.py`, stdlib-only) — but its own README states "It never places
   orders. Execution, if any, lives outside this package." It has no MT5
   bridge, no watchdog, no command-center integration, and no execution
@@ -397,7 +397,7 @@ architecture review:
 Neither codebase is a drop-in "primary implementation" as-is: one has
 execution wiring but is the less cleanly architected of the two; the other
 has the cleaner architecture but no execution wiring. Recommend Phase 3
-conclude explicitly: **`phantom/`'s pipeline shape becomes the target
+conclude explicitly: **`titan_protocol/`'s pipeline shape becomes the target
 architecture, with `phantom_institutional.py`'s proven MT5/command-center
 integration and compliance logic ported into it** — rather than the
 reverse — but this determines which system holds execution authority and
@@ -420,7 +420,7 @@ confirm it's over.
 
 Confirmed by filesystem search earlier this session: there is no
 `Execution`, `Execution Validator`, or `MT5 Bridge` source file in this
-repository. `phantom/trade_router.py` is advisory position **sizing**
+repository. `titan_protocol/trade_router.py` is advisory position **sizing**
 only — it never places an order. The actual order-placement logic, if any,
 lives client-side in the MT5 EA (`DarkPhantomProtocol_v2.mq5`), which also
 isn't in this repository. Phase 1's inventory should record this

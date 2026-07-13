@@ -1,11 +1,11 @@
-# Phantom Windows Deployment — Known Gaps
+# Titan Protocol Windows Deployment — Known Gaps
 
 This deployment layer wires together every real, existing, public
-interface in `phantom/` (Bridge, the 5 core trading engines, Runtime
+interface in `titan_protocol/` (Bridge, the 5 core trading engines, Runtime
 Orchestrator, Reliability) exactly as documented in
 `PHANTOM_MT5_DEPLOYMENT_AUDIT.md`. It adds **zero new trading logic,
 zero engine modifications, and zero architectural redesign.** Two real
-gaps exist in the underlying `phantom/` codebase itself — this
+gaps exist in the underlying `titan_protocol/` codebase itself — this
 deployment layer cannot close them without inventing new business
 logic, which was explicitly out of scope for this mission. They are
 recorded here rather than papered over.
@@ -15,7 +15,7 @@ recorded here rather than papered over.
 **What's missing:** `RuntimeOrchestrator.run_cycle()` /
 `run_cycle_for_pair()` require the caller to already have, for every
 pair, every cycle: OHLC bars, news events, current/average spread,
-portfolio state, trade history, and account state. `phantom/
+portfolio state, trade history, and account state. `titan_protocol/
 market_data_ingestion/` (ADR-033 Part 1) now exists and normalizes raw
 bars/ticks down to the frozen `Bar` type, but nothing in this
 deployment layer's entry point (`start.py`) constructs or drives it —
@@ -23,18 +23,18 @@ it is a tested, standalone package, not yet wired into a running
 process.
 
 **Evidence (traced, not assumed):**
-- `phantom/bridge/server.py`'s entire HTTP protocol is
+- `titan_protocol/bridge/server.py`'s entire HTTP protocol is
   execution-only: `/bridge/heartbeat`, `/bridge/account`,
   `/bridge/positions`, `/bridge/orders`, `/bridge/trade-transaction`,
   `/bridge/error`, `/bridge/execution/report`,
   `/bridge/commands/poll`. Zero endpoints exist for bars, candles,
   OHLC, or market data of any kind.
-- `mt5/PhantomBridgeEA.mq5`'s own header comment: *"This EA is a
+- `mt5/TitanProtocolEA.mq5`'s own header comment: *"This EA is a
   transport + execution bridge ONLY: it never generates, scores, or
   [fetches market data]."*
 - `start.py` constructs the Bridge, the 5 core engines, and the Runtime
   Orchestrator, but never imports or constructs anything from
-  `phantom/market_data_ingestion/` — grep `start.py` for
+  `titan_protocol/market_data_ingestion/` — grep `start.py` for
   `market_data_ingestion` to confirm.
 - `health_check.py`'s "market-data readiness" check always reports
   **NOT AVAILABLE** for the same reason -- it is not a probe that could
@@ -51,7 +51,7 @@ to make one up. `start.py` and `health_check.py` both report
 this honestly: status is always **DEGRADED**, never HEALTHY, and both
 print/expose `cycle_loop_active: false` with this exact reason.
 
-**To close this gap:** wire `phantom/market_data_ingestion/`'s output
+**To close this gap:** wire `titan_protocol/market_data_ingestion/`'s output
 (or a genuine MT5 feed such as `CopyRates`/`CopyTicks` pushed to the
 Bridge via a new endpoint) into a live trading-cycle loop that calls
 `RuntimeOrchestrator.run_cycle()`'s per-pair `inputs` on a real
@@ -68,16 +68,16 @@ logic, or business rules") explicitly excludes it.
 configuration," and "never merge or average both provider feeds."
 
 **Evidence (traced, not assumed):** grepped every file under
-`phantom/` for `trading.?economics` and `forex.?factory`
+`titan_protocol/` for `trading.?economics` and `forex.?factory`
 (case-insensitive) — zero hits, anywhere. The Market Intelligence
-Engine (`phantom/market_intelligence/`) has exactly one news-trust
+Engine (`titan_protocol/market_intelligence/`) has exactly one news-trust
 signal: `news_feed_trusted: bool`, passed to
 `MarketIntelligenceEngine.evaluate()`. There is no `provider` field on
 `NewsEvent`, no per-provider trust/disagreement/outage logic, and no
 primary/backup failover concept anywhere in the engine.
 
 **What this deployment layer does instead:**
-`config/phantom_config.example.json`'s `news` section exposes only
+`config/titan_protocol_config.example.json`'s `news` section exposes only
 the fields that actually exist and actually do something
 (`news_feed_trusted`, blackout windows, impact/central-bank blackout
 toggles), with an explicit comment explaining the gap. It does **not**

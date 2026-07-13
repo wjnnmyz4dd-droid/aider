@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-04
 
-Accepted By: Software Architect / Phantom Engineering Council
+Accepted By: Software Architect / Titan Protocol Engineering Council
 
 Owner: Backend Architect (data contracts/reliability — matches the
 ownership `ADR-015` §6 already assigns to the MT5 Broker Feed and
@@ -66,7 +66,7 @@ input contract (`ADR-002` §4) — it fulfills it.
 # 1. Mission
 
 **The Data Pipeline answers exactly one question: "What is the
-authoritative market data available to Phantom?"**
+authoritative market data available to Titan Protocol?"**
 
 **It never answers:** Should we trade? Should we score? Should we size?
 Should we execute? Should we manage positions? Those are, respectively,
@@ -125,7 +125,7 @@ The Data Pipeline SHALL own:
 - Spread normalization, volume normalization, symbol normalization.
 - Corporate action handling (future — not designed here; flagged as an
   explicit future concern, not a present gap, since MT5 forex/CFD
-  symbols are not corporate-action-bearing instruments in Phantom's
+  symbols are not corporate-action-bearing instruments in Titan Protocol's
   current scope).
 - Data validation, data quality assessment (§7).
 - Replay data production, historical replay support (§10).
@@ -209,7 +209,7 @@ flagged as repaired), never a mutable working object.
 # 6. Normalization
 
 - **Symbol normalization** — maps broker-specific symbol variants (e.g.
-  a broker suffix) to Phantom's canonical symbol identifier. This is
+  a broker suffix) to Titan Protocol's canonical symbol identifier. This is
   translation only, per `ADR-015`'s Adapter Forbidden Responsibilities —
   it never encodes which symbols are "tradeable" or "preferred" (a
   Strategy Engine / configuration concern, not this stage's).
@@ -565,7 +565,7 @@ ADR-013 is acceptable only if it guarantees:
 
 - **No dedicated market-data ingestion/normalization module exists
   anywhere in this repository** (verified: no tick/bar-construction or
-  gap-repair logic in `phantom/` or `phantom_institutional.py` beyond
+  gap-repair logic in `titan_protocol/` or `phantom_institutional.py` beyond
   what `Scanner`/`Guards` consume as already-supplied bars). As with
   `ADR-008`, `ADR-009`, `ADR-011`, and `ADR-012`, there is no legacy
   module to mine for ideas — this stage is designed entirely from first
@@ -578,7 +578,7 @@ ADR-013 is acceptable only if it guarantees:
 - `ADR-015` §5's data-flow diagram and §6's MT5 Broker Feed entry are
   the direct source of this ADR's access-control model (§1, §9) and are
   restated, not reinvented, here.
-- `phantom/regime.py`'s `INSUFFICIENT_DATA` handling (cited as an idea
+- `titan_protocol/regime.py`'s `INSUFFICIENT_DATA` handling (cited as an idea
   in `ADR-002` §17) is the same idea this ADR's warm-up/cold-start
   handling (§11) extends one stage earlier.
 

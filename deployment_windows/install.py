@@ -1,23 +1,23 @@
-"""Phantom master installer (Python Deployment Manager).
+"""Titan Protocol master installer (Python Deployment Manager).
 
 The whole point of this script: a first-time user should only need to
 
-  1. Extract the package to C:\\Phantom
+  1. Extract the package to C:\\TitanProtocol
   2. Run  python install.py
   3. Open MT5
-  4. Attach PhantomBridgeEA
+  4. Attach TitanProtocolEA
 
-Everything else -- creating phantom_config.json, generating the Bridge
+Everything else -- creating titan_protocol_config.json, generating the Bridge
 API key, creating the virtual environment, installing dependencies,
 creating logs/state/data folders, copying the MT5 EA files (personalized
 with the real API key/magic number, so loading the .set file in MT5
 requires no manual typing), verifying that Bridge/Runtime/Reliability
 actually construct and (for Bridge) actually bind a live port, creating
-desktop shortcuts, and starting Phantom itself -- happens here, once,
+desktop shortcuts, and starting Titan Protocol itself -- happens here, once,
 automatically. After this script finishes, day-to-day operation really
 is just `python start.py` / `python stop.py` (see start.py/stop.py).
 
-HONESTY NOTE, read before assuming this makes Phantom "fully verified":
+HONESTY NOTE, read before assuming this makes Titan Protocol "fully verified":
 this script verifies every real component that exists in this
 repository: the Bridge (by actually binding its HTTP server on the
 configured port and confirming it is reachable), the 5 core engines +
@@ -25,7 +25,7 @@ RuntimeOrchestrator (by constructing them for real), and the
 Reliability engine (by calling evaluate_health() for real). It does
 **not** and cannot verify a Trading Economics / Forex Factory news
 provider system, because no such component exists in this codebase --
-`phantom/news_ingestion/` (ADR-033 Part 2) has not been implemented.
+`titan_protocol/news_ingestion/` (ADR-033 Part 2) has not been implemented.
 That step reports this honestly (see step_verify_news_providers below
 and KNOWN_GAPS.md section 2) rather than fabricating a pass. It also
 does not and cannot verify real MT5/WebRequest connectivity or
@@ -33,7 +33,7 @@ MetaEditor compilation -- both require the real MT5 GUI, which is
 outside what any Python script can do; see steps 3 and 4 above.
 
 Safe to re-run: every step here is idempotent. An existing
-phantom_config.json, generated API key, .venv, or MT5 EA files are
+titan_protocol_config.json, generated API key, .venv, or MT5 EA files are
 reused/backed-up rather than silently clobbered or regenerated.
 """
 
@@ -59,16 +59,16 @@ _HERE = Path(__file__).resolve().parent
 
 def _find_repo_root(here: Path) -> Path:
     """Locates the installation root -- the folder containing both
-    phantom/ and mt5/ -- whether this script lives directly inside it
-    (the shipped, flattened C:\\Phantom\\install.py layout) or one level
+    titan_protocol/ and mt5/ -- whether this script lives directly inside it
+    (the shipped, flattened C:\\TitanProtocol\\install.py layout) or one level
     below it (this repository's own deployment_windows/ subfolder, used
     for development)."""
     for candidate in (here, here.parent):
-        if (candidate / "phantom").is_dir() and (candidate / "mt5").is_dir():
+        if (candidate / "titan_protocol").is_dir() and (candidate / "mt5").is_dir():
             return candidate
     raise RuntimeError(
-        f"Could not locate the Phantom installation root (a folder containing "
-        f"both phantom/ and mt5/) starting from {here} -- extract the full "
+        f"Could not locate the Titan Protocol installation root (a folder containing "
+        f"both titan_protocol/ and mt5/) starting from {here} -- extract the full "
         "release package before running this script."
     )
 
@@ -86,8 +86,8 @@ import install_mt5_files as install_mt5_module
 import start as start_module
 from config_loader import ConfigError, generated_secret_path, load_settings
 
-_CONFIG_TEMPLATE_PATH = _HERE / "config" / "phantom_config.example.json"
-_CONFIG_PATH = _HERE / "phantom_config.json"
+_CONFIG_TEMPLATE_PATH = _HERE / "config" / "titan_protocol_config.example.json"
+_CONFIG_PATH = _HERE / "titan_protocol_config.json"
 _REPORT_PATH = _HERE / "INSTALLATION_REPORT.md"
 
 _OK, _INFO, _SKIPPED, _FAILED = "OK", "INFO", "SKIPPED", "FAILED"
@@ -107,13 +107,13 @@ def _utc_now() -> datetime:
 
 def step_verify_release_package() -> StepReport:
     """If this function is even running, module import already found
-    phantom/ and mt5/ next to this script (see _find_repo_root above,
+    titan_protocol/ and mt5/ next to this script (see _find_repo_root above,
     which exits before any of this if they're missing) -- this step
     just makes that fact a visible, reported line instead of an
     implicit assumption."""
     return StepReport(
         "Verify running from the full release package", _OK,
-        f"phantom/ and mt5/ found at {_REPO_ROOT} (installation root)",
+        f"titan_protocol/ and mt5/ found at {_REPO_ROOT} (installation root)",
     )
 
 
@@ -142,7 +142,7 @@ def step_generate_bridge_api_key() -> StepReport:
         "Generate Bridge API key", _OK,
         f"Generated a random local shared secret and wrote it to {secret_path} "
         "(gitignored, never a third-party credential -- this is just the shared "
-        "token Phantom and its one EA use to recognize each other).",
+        "token Titan Protocol and its one EA use to recognize each other).",
     )
 
 
@@ -170,7 +170,7 @@ def step_install_mt5_files(settings) -> StepReport:
     }
     exit_code = install_mt5_module.run(explicit_mt5_dir="", non_interactive=True, personalize=personalize)
     if exit_code == 0:
-        return StepReport("Copy + personalize MT5 EA files", _OK, "PhantomBridgeEA.mq5/.set copied into the auto-detected MT5 data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl")
+        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the auto-detected MT5 data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl")
     if exit_code == 3:
         return StepReport(
             "Copy + personalize MT5 EA files", _SKIPPED,
@@ -182,10 +182,10 @@ def step_install_mt5_files(settings) -> StepReport:
 
 
 def step_verify_bridge(settings) -> StepReport:
-    from phantom.bridge.command_queue import CommandQueue
-    from phantom.bridge.connection_health import ConnectionHealth
-    from phantom.bridge.engine import BridgeEngine
-    from phantom.bridge.server import serve as bridge_serve
+    from titan_protocol.bridge.command_queue import CommandQueue
+    from titan_protocol.bridge.connection_health import ConnectionHealth
+    from titan_protocol.bridge.engine import BridgeEngine
+    from titan_protocol.bridge.server import serve as bridge_serve
 
     try:
         command_queue = CommandQueue(settings.bridge_config)
@@ -197,7 +197,7 @@ def step_verify_bridge(settings) -> StepReport:
     except Exception as exc:  # noqa: BLE001 -- report any construction failure, don't let it crash the installer
         return StepReport("Verify Bridge", _FAILED, f"Bridge construction failed: {exc}")
 
-    server_thread = threading.Thread(target=http_server.serve_forever, name="phantom-install-bridge-smoketest", daemon=True)
+    server_thread = threading.Thread(target=http_server.serve_forever, name="titan_protocol-install-bridge-smoketest", daemon=True)
     server_thread.start()
     try:
         with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
@@ -216,14 +216,14 @@ def step_verify_bridge(settings) -> StepReport:
 
 
 def step_verify_runtime(settings) -> StepReport:
-    from phantom.compliance_engine.engine import ComplianceEngine
-    from phantom.evidence_engine.config import EvidenceEngineConfig
-    from phantom.evidence_engine.engine import EvidenceEngine
-    from phantom.market_intelligence.engine import MarketIntelligenceEngine
-    from phantom.risk_engine.engine import RiskEngine
-    from phantom.runtime.engine import RuntimeOrchestrator
-    from phantom.strategy_engine.config import StrategyEngineConfig
-    from phantom.strategy_engine.engine import StrategyEngine
+    from titan_protocol.compliance_engine.engine import ComplianceEngine
+    from titan_protocol.evidence_engine.config import EvidenceEngineConfig
+    from titan_protocol.evidence_engine.engine import EvidenceEngine
+    from titan_protocol.market_intelligence.engine import MarketIntelligenceEngine
+    from titan_protocol.risk_engine.engine import RiskEngine
+    from titan_protocol.runtime.engine import RuntimeOrchestrator
+    from titan_protocol.strategy_engine.config import StrategyEngineConfig
+    from titan_protocol.strategy_engine.engine import StrategyEngine
 
     try:
         evidence_engine = EvidenceEngine(EvidenceEngineConfig())
@@ -241,7 +241,7 @@ def step_verify_runtime(settings) -> StepReport:
 
 
 def step_verify_reliability(settings) -> StepReport:
-    from phantom.reliability.engine import ReliabilityEngine
+    from titan_protocol.reliability.engine import ReliabilityEngine
 
     try:
         reliability = ReliabilityEngine(settings.reliability_config)
@@ -255,7 +255,7 @@ def step_verify_news_providers(settings) -> StepReport:
     return StepReport(
         "Verify news providers (Trading Economics primary / Forex Factory backup)", _INFO,
         "NOT AVAILABLE -- no news-provider component exists in this codebase yet "
-        "(phantom/news_ingestion/, ADR-033 Part 2, has not been implemented; see "
+        "(titan_protocol/news_ingestion/, ADR-033 Part 2, has not been implemented; see "
         "KNOWN_GAPS.md section 2). This step cannot verify what does not exist, and "
         "does not fabricate a pass. The one real news-trust signal that DOES exist "
         f"loaded successfully: news_feed_trusted={settings.news_feed_trusted}.",
@@ -293,10 +293,10 @@ def step_create_desktop_shortcuts() -> StepReport:
         desktop = Path.home() / "Desktop"
         desktop.mkdir(parents=True, exist_ok=True)
         shortcuts = {
-            "Phantom - Start.lnk": "start.py",
-            "Phantom - Stop.lnk": "stop.py",
-            "Phantom - Restart.lnk": "restart.py",
-            "Phantom - Health Check.lnk": "health_check.py",
+            "Titan Protocol - Start.lnk": "start.py",
+            "Titan Protocol - Stop.lnk": "stop.py",
+            "Titan Protocol - Restart.lnk": "restart.py",
+            "Titan Protocol - Health Check.lnk": "health_check.py",
         }
         for lnk_name, script_name in shortcuts.items():
             _create_windows_shortcut(desktop / lnk_name, script_name)
@@ -305,7 +305,7 @@ def step_create_desktop_shortcuts() -> StepReport:
     return StepReport("Create desktop shortcuts", _OK, f"Created 4 shortcuts (Start, Stop, Restart, Health Check) on {desktop}")
 
 
-def step_launch_phantom() -> StepReport:
+def step_launch_titan_protocol() -> StepReport:
     buffer = io.StringIO()
     try:
         with redirect_stdout(buffer):
@@ -314,13 +314,13 @@ def step_launch_phantom() -> StepReport:
         print(buffer.getvalue(), end="")
     status = {0: "HEALTHY", 1: "DEGRADED", 2: "FAILED"}.get(exit_code, "UNKNOWN")
     if exit_code in (0, 1):
-        return StepReport("Launch Phantom", _OK, f"Phantom is running -- status: {status} (DEGRADED is expected; see KNOWN_GAPS.md)")
-    return StepReport("Launch Phantom", _FAILED, f"start.py reported status: {status} -- see output above")
+        return StepReport("Launch Titan Protocol", _OK, f"Titan Protocol is running -- status: {status} (DEGRADED is expected; see KNOWN_GAPS.md)")
+    return StepReport("Launch Titan Protocol", _FAILED, f"start.py reported status: {status} -- see output above")
 
 
 def _write_report(steps: list, overall_ok: bool) -> None:
     lines = [
-        "# Phantom Installation Report",
+        "# Titan Protocol Installation Report",
         "",
         f"Generated: {_utc_now().isoformat()}",
         f"Overall result: {'SUCCESS' if overall_ok else 'INCOMPLETE -- see FAILED step(s) below'}",
@@ -346,10 +346,10 @@ def _write_report(steps: list, overall_ok: bool) -> None:
         "## Next steps",
         "",
         "1. Open MT5.",
-        "2. Compile PhantomBridgeEA.mq5 in MetaEditor (F4 in MT5, then F7) -- this "
+        "2. Compile TitanProtocolEA.mq5 in MetaEditor (F4 in MT5, then F7) -- this "
         "installer cannot do this for you; it requires the real MetaEditor GUI.",
-        "3. Attach PhantomBridgeEA to a demo chart, and click Load in its settings "
-        "dialog to load the personalized PhantomBridgeEA.set (already filled in "
+        "3. Attach TitanProtocolEA to a demo chart, and click Load in its settings "
+        "dialog to load the personalized TitanProtocolEA.set (already filled in "
         "with the generated API key and matching magic number).",
         "4. Run `python health_check.py` to confirm `[PASS] MT5 bridge connectivity "
         "(EA heartbeat)` once the EA is attached and running.",
@@ -363,11 +363,11 @@ def _write_report(steps: list, overall_ok: bool) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Phantom master installer")
+    parser = argparse.ArgumentParser(description="Titan Protocol master installer")
     args = parser.parse_args()
 
     print("=" * 72)
-    print("PHANTOM MASTER INSTALLER")
+    print("TITAN_PROTOCOL MASTER INSTALLER")
     print("=" * 72)
 
     steps: list = []
@@ -416,15 +416,15 @@ def main() -> int:
     run_step(step_verify_news_providers(settings))
     run_step(step_create_desktop_shortcuts())
 
-    if run_step(step_launch_phantom()):
+    if run_step(step_launch_titan_protocol()):
         _write_report(steps, overall_ok=False)
         return 1
 
     _write_report(steps, overall_ok=True)
     print("=" * 72)
     print(f"Installation complete. Report written to {_REPORT_PATH}")
-    print("Next: open MT5, compile PhantomBridgeEA.mq5 in MetaEditor, attach it to a "
-          "demo chart, and Load PhantomBridgeEA.set.")
+    print("Next: open MT5, compile TitanProtocolEA.mq5 in MetaEditor, attach it to a "
+          "demo chart, and Load TitanProtocolEA.set.")
     print("=" * 72)
     return 0
 

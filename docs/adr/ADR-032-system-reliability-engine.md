@@ -4,7 +4,7 @@ Status: Accepted
 
 Acceptance Date: 2026-07-10
 
-Accepted By: Software Architect / Phantom Engineering Council (full
+Accepted By: Software Architect / Titan Protocol Engineering Council (full
 spec supplied in one message, per the `ADR-029`/`ADR-030`/`ADR-031`
 "complete spec accepted in one pass" precedent).
 
@@ -31,8 +31,8 @@ touches)
 
 - **`docs/specs/07_system_reliability_engine.md`** is a pre-existing,
   specification-only document for an *earlier*, superseded pipeline
-  shape (references `phantom/runtime/runtime.py` and
-  PhantomBridgeEA's own `ConnectionHealth`, both predating the engines
+  shape (references `titan_protocol/runtime/runtime.py` and
+  TitanProtocolEA's own `ConnectionHealth`, both predating the engines
   actually built this session). Its **ideas** are reused — a health
   monitor, heartbeat tracking, an `is_halted()`-style gate, injected
   resource-sampler callables that fail closed per-field — but its
@@ -50,7 +50,7 @@ touches)
     the "feature addition" this phase's bug policy forbids. A future
     ADR-032 Amendment can add it if the Council decides to.
   - **No import of `phantom_pipeline.watchdog` or
-    `phantom_pipeline.deployment.monitoring`.** Every `phantom/`
+    `phantom_pipeline.deployment.monitoring`.** Every `titan_protocol/`
     package built this session enforces "zero import of
     `phantom_pipeline`" as an architecture invariant (verified by each
     package's own test). `phantom_pipeline/deployment/monitoring.py`'s
@@ -59,20 +59,20 @@ touches)
     implementation that degrades a single reading to `None` on failure
     rather than aborting the whole snapshot) is mirrored here, not
     imported.
-- **`ADR-031` §9 (`phantom/runtime/watchdog_integration.py`)** already
+- **`ADR-031` §9 (`titan_protocol/runtime/watchdog_integration.py`)** already
   implements per-cycle timeout detection (`detect_timeouts`,
   `detect_snapshot_timeout`) and a restart allow-list
   (`APPROVED_RESTART_COMPONENTS`, `is_approved_for_restart`) scoped to
   what Runtime itself needs to reason about *within* one cycle. This
   ADR **imports those two functions and that constant directly**
-  (`phantom.runtime.watchdog_integration`, read-only) rather than
+  (`titan_protocol.runtime.watchdog_integration`, read-only) rather than
   redefining "which components are safe to restart" a second time —
   the exact "no duplicate calculations" discipline `ADR-029`/`ADR-030`
   already established for reused pure functions. This ADR's own scope
   is the layer *above* one cycle: aggregating heartbeats and cycle
   outcomes *across* cycles, tracking system resources, and deciding
   system-wide degradation level.
-- **No legacy reliability engine exists in `phantom/`.** Designed from
+- **No legacy reliability engine exists in `titan_protocol/`.** Designed from
   first principles for the six engines and the Runtime Orchestrator
   built this session.
 
@@ -123,7 +123,7 @@ recovers.
 7. CPU monitoring — same pattern.
 8. Queue monitoring — `report_queue_depth(name, depth)`; a plain
    gauge, since no queue implementation exists yet anywhere in
-   `phantom/` to observe directly (Bridge's own command handling is
+   `titan_protocol/` to observe directly (Bridge's own command handling is
    synchronous per-call, per `ADR-023`) — this is the *observation
    surface* for a future queue, not a claim one exists today.
 9. Watchdog integration — this ADR's whole relationship to `ADR-031`
@@ -192,7 +192,7 @@ mirroring every prior stage's own.
 # 6. Hard Rules
 
 1. **Never trades, sizes, selects, or approves.** Verified structurally
-   (no decision-shaped name anywhere in `phantom/reliability/`).
+   (no decision-shaped name anywhere in `titan_protocol/reliability/`).
 2. **Never calls into Runtime.** This engine is fed Runtime's already-
    produced output by an external caller; it holds no reference to a
    `RuntimeOrchestrator` instance and imports no Runtime *engine*

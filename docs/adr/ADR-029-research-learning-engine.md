@@ -25,7 +25,7 @@ Date: 2026-07-10
 Depends on: `ADR-024`–`ADR-028` (all Accepted — consumes
 `EvidenceSnapshot`, `MarketIntelligenceSnapshot`, `StrategySnapshot`,
 `RiskSnapshot`, `ComplianceSnapshot`, `PortfolioState`, `AccountState`
-read-only), and reuses `phantom.risk_engine.statistics`'s existing pure
+read-only), and reuses `titan_protocol.risk_engine.statistics`'s existing pure
 statistical functions rather than a second implementation (§4).
 
 ---
@@ -49,21 +49,21 @@ than hidden:
 - **`ADR-019` Self-Evolving Market Structure Research Agent** — also
   AI/agent-shaped; same distinction applies.
 
-Per the now-five-times-established `phantom/` track precedent
+Per the now-five-times-established `titan_protocol/` track precedent
 (`ADR-024`–`ADR-028` §0, each disclosing the same class of overlap and
 resolving it identically): **fresh, independent, no reuse.**
-`phantom/research_engine/` is built clean-room, imports nothing from
+`titan_protocol/research_engine/` is built clean-room, imports nothing from
 `phantom_pipeline/`, and does not share a record type, statistics
 implementation, or recommendation mechanism with any of the three.
 
 The one exception, by design: this engine **does** import
-`phantom.risk_engine.statistics.compute_statistical_metrics` and its
+`titan_protocol.risk_engine.statistics.compute_statistical_metrics` and its
 `TradeResult`/`TradeHistory` types directly, converting its own richer
 `ClosedTrade` records into `risk_engine`'s simpler shape purely to reuse
 its already-implemented Sharpe/Sortino/VaR/CVaR/drawdown/Kelly formulas
 per pair/strategy/session bucket, rather than a third implementation of
 the same statistics. This is the identical reuse move `ADR-028` made
-for `phantom.risk_engine.exposure` — reusing a sibling `phantom/`
+for `titan_protocol.risk_engine.exposure` — reusing a sibling `titan_protocol/`
 package's already-accepted pure functions is not a duplicate
 calculation, it is the alternative to one (Hard Rule, §5).
 
@@ -113,7 +113,7 @@ liquidity sweep, BOS/FVG). This is exactly the same gap `ADR-027`
 (`PortfolioState`/`TradeHistory`) and `ADR-028` (`AccountState`) each
 resolved the same way: **a new, caller-supplied, pre-aggregated record
 type**, defined here since this is the first stage that needs it.
-`ClosedTrade` is deliberately richer than `phantom.risk_engine.models.TradeResult`
+`ClosedTrade` is deliberately richer than `titan_protocol.risk_engine.models.TradeResult`
 (which only carries `pair`/`strategy_id`/`risk_r`/`r_multiple`/
 `opened_at`/`closed_at`/`won`) — this engine converts the subset it
 needs into that simpler shape purely to reuse Risk Engine's statistics
@@ -141,7 +141,7 @@ source of truth for it, never two that could drift.
    intelligence, strategy, risk, and compliance facts are read from
    their own snapshot types exactly as computed upstream. Statistical
    formulas (Sharpe, Sortino, VaR, CVaR, drawdown, Kelly fraction,
-   profit factor, expectancy) are never reimplemented — `phantom.risk_engine.statistics`'s
+   profit factor, expectancy) are never reimplemented — `titan_protocol.risk_engine.statistics`'s
    existing pure functions are reused per bucket (§0).
 4. **Recommendations are advisory only, never applied automatically.**
    `Recommendation` is a plain, inert data record (text, supporting
@@ -206,7 +206,7 @@ ever.
 # 7. Architecture
 
 ```
-phantom/research_engine/
+titan_protocol/research_engine/
     __init__.py
     models.py                  ClosedTrade, ClosedTradeHistory, AttributionDimension,
                               AttributionBucket, PerformanceAttribution,
@@ -228,7 +228,7 @@ phantom/research_engine/
     engine.py                     ResearchEngine.evaluate() (pure, stateless, read-only)
     logging_sink.py, metrics.py
 
-tests/phantom/research_engine/
+tests/titan_protocol/research_engine/
     _fixtures.py, test_attribution.py, test_pair_intelligence.py,
     test_strategy_intelligence.py, test_session_intelligence.py,
     test_execution_quality.py, test_reviews.py, test_recommendations.py,
