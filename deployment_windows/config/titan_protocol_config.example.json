@@ -74,7 +74,7 @@
 
   "news": {
     "_maps_to": "titan_protocol.market_intelligence.config.MarketIntelligenceConfig",
-    "_note": "The Market Intelligence Engine has exactly ONE trust signal for its whole news feed -- news_feed_trusted below. There is NO per-provider concept anywhere in that engine today: no Trading Economics primary / Forex Factory backup failover, no provider-disagreement detection (confirmed by grep -- zero references to either provider name anywhere in titan_protocol/market_intelligence/). See news_providers below and KNOWN_GAPS.md. What DOES exist and IS fail-closed today: if you cannot vouch for your news feed, set news_feed_trusted to false and the engine assumes the worst (blackout, score=0) rather than silently treating an untrustworthy feed as safe.",
+    "_note": "The Market Intelligence Engine's news_feed_trusted parameter is now driven live by titan_protocol/news_ingestion/'s dual-provider failover result each live-cycle tick (Phase 3E, ADR-033 Part 2) -- see news_providers below. news_feed_trusted here is only the static fallback MarketIntelligenceConfig itself defaults to; it is not consulted once the live NewsIngestionEngine is running. What IS still true either way: if the news feed cannot be vouched for, the engine assumes the worst (blackout, score=0) rather than silently treating an untrustworthy feed as safe.",
     "news_feed_trusted": true,
     "pre_news_blackout_minutes": 30.0,
     "post_news_blackout_minutes": 15.0,
@@ -83,10 +83,18 @@
   },
 
   "news_providers": {
-    "_note": "RESERVED for titan_protocol/news_ingestion/ (ADR-033 Part 2), which does NOT exist in this repository yet -- these keys are parsed and validated so the config format is ready, but nothing currently reads or acts on them. Trading Economics is the intended primary provider, Forex Factory the automatic backup, per ADR-033's design -- once that package is built. Until then, news.news_feed_trusted above is the only real, working news-trust control.",
+    "_maps_to": "titan_protocol.news_ingestion.config.NewsIngestionConfig (via config_loader.NewsProviderSettings)",
+    "_note": "Backs the live titan_protocol/news_ingestion/ dual-provider failover (Phase 3E, ADR-033 Part 2): Trading Economics primary, Forex Factory automatic backup. forex_factory_base_url must point at a JSON calendar feed shaped like the widely-mirrored public format (title/country/date/impact/forecast/previous/actual) -- see titan_protocol/news_ingestion/providers/forex_factory.py's own docstring. Leave forex_factory_base_url empty only if you accept running with no backup provider (Trading Economics failures then immediately fail closed).",
     "trading_economics_api_key_env_var": "TITAN_PROTOCOL_TRADING_ECONOMICS_API_KEY",
     "trading_economics_base_url": "https://api.tradingeconomics.com",
-    "forex_factory_base_url": ""
+    "forex_factory_base_url": "",
+    "forex_factory_api_key_env_var": "",
+    "request_timeout_seconds": 10.0,
+    "max_retries": 2,
+    "retry_backoff_seconds": 1.0,
+    "stale_after_seconds": 900.0,
+    "recovery_health_check_count": 3,
+    "cache_max_entries": 200
   },
 
   "reliability": {

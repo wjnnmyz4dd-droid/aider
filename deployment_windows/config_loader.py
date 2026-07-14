@@ -49,17 +49,23 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class NewsProviderSettings:
-    """Reserved for `titan_protocol/news_ingestion/` (ADR-033 Part 2, not yet
-    implemented in this repository). Parsed and validated here so the
-    config file format is ready for it, but nothing in this deployment
-    layer or any frozen engine consumes these values yet -- Market
-    Intelligence Engine's only real news-trust input remains the
-    single `news_feed_trusted` boolean on `DeploymentSettings`. See
-    KNOWN_GAPS.md."""
+    """Backs `titan_protocol/news_ingestion/` (ADR-033 Part 2, Phase 3E).
+    `start.py` builds a `NewsIngestionConfig` from these fields and
+    constructs the real dual-provider `NewsIngestionEngine`; its
+    `fetch_events()` result supersedes the static `news_feed_trusted`
+    config value at cycle time (see `_build_news_ingestion_config()`
+    and `_live_cycle_loop()` in start.py)."""
 
     trading_economics_api_key_env_var: str
     trading_economics_base_url: str
     forex_factory_base_url: str
+    forex_factory_api_key_env_var: str
+    request_timeout_seconds: float
+    max_retries: int
+    retry_backoff_seconds: float
+    stale_after_seconds: float
+    recovery_health_check_count: int
+    cache_max_entries: int
 
 
 @dataclass(frozen=True)
@@ -298,6 +304,13 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         trading_economics_api_key_env_var=_get_str(news_providers_section, "trading_economics_api_key_env_var", "TITAN_PROTOCOL_TRADING_ECONOMICS_API_KEY"),
         trading_economics_base_url=_get_str(news_providers_section, "trading_economics_base_url", "https://api.tradingeconomics.com"),
         forex_factory_base_url=_get_str(news_providers_section, "forex_factory_base_url", ""),
+        forex_factory_api_key_env_var=_get_str(news_providers_section, "forex_factory_api_key_env_var", ""),
+        request_timeout_seconds=_get_float(news_providers_section, "request_timeout_seconds", 10.0),
+        max_retries=_get_int(news_providers_section, "max_retries", 2),
+        retry_backoff_seconds=_get_float(news_providers_section, "retry_backoff_seconds", 1.0),
+        stale_after_seconds=_get_float(news_providers_section, "stale_after_seconds", 900.0),
+        recovery_health_check_count=_get_int(news_providers_section, "recovery_health_check_count", 3),
+        cache_max_entries=_get_int(news_providers_section, "cache_max_entries", 200),
     )
 
     reliability_section = _section(data, "reliability")

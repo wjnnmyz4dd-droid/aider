@@ -7,13 +7,13 @@ process's own BridgeEngine.is_connection_healthy, not just "is the
 port open"), heartbeat/reliability state, configuration load and
 profile validity, directory writability, duplicate-process detection,
 Bridge command-queue depth (against the real configured thresholds),
-the Bridge API key's environment-variable presence, the one real
-news-trust signal that exists (news_feed_trusted), and -- since
-Amendment 1 (ADR-023) -- real market-data readiness (per-pair
-warmup/freshness from the now-live MarketDataIngestionEngine) and
-whether the live-cycle loop is actually evaluating pairs. Still never
-claims a Trading Economics/Forex Factory news feed is running, because
-none exists yet -- see KNOWN_GAPS.md.
+the Bridge API key's environment-variable presence, the static news_feed_trusted config value, and -- since Amendment 1
+(ADR-023) -- real market-data readiness (per-pair warmup/freshness
+from the now-live MarketDataIngestionEngine) and whether the
+live-cycle loop is actually evaluating pairs. Since Phase 3E
+(ADR-033 Part 2) also reports the real, dynamic dual-provider news
+failover state (active provider, per-provider health, failover/
+recovery counts) from the now-live NewsIngestionEngine.
 
 Exit codes: 0 = HEALTHY, 1 = DEGRADED, 2 = FAILED.
 """
@@ -208,7 +208,7 @@ def run(config_path: Path) -> int:
     # -- they report real state, not pass/fail.
     informational_only = {
         "MT5 bridge connectivity (EA heartbeat)", "live trading cycle active",
-        "market-data readiness", "news-feed trust state",
+        "market-data readiness", "news-feed trust state", "news provider failover",
         "API key environment variable present",
     }
 
@@ -246,6 +246,26 @@ def run(config_path: Path) -> int:
             "market-data readiness", False,
             "NOT AVAILABLE -- no health.json, or this process predates Amendment 1 "
             "(titan_protocol/market_data_ingestion/ wiring; see KNOWN_GAPS.md section 1)",
+        ))
+
+    news = payload.get("news")
+    if news:
+        provider_health = news.get("provider_health", [])
+        failover_state = news.get("failover_state", {})
+        metrics = news.get("metrics", {})
+        checks.append((
+            "news provider failover", news.get("trusted", False),
+            f"active={news.get('active_provider')}, trusted={news.get('trusted')}, "
+            f"failovers={failover_state.get('failover_count', 0)}, "
+            f"recoveries={failover_state.get('recovery_count', 0)}, "
+            f"dual_outages={metrics.get('dual_outage_count', 0)}, "
+            f"provider_health={[(h.get('provider'), h.get('trust_state')) for h in provider_health]}",
+        ))
+    else:
+        checks.append((
+            "news provider failover", False,
+            "NOT AVAILABLE -- no health.json, or this process predates Phase 3E "
+            "(titan_protocol/news_ingestion/ wiring; see KNOWN_GAPS.md)",
         ))
 
     all_core_ok = all(ok for name, ok, _ in checks if name not in informational_only)

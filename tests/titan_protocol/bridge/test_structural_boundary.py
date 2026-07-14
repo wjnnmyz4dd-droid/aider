@@ -90,14 +90,16 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
         mt5/, tests/titan_protocol/, docs/research/, docs/adr/ (the
         charter-mandated per-stage ADR gate, CLAUDE.md §1.10 -- every
         later phase, e.g. ADR-024's Evidence Engine, legitimately adds
-        one), deployment_windows/ (Amendment 1, ADR-023 -- explicitly
-        scoped to start.py/health_check.py only, wiring the live-cycle
-        loop and its observability; no other deployment_windows/ file
-        is expected to change for this amendment), and this repo's
-        established root-level `PHANTOM_*.md` phase-deliverable report
-        convention (historical -- these files were never renamed; see
-        the Titan Protocol rename's own report) is touched. Skipped
-        (not failed) outside a git checkout."""
+        one), deployment_windows/ (Amendment 1, ADR-023, scoped to
+        start.py/health_check.py; Phase 3E, ADR-033 Part 2, legitimately
+        adds config_loader.py/install.py/KNOWN_GAPS.md/config/
+        titan_protocol_config.example.json for the new dual-provider
+        news wiring -- no other deployment_windows/ file is expected to
+        change for either phase), and this repo's established
+        root-level `PHANTOM_*.md` phase-deliverable report convention
+        (historical -- these files were never renamed; see the Titan
+        Protocol rename's own report) is touched. Skipped (not failed)
+        outside a git checkout."""
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
@@ -107,6 +109,9 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
         allowed_prefixes = (
             "titan_protocol/", "mt5/", "tests/titan_protocol/", "docs/research/", "docs/adr/",
             "deployment_windows/start.py", "deployment_windows/health_check.py",
+            "deployment_windows/config_loader.py", "deployment_windows/install.py",
+            "deployment_windows/KNOWN_GAPS.md",
+            "deployment_windows/config/titan_protocol_config.example.json",
         )
 
         def is_allowed(path: str) -> bool:

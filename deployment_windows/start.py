@@ -27,17 +27,24 @@ engine's own `is_ready()` says the feed for a pair is warmed-up and
 fresh -- never with fabricated data, and a pair with no data yet is
 simply skipped for that tick (see health.json's `live_cycle` field).
 
+Phase 3E (ADR-033 Part 2) update: `events` is now real, dual-provider
+news (Trading Economics primary, Forex Factory backup, via the new,
+unmodified-by-anything-else `NewsIngestionEngine`) -- refreshed on its
+own slower cadence (see `_NEWS_REFRESH_INTERVAL_SECONDS`) and, when both
+providers are down, the live-cycle loop skips *every* pair for that tick
+(`market_intelligence_not_ready`) rather than passing stale or empty
+events through silently. Market Intelligence Engine itself is
+unmodified and never knows which provider produced its events.
+
 What this still deliberately does NOT do, and will not silently pretend
-to do: there is still no multi-provider news system (Trading
-Economics/Forex Factory), so `events` is always empty; `portfolio_state`/
-`trade_history` use safe, empty defaults rather than a real, persisted
-day-start/peak/lock-aware account model (auto-converting EA-reported
-account state into a fully-tracked one was explicitly out of ADR-023's
-original scope and is not reopened here -- see
-`_build_compliance_account_state()`). This script reports its real
+to do: `portfolio_state`/`trade_history` use safe, empty defaults rather
+than a real, persisted day-start/peak/lock-aware account model
+(auto-converting EA-reported account state into a fully-tracked one was
+explicitly out of ADR-023's original scope and is not reopened here --
+see `_build_compliance_account_state()`). This script reports its real
 status -- **DEGRADED, never HEALTHY** -- both on-screen and in
 state/health.json, and never claims otherwise. See KNOWN_GAPS.md and
-the Amendment 1 implementation report for the full account.
+the Amendment 1 / Phase 3E implementation reports for the full account.
 
 Two modes:
   `python start.py`               -- launches the runtime as a
@@ -107,6 +114,12 @@ from titan_protocol.market_data_ingestion.metrics import MarketDataIngestionMetr
 from titan_protocol.market_data_ingestion.models import Timeframe as IngestionTimeframe
 from titan_protocol.market_intelligence.engine import MarketIntelligenceEngine
 from titan_protocol.market_intelligence.models import MarketSafetyInputs
+from titan_protocol.news_ingestion.config import NewsIngestionConfig
+from titan_protocol.news_ingestion.engine import NewsIngestionEngine
+from titan_protocol.news_ingestion.metrics import NewsIngestionMetrics
+from titan_protocol.news_ingestion.models import ProviderName
+from titan_protocol.news_ingestion.providers.forex_factory import ForexFactoryProvider
+from titan_protocol.news_ingestion.providers.trading_economics import TradingEconomicsProvider
 from titan_protocol.reliability.engine import ReliabilityEngine
 from titan_protocol.risk_engine.engine import RiskEngine
 from titan_protocol.risk_engine.models import PortfolioState
@@ -136,6 +149,13 @@ _LIVE_CYCLE_INTERVAL_SECONDS = 15.0
 # Engine's own single-timeframe design) -- M15 is this deployment's
 # primary timeframe, matching every trading profile's own granularity.
 _PRIMARY_TIMEFRAME = IngestionTimeframe.M15
+
+# Phase 3E (ADR-033 Part 2) -- news providers are polled far less often
+# than the 15s trading cycle: an economic calendar changes on the order
+# of minutes, not seconds, and real providers rate-limit aggressive
+# polling. The live-cycle loop reuses its last fetched (events, trusted)
+# result between refreshes rather than re-fetching every tick.
+_NEWS_REFRESH_INTERVAL_SECONDS = 300.0
 
 _shutdown_event = threading.Event()
 
@@ -299,11 +319,52 @@ def _market_data_health_payload(market_data_engine: Optional[MarketDataIngestion
     return payload
 
 
+def _news_health_payload(news_engine: Optional[NewsIngestionEngine], news_metrics: Optional[NewsIngestionMetrics], now: datetime) -> Optional[dict]:
+    """Phase 3E (ADR-033 Part 2) -- exposes `NewsIngestionEngine`'s own
+    existing health snapshot verbatim (active provider, per-provider
+    health, failover/recovery counts) plus `NewsIngestionMetrics`'
+    per-provider fetch counters. No new metric is computed here."""
+    if news_engine is None:
+        return None
+    snapshot = news_engine.health_snapshot(now)
+    payload = {
+        "active_provider": snapshot.active_provider.value,
+        "trusted": snapshot.trusted,
+        "provider_health": [
+            {
+                "provider": h.provider.value, "trust_state": h.trust_state.value,
+                "last_success_at": h.last_success_at.isoformat() if h.last_success_at else None,
+                "latency_ms": h.latency_ms, "timeout_count": h.timeout_count,
+                "parse_failure_count": h.parse_failure_count,
+                "consecutive_successes": h.consecutive_successes,
+                "stale_age_seconds": h.stale_age_seconds, "last_error": h.last_error,
+            }
+            for h in snapshot.provider_health
+        ],
+        "failover_state": {
+            "active_provider": snapshot.failover_state.active_provider.value,
+            "failover_count": snapshot.failover_state.failover_count,
+            "recovery_count": snapshot.failover_state.recovery_count,
+            "last_failover_at": snapshot.failover_state.last_failover_at.isoformat() if snapshot.failover_state.last_failover_at else None,
+            "last_recovery_at": snapshot.failover_state.last_recovery_at.isoformat() if snapshot.failover_state.last_recovery_at else None,
+        },
+    }
+    if news_metrics is not None:
+        payload["metrics"] = {
+            "dual_outage_count": news_metrics.dual_outage_count,
+            "fetch_successes": {p.value: news_metrics.fetch_success_count(p) for p in ProviderName},
+            "fetch_failures": {p.value: news_metrics.fetch_failure_count(p) for p in ProviderName},
+        }
+    return payload
+
+
 def _write_health_snapshot(
     state_dir: Path, reliability: ReliabilityEngine, bridge_engine: BridgeEngine, bridge_host: str, bridge_port: int, queue_depth: int,
     market_data_engine: Optional[MarketDataIngestionEngine] = None,
     market_data_metrics: Optional[MarketDataIngestionMetrics] = None,
     runtime_metrics: Optional[RuntimeMetrics] = None,
+    news_engine: Optional[NewsIngestionEngine] = None,
+    news_metrics: Optional[NewsIngestionMetrics] = None,
 ) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
@@ -327,6 +388,7 @@ def _write_health_snapshot(
         "cycle_loop_active": live_cycle["active"],
         "live_cycle": live_cycle,
         "market_data": _market_data_health_payload(market_data_engine, market_data_metrics, now),
+        "news": _news_health_payload(news_engine, news_metrics, now),
         "runtime_cycle_counts": (
             {"cycle_count": runtime_metrics.cycle_count, "failure_count": runtime_metrics.failure_count}
             if runtime_metrics is not None else None
@@ -340,6 +402,8 @@ def _heartbeat_loop(
     market_data_engine: Optional[MarketDataIngestionEngine] = None,
     market_data_metrics: Optional[MarketDataIngestionMetrics] = None,
     runtime_metrics: Optional[RuntimeMetrics] = None,
+    news_engine: Optional[NewsIngestionEngine] = None,
+    news_metrics: Optional[NewsIngestionMetrics] = None,
 ) -> None:
     logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
@@ -361,7 +425,10 @@ def _heartbeat_loop(
         except Exception:  # noqa: BLE001
             logger.exception("failed to report queue depth")
         try:
-            _write_health_snapshot(state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth, market_data_engine, market_data_metrics, runtime_metrics)
+            _write_health_snapshot(
+                state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth,
+                market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_metrics,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
         _shutdown_event.wait(_HEARTBEAT_INTERVAL_SECONDS)
@@ -399,23 +466,38 @@ def _live_cycle_loop(
     market_data_engine: MarketDataIngestionEngine,
     bridge_engine: BridgeEngine,
     profile,
+    news_engine: Optional[NewsIngestionEngine] = None,
 ) -> None:
-    """Amendment 1 (ADR-023) -- the only genuinely new orchestration
-    logic this amendment adds. Per pair, per tick: checks
-    `MarketDataIngestionEngine.is_ready()` (already implemented,
-    already checking warmup + staleness) and only calls
+    """Amendment 1 (ADR-023) + Phase 3E (ADR-033 Part 2). Per pair, per
+    tick: checks `MarketDataIngestionEngine.is_ready()` (already
+    implemented, already checking warmup + staleness) and only calls
     `RuntimeOrchestrator.run_cycle_for_pair()` (unmodified) when ready.
     A pair with no ready market data, no reported spread yet, or no
     reported account state yet is skipped for this tick -- logged, never
-    faked. `events`/`market_safety_inputs`/`portfolio_state`/
-    `trade_history` use the safe, honest defaults every existing test
-    fixture already uses for "no special condition" (news ingestion and
-    live portfolio/account auto-conversion remain separate, undeclared
-    scopes -- see KNOWN_GAPS.md and the Amendment 1 implementation
-    report)."""
+    faked.
+
+    Phase 3E adds the dual-provider news gate at this same call site
+    (never inside Runtime, which has no `news_feed_trusted` passthrough
+    of its own and is frozen for this phase): `news_engine.fetch_events()`
+    is refreshed on its own, slower cadence
+    (`_NEWS_REFRESH_INTERVAL_SECONDS`); when its most recent result is
+    `trusted=False` (both providers down), *every* pair is skipped this
+    tick with reason `market_intelligence_not_ready` -- the mission's own
+    "No new trade decisions" fail-closed requirement -- before any other
+    per-pair check runs. When trusted, the same real event tuple is
+    passed to every ready pair; Market Intelligence Engine's own
+    unmodified per-pair currency filtering (ADR-025 Hard Rule 2) narrows
+    it down, exactly as `evaluate_batch()` already assumes.
+    `market_safety_inputs`/`portfolio_state`/`trade_history` use the
+    safe, honest defaults every existing test fixture already uses for
+    "no special condition" (live portfolio/account auto-conversion
+    remains a separate, undeclared scope -- see KNOWN_GAPS.md)."""
 
     logger = logging.getLogger("titan_protocol.deploy.live_cycle")
     cycle_number = 0
+    news_events: tuple = ()
+    news_trusted = True
+    last_news_fetch_at: Optional[datetime] = None
     while not _shutdown_event.is_set():
         now = _utc_now()
         cycle_number += 1
@@ -423,9 +505,23 @@ def _live_cycle_loop(
         skipped: Dict[str, str] = {}
         inputs: Dict[str, tuple] = {}
 
+        if news_engine is not None and (
+            last_news_fetch_at is None
+            or (now - last_news_fetch_at).total_seconds() >= _NEWS_REFRESH_INTERVAL_SECONDS
+        ):
+            try:
+                news_events, news_trusted = news_engine.fetch_events(now)
+            except Exception:  # noqa: BLE001 -- a news-fetch crash must never crash the live-cycle loop
+                logger.exception("news_engine.fetch_events failed -- treating as untrusted this cycle")
+                news_events, news_trusted = (), False
+            last_news_fetch_at = now
+
         account_state = _build_compliance_account_state(bridge_engine)
 
         for pair in profile.allowed_pairs:
+            if news_engine is not None and not news_trusted:
+                skipped[pair] = "market_intelligence_not_ready"
+                continue
             if account_state is None:
                 skipped[pair] = "no_account_state_reported_yet"
                 continue
@@ -439,7 +535,7 @@ def _live_cycle_loop(
             current_spread, average_spread = spread
             bars = market_data_engine.get_bars(pair, _PRIMARY_TIMEFRAME)
             inputs[pair] = (
-                bars, (), current_spread, average_spread, MarketSafetyInputs(),
+                bars, news_events, current_spread, average_spread, MarketSafetyInputs(),
                 PortfolioState(), None, account_state,
             )
 
@@ -501,6 +597,32 @@ def run_foreground(config_path: Path) -> int:
     market_data_metrics = MarketDataIngestionMetrics()
     market_data_engine = MarketDataIngestionEngine(market_data_config, market_data_metrics)
 
+    # Phase 3E (ADR-033 Part 2): Trading Economics primary, Forex
+    # Factory backup -- both built from the same NewsProviderSettings
+    # config_loader.py already parses. Market Intelligence Engine never
+    # knows which provider is active; it only ever sees the events tuple
+    # and (indirectly, via the live-cycle loop skipping every pair when
+    # untrusted) the fail-closed effect of both providers being down.
+    news_ingestion_config = NewsIngestionConfig(
+        trading_economics_api_key_env_var=settings.news_provider_settings.trading_economics_api_key_env_var,
+        forex_factory_api_key_env_var=settings.news_provider_settings.forex_factory_api_key_env_var,
+        trading_economics_base_url=settings.news_provider_settings.trading_economics_base_url,
+        forex_factory_base_url=settings.news_provider_settings.forex_factory_base_url,
+        request_timeout_seconds=settings.news_provider_settings.request_timeout_seconds,
+        max_retries=settings.news_provider_settings.max_retries,
+        retry_backoff_seconds=settings.news_provider_settings.retry_backoff_seconds,
+        stale_after_seconds=settings.news_provider_settings.stale_after_seconds,
+        recovery_health_check_count=settings.news_provider_settings.recovery_health_check_count,
+        cache_max_entries=settings.news_provider_settings.cache_max_entries,
+    )
+    news_ingestion_metrics = NewsIngestionMetrics()
+    news_engine = NewsIngestionEngine(
+        news_ingestion_config,
+        TradingEconomicsProvider(news_ingestion_config),
+        ForexFactoryProvider(news_ingestion_config),
+        news_ingestion_metrics,
+    )
+
     command_queue = CommandQueue(settings.bridge_config)
     connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
     bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now, market_data_engine=market_data_engine)
@@ -535,15 +657,17 @@ def run_foreground(config_path: Path) -> int:
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop,
         args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, settings.bridge_port,
-              market_data_engine, market_data_metrics, runtime_metrics),
+              market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_ingestion_metrics),
         name="titan_protocol-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
 
-    # Amendment 1 (ADR-023): the live-cycle loop -- fail-closed per pair
-    # via MarketDataIngestionEngine.is_ready(), never bypassed.
+    # Amendment 1 (ADR-023) + Phase 3E (ADR-033 Part 2): the live-cycle
+    # loop -- fail-closed per pair via MarketDataIngestionEngine.is_ready(),
+    # and fail-closed for every pair at once when both news providers are
+    # down, never bypassed.
     live_cycle_thread = threading.Thread(
-        target=_live_cycle_loop, args=(orchestrator, market_data_engine, bridge_engine, profile),
+        target=_live_cycle_loop, args=(orchestrator, market_data_engine, bridge_engine, profile, news_engine),
         name="titan_protocol-live-cycle", daemon=True,
     )
     live_cycle_thread.start()
@@ -564,10 +688,13 @@ def run_foreground(config_path: Path) -> int:
     print("  Reliability monitor  : running (process-liveness + Bridge/MT5 heartbeats)")
     print("  LIVE TRADING CYCLE   : RUNNING (Amendment 1) -- fails closed per pair")
     print("                          until the EA reports account state and its")
-    print("                          bar feed clears warmup/freshness checks. No")
-    print("                          news-provider redundancy and no persisted")
-    print("                          day-start/peak/lock tracking yet -- still")
-    print("                          DEGRADED, never HEALTHY. See KNOWN_GAPS.md.")
+    print("                          bar feed clears warmup/freshness checks.")
+    print("  NEWS PROVIDER FAILOVER: RUNNING (Phase 3E) -- Trading Economics")
+    print("                          primary, Forex Factory backup; fails closed")
+    print("                          for every pair if both are down. No")
+    print("                          persisted day-start/peak/lock tracking")
+    print("                          yet -- still DEGRADED, never HEALTHY.")
+    print("                          See KNOWN_GAPS.md.")
     print("=" * 72)
     logger.warning("STATUS=DEGRADED -- Bridge+Reliability+live-cycle-loop running; see KNOWN_GAPS.md for remaining gaps")
 

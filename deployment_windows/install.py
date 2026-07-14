@@ -252,13 +252,41 @@ def step_verify_reliability(settings) -> StepReport:
 
 
 def step_verify_news_providers(settings) -> StepReport:
+    from titan_protocol.news_ingestion.config import NewsIngestionConfig
+    from titan_protocol.news_ingestion.engine import NewsIngestionEngine
+    from titan_protocol.news_ingestion.providers.forex_factory import ForexFactoryProvider
+    from titan_protocol.news_ingestion.providers.trading_economics import TradingEconomicsProvider
+
+    try:
+        news_config = NewsIngestionConfig(
+            trading_economics_api_key_env_var=settings.news_provider_settings.trading_economics_api_key_env_var,
+            forex_factory_api_key_env_var=settings.news_provider_settings.forex_factory_api_key_env_var,
+            trading_economics_base_url=settings.news_provider_settings.trading_economics_base_url,
+            forex_factory_base_url=settings.news_provider_settings.forex_factory_base_url,
+            request_timeout_seconds=settings.news_provider_settings.request_timeout_seconds,
+            max_retries=settings.news_provider_settings.max_retries,
+            retry_backoff_seconds=settings.news_provider_settings.retry_backoff_seconds,
+            stale_after_seconds=settings.news_provider_settings.stale_after_seconds,
+            recovery_health_check_count=settings.news_provider_settings.recovery_health_check_count,
+            cache_max_entries=settings.news_provider_settings.cache_max_entries,
+        )
+        NewsIngestionEngine(
+            news_config, TradingEconomicsProvider(news_config), ForexFactoryProvider(news_config),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return StepReport("Verify news providers (Trading Economics primary / Forex Factory backup)", _FAILED, f"NewsIngestionEngine construction failed: {exc}")
+
+    ff_configured = bool(settings.news_provider_settings.forex_factory_base_url)
     return StepReport(
-        "Verify news providers (Trading Economics primary / Forex Factory backup)", _INFO,
-        "NOT AVAILABLE -- no news-provider component exists in this codebase yet "
-        "(titan_protocol/news_ingestion/, ADR-033 Part 2, has not been implemented; see "
-        "KNOWN_GAPS.md section 2). This step cannot verify what does not exist, and "
-        "does not fabricate a pass. The one real news-trust signal that DOES exist "
-        f"loaded successfully: news_feed_trusted={settings.news_feed_trusted}.",
+        "Verify news providers (Trading Economics primary / Forex Factory backup)", _OK if ff_configured else _INFO,
+        "Constructed a real NewsIngestionEngine (titan_protocol/news_ingestion/, ADR-033 Part 2) with no error. "
+        + (
+            "Both providers configured."
+            if ff_configured
+            else "Trading Economics is configured; forex_factory_base_url is empty, so no backup provider "
+            "is reachable yet -- a Trading Economics outage will fail closed immediately until it is set "
+            "(see KNOWN_GAPS.md section 2)."
+        ),
     )
 
 

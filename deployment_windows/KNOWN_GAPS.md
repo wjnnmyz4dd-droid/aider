@@ -61,38 +61,28 @@ that loop without a mission scoped to it — this task's own mission
 Manager... Do NOT modify any trading engine, runtime logic, bridge
 logic, or business rules") explicitly excludes it.
 
-## 2. No multi-provider news system (Trading Economics / Forex Factory)
+## 2. Multi-provider news system (Trading Economics / Forex Factory) — CLOSED, Phase 3E
 
-**What's missing:** the mission asked for a config template with
-"Trading Economics primary configuration," "Forex Factory backup
-configuration," and "never merge or average both provider feeds."
+**Closed by:** `titan_protocol/news_ingestion/` (ADR-033 Part 2, Phase 3E) —
+a real Trading Economics primary / Forex Factory automatic-backup
+failover engine, wired into `start.py`'s live-cycle loop and exposed
+through `health_check.py`'s "news provider failover" check and
+`state/health.json`'s `news` field. `MarketIntelligenceEngine` itself
+is unmodified and still has exactly one seam (`news_feed_trusted` +
+`events`) — it never knows which provider is active; this package only
+supplies it better, failover-protected data through that same existing
+seam. Never merges, averages, or votes between providers (verified by
+`tests/titan_protocol/news_ingestion/test_failover.py`'s
+`TestNoMergeAverageOrVote`).
 
-**Evidence (traced, not assumed):** grepped every file under
-`titan_protocol/` for `trading.?economics` and `forex.?factory`
-(case-insensitive) — zero hits, anywhere. The Market Intelligence
-Engine (`titan_protocol/market_intelligence/`) has exactly one news-trust
-signal: `news_feed_trusted: bool`, passed to
-`MarketIntelligenceEngine.evaluate()`. There is no `provider` field on
-`NewsEvent`, no per-provider trust/disagreement/outage logic, and no
-primary/backup failover concept anywhere in the engine.
-
-**What this deployment layer does instead:**
-`config/titan_protocol_config.example.json`'s `news` section exposes only
-the fields that actually exist and actually do something
-(`news_feed_trusted`, blackout windows, impact/central-bank blackout
-toggles), with an explicit comment explaining the gap. It does **not**
-fabricate `trading_economics_*` / `forex_factory_*` config keys that
-the engine would silently ignore — that would be worse than not having
-them, since an operator editing a fake config key would reasonably
-believe it does something. `install.py`'s own "Verify news providers"
-step reports this exact gap out loud (status `INFO`, never a fabricated
-`OK`) in both its console output and `INSTALLATION_REPORT.md`, rather
-than silently skipping the requirement or pretending it passed.
-
-**To close this gap:** a genuine multi-provider news feed with real
-primary/backup failover and disagreement detection requires a new
-ADR-025 Amendment and new engine code. Not designed or implemented
-here, per the same CLAUDE.md §1.10 workflow.
+**Residual limitation:** `forex_factory_base_url` defaults to empty in
+the shipped example config — an operator must point it at a real JSON
+calendar feed (shape documented in
+`titan_protocol/news_ingestion/providers/forex_factory.py`'s own
+docstring) for the backup provider to actually be reachable. Until
+configured, a Trading Economics outage fails closed immediately (no
+functioning backup), which is the same safe behavior as before this
+phase, not a regression.
 
 ## Everything else in this release is fully implemented
 
