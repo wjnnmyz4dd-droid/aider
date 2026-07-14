@@ -7,11 +7,13 @@ process's own BridgeEngine.is_connection_healthy, not just "is the
 port open"), heartbeat/reliability state, configuration load and
 profile validity, directory writability, duplicate-process detection,
 Bridge command-queue depth (against the real configured thresholds),
-the Bridge API key's environment-variable presence, and the one real
-news-trust signal that exists (news_feed_trusted). Never claims the
-live trading cycle or a Trading Economics/Forex Factory market-data
-feed is running, because neither is (no market-data ingestion or
-news-provider component is wired in yet -- see KNOWN_GAPS.md).
+the Bridge API key's environment-variable presence, the one real
+news-trust signal that exists (news_feed_trusted), and -- since
+Amendment 1 (ADR-023) -- real market-data readiness (per-pair
+warmup/freshness from the now-live MarketDataIngestionEngine) and
+whether the live-cycle loop is actually evaluating pairs. Still never
+claims a Trading Economics/Forex Factory news feed is running, because
+none exists yet -- see KNOWN_GAPS.md.
 
 Exit codes: 0 = HEALTHY, 1 = DEGRADED, 2 = FAILED.
 """
@@ -154,6 +156,7 @@ def run(config_path: Path) -> int:
         checks.append(("runtime process alive", False, "no pid file -- Titan Protocol is not running"))
 
     cycle_loop_active = False
+    payload: dict = {}
     health_json = settings.state_dir / "health.json"
     if health_json.exists():
         try:
@@ -196,27 +199,54 @@ def run(config_path: Path) -> int:
     # MT5 connectivity, market-data readiness, and the trading-cycle
     # loop are informational at this stage of deployment -- none of
     # them downgrade HEALTHY->DEGRADED/FAILED, since no EA is expected
-    # to be attached during setup/first health check, and no market-
-    # data ingestion component is wired into this entry point at all
-    # (see KNOWN_GAPS.md). Reported so an operator can see them, not
-    # gated on. news-feed trust state and the API-key-env-var check are
-    # also informational -- they report real state, not pass/fail.
+    # to be attached during setup/first health check, and full HEALTHY
+    # status still isn't claimed while news-provider redundancy and
+    # persisted day-start/peak account tracking remain open gaps (see
+    # KNOWN_GAPS.md and the Amendment 1 implementation report).
+    # Reported so an operator can see them, not gated on. news-feed
+    # trust state and the API-key-env-var check are also informational
+    # -- they report real state, not pass/fail.
     informational_only = {
         "MT5 bridge connectivity (EA heartbeat)", "live trading cycle active",
         "market-data readiness", "news-feed trust state",
         "API key environment variable present",
     }
 
-    checks.append((
-        "live trading cycle active", cycle_loop_active,
-        "NOT ACTIVE by design -- no market-data ingestion component is wired in (see KNOWN_GAPS.md)" if not cycle_loop_active else "",
-    ))
-    checks.append((
-        "market-data readiness", False,
-        "NOT AVAILABLE -- titan_protocol/market_data_ingestion/ (ADR-033 Part 1) exists but is "
-        "not wired into any live entry point; no OHLC bar feed is available to this "
-        "process (see KNOWN_GAPS.md section 1)",
-    ))
+    live_cycle = payload.get("live_cycle")
+    if live_cycle:
+        evaluated = live_cycle.get("evaluated_pairs") or []
+        skipped = live_cycle.get("skipped_pairs") or {}
+        detail = f"last cycle {live_cycle.get('last_cycle_id')}: {len(evaluated)} pair(s) evaluated"
+        if skipped:
+            detail += f", skipped: {skipped}"
+        checks.append(("live trading cycle active", cycle_loop_active, detail))
+    else:
+        checks.append((
+            "live trading cycle active", cycle_loop_active,
+            "NOT ACTIVE -- no health.json, or this process predates Amendment 1" if not cycle_loop_active else "",
+        ))
+
+    market_data = payload.get("market_data")
+    if market_data:
+        warmups = market_data.get("warmup_statuses", [])
+        freshness = market_data.get("freshness", [])
+        all_ready = bool(warmups) and all(w.get("ready") for w in warmups)
+        all_fresh = bool(freshness) and all(not f.get("is_stale") for f in freshness)
+        metrics = market_data.get("metrics", {})
+        checks.append((
+            "market-data readiness", all_ready and all_fresh,
+            f"warmup={sum(1 for w in warmups if w.get('ready'))}/{len(warmups)} pairs ready, "
+            f"fresh={sum(1 for f in freshness if not f.get('is_stale'))}/{len(freshness)}, "
+            f"accepted={metrics.get('bars_accepted', 0)}, rejected={metrics.get('bars_rejected', 0)}, "
+            f"gaps={metrics.get('gaps_detected', 0)}, ticks={metrics.get('ticks_ingested', 0)}"
+            if warmups else "no pairs configured",
+        ))
+    else:
+        checks.append((
+            "market-data readiness", False,
+            "NOT AVAILABLE -- no health.json, or this process predates Amendment 1 "
+            "(titan_protocol/market_data_ingestion/ wiring; see KNOWN_GAPS.md section 1)",
+        ))
 
     all_core_ok = all(ok for name, ok, _ in checks if name not in informational_only)
     _report(checks)

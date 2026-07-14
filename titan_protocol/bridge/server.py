@@ -14,6 +14,10 @@ as their plain string `.value`.
     POST /bridge/trade-transaction   -> independent MT5-native trade-event mirror
     POST /bridge/error               -> an MQL5-side error
     POST /bridge/emergency-stop      -> activate/deactivate the transport-level halt
+    POST /bridge/market-data         -> EA-reported bar/tick (Amendment 1, ADR-023;
+                                         transport/auth only -- all validation/
+                                         normalization is MarketDataIngestionEngine's,
+                                         never re-implemented here)
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
+
+from titan_protocol.market_data_ingestion.models import RawBar, TickEvent
+from titan_protocol.market_data_ingestion.models import Timeframe as IngestionTimeframe
 
 from . import validation
 from .config import BridgeConfig
@@ -229,6 +236,70 @@ def _handle_emergency_stop(engine: BridgeEngine, config: BridgeConfig, body: dic
     return 200, {"active": state.active, "reason": state.reason}
 
 
+def _ingestion_result_body(result) -> Optional[dict]:
+    if result is None:
+        return None
+    return {
+        "accepted": result.accepted,
+        "rejection_reason": result.rejection_reason.value if result.rejection_reason is not None else None,
+        "reason_detail": result.reason_detail,
+        "gap_detected": result.gap_detected,
+    }
+
+
+def _handle_market_data(engine: BridgeEngine, config: BridgeConfig, body: dict, now: datetime) -> Tuple[int, dict]:
+    """Transport/auth/schema only (Amendment 1, ADR-023) -- this
+    function never validates bar/tick *content*; every such check
+    (ordering, staleness, duplicates, gaps, warmup) belongs exclusively
+    to `MarketDataIngestionEngine`, called via `engine.handle_bar()`/
+    `handle_tick()`. `bar`/`tick` are each optional in the body (an EA
+    may report just a closing bar, just a tick for spread, or both in
+    one call) but at least one must be present."""
+
+    reason = validation.validate_inbound_message(body.get("api_key"), body.get("magic_number", -1), config)
+    if reason is not None:
+        return (401 if "KEY" in reason.value else 400), {"error": reason.value}
+    if not engine.has_market_data_engine:
+        return 503, {"error": "MARKET_DATA_INGESTION_NOT_CONFIGURED"}
+
+    bar_raw = body.get("bar")
+    tick_raw = body.get("tick")
+    if bar_raw is None and tick_raw is None:
+        return 400, {"error": "invalid_payload:at least one of 'bar'/'tick' is required"}
+
+    bar_result = None
+    if bar_raw is not None:
+        raw_bar = RawBar(
+            symbol=bar_raw["symbol"],
+            timeframe=IngestionTimeframe(bar_raw["timeframe"]),
+            broker_timestamp=_parse_datetime(bar_raw["broker_timestamp"]),
+            source_timestamp=_parse_datetime(bar_raw["source_timestamp"]),
+            bar_open_time=_parse_datetime(bar_raw["bar_open_time"]),
+            open=float(bar_raw["open"]),
+            high=float(bar_raw["high"]),
+            low=float(bar_raw["low"]),
+            close=float(bar_raw["close"]),
+            volume=float(bar_raw["volume"]),
+            is_closed=bool(bar_raw.get("is_closed", True)),
+            sequence_number=int(bar_raw["sequence_number"]),
+            bid=bar_raw.get("bid"),
+            ask=bar_raw.get("ask"),
+        )
+        bar_result = _ingestion_result_body(engine.handle_bar(raw_bar, now))
+
+    tick_result = None
+    if tick_raw is not None:
+        tick = TickEvent(
+            symbol=tick_raw["symbol"],
+            timestamp=_parse_datetime(tick_raw["timestamp"]) if "timestamp" in tick_raw else now,
+            bid=float(tick_raw["bid"]),
+            ask=float(tick_raw["ask"]),
+        )
+        tick_result = _ingestion_result_body(engine.handle_tick(tick, now))
+
+    return 200, {"status": "ok", "bar": bar_result, "tick": tick_result}
+
+
 _POST_ROUTES: Dict[str, Callable[[BridgeEngine, BridgeConfig, dict, datetime], Tuple[int, dict]]] = {
     "/bridge/heartbeat": _handle_heartbeat,
     "/bridge/account": _handle_account,
@@ -238,6 +309,7 @@ _POST_ROUTES: Dict[str, Callable[[BridgeEngine, BridgeConfig, dict, datetime], T
     "/bridge/trade-transaction": _handle_trade_transaction,
     "/bridge/error": _handle_error_report,
     "/bridge/emergency-stop": _handle_emergency_stop,
+    "/bridge/market-data": _handle_market_data,
 }
 
 

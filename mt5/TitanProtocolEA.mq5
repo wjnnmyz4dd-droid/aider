@@ -10,6 +10,12 @@
 //| reports back what actually happened, and fails closed the moment  |
 //| it cannot prove the Python side is still reachable.                |
 //|                                                                    |
+//| Amendment 1 (ADR-023): also reports its own chart's closed bars   |
+//| and latest tick to the Bridge's new /bridge/market-data endpoint  |
+//| -- transport only, same as everything else here. All validation, |
+//| normalization, ordering, and freshness logic lives exclusively in |
+//| titan_protocol/market_data_ingestion/, never duplicated in MQL5.  |
+//|                                                                    |
 //| Original implementation. No source code from any reference        |
 //| repository was copied -- see docs/research/ for the architectural |
 //| study this design is informed by.                                  |
@@ -40,6 +46,10 @@ datetime g_lastSuccessfulContact = 0;
 datetime g_lastHeartbeatSentAt   = 0;
 datetime g_lastTickAt            = 0;
 string   g_allowedSymbols[];
+
+// Amendment 1 (ADR-023) -- market-data reporting state.
+datetime g_lastBarOpenTime = 0;
+long     g_barSequence     = 0;
 
 const string API_KEY_HEADER = "X-Titan-Protocol-Api-Key";
 
@@ -94,7 +104,10 @@ void OnTimer()
       SendAccountState();
       SendPositions();
       SendPendingOrders();
+      SendTick(); // Amendment 1 -- same cadence as the rest of telemetry
      }
+
+   CheckAndSendNewBar(); // Amendment 1 -- driven by real bar formation, not a timer interval
 
    if(!IsFailClosed())
       PollAndExecuteCommands();
@@ -493,6 +506,110 @@ void SendPendingOrders()
                                JsonEscape(ApiKey), (int)MagicNumber, items);
    int status;
    HttpPost("/bridge/orders", body, status);
+  }
+
+//+------------------------------------------------------------------+
+//| Market data reporting (Amendment 1, ADR-023) -- transport only.   |
+//| No validation, normalization, ordering, or freshness logic lives  |
+//| here; that is exclusively titan_protocol/market_data_ingestion/'s |
+//| job on the Python side. This EA reports one chart's own bars/tick |
+//| -- the timeframe it actually has (the chart's own period).        |
+//+------------------------------------------------------------------+
+string PeriodToTimeframeString(const ENUM_TIMEFRAMES period)
+  {
+   switch(period)
+     {
+      case PERIOD_M1:  return("M1");
+      case PERIOD_M5:  return("M5");
+      case PERIOD_M15: return("M15");
+      case PERIOD_M30: return("M30");
+      case PERIOD_H1:  return("H1");
+      case PERIOD_H4:  return("H4");
+      case PERIOD_D1:  return("D1");
+      default:         return(""); // unsupported chart timeframe -- market data not published
+     }
+  }
+
+// MT5's TimeToString() produces "YYYY.MM.DD HH:MM:SS" -- reformatted
+// into an ISO-8601 string Python's datetime.fromisoformat() parses
+// directly. Broker/server time is treated as the reference clock this
+// whole deployment already assumes (Bridge and MT5 run on the same
+// machine in this release's supported topology) -- see the Amendment 1
+// implementation report for the known limitation this simplifies.
+string TimeToIsoString(const datetime value)
+  {
+   string formatted = TimeToString(value, TIME_DATE | TIME_SECONDS);
+   StringReplace(formatted, ".", "-");
+   StringReplace(formatted, " ", "T");
+   return(formatted + "+00:00");
+  }
+
+// This Phase 1 EA has exactly one clock source available to it
+// (MT5's own TimeCurrent()) -- source_timestamp deliberately mirrors
+// broker_timestamp rather than using TimeLocal(), which reflects the
+// operator's PC timezone and would produce false-positive CLOCK_SKEW
+// rejections against MarketDataIngestionConfig's tight 5-second
+// default tolerance for any operator not in the broker's own timezone.
+// Reporting two genuinely identical readings is honest; reporting a
+// timezone difference as "skew" would not be.
+void SendClosedBar(const string timeframe, const MqlRates &bar)
+  {
+   g_barSequence++;
+   string isoNow      = TimeToIsoString(TimeCurrent());
+   string isoBarOpen   = TimeToIsoString(bar.time);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   string bidField = (bid > 0.0) ? StringFormat("%.5f", bid) : "null";
+   string askField = (ask > 0.0) ? StringFormat("%.5f", ask) : "null";
+   string body = StringFormat(
+      "{\"api_key\":\"%s\",\"magic_number\":%d,\"bar\":{\"symbol\":\"%s\",\"timeframe\":\"%s\","
+      "\"broker_timestamp\":\"%s\",\"source_timestamp\":\"%s\",\"bar_open_time\":\"%s\","
+      "\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%.2f,"
+      "\"is_closed\":true,\"sequence_number\":%d,\"bid\":%s,\"ask\":%s}}",
+      JsonEscape(ApiKey), (int)MagicNumber, _Symbol, timeframe,
+      isoNow, isoNow, isoBarOpen,
+      bar.open, bar.high, bar.low, bar.close, (double)bar.tick_volume,
+      (int)g_barSequence, bidField, askField);
+   int status;
+   HttpPost("/bridge/market-data", body, status);
+  }
+
+// Detects a newly-closed bar by watching the chart's own forming-bar
+// (index 0) open time advance -- the standard MQL5 "new bar" signal.
+// The first time this EA ever notices a bar boundary it only records
+// the timestamp (there is no "bar before the first one seen" to
+// report); every boundary after that reports the bar that just closed
+// (now at index 1) via CopyRates, never a fabricated one.
+void CheckAndSendNewBar()
+  {
+   string tf = PeriodToTimeframeString(_Period);
+   if(tf == "")
+      return;
+
+   datetime currentOpenTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(currentOpenTime == 0 || currentOpenTime == g_lastBarOpenTime)
+      return;
+
+   if(g_lastBarOpenTime != 0)
+     {
+      MqlRates rates[];
+      if(CopyRates(_Symbol, PERIOD_CURRENT, 1, 1, rates) == 1)
+         SendClosedBar(tf, rates[0]);
+     }
+   g_lastBarOpenTime = currentOpenTime;
+  }
+
+void SendTick()
+  {
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid <= 0.0 || ask <= 0.0)
+      return; // market closed / no quotes -- nothing honest to report
+   string body = StringFormat(
+      "{\"api_key\":\"%s\",\"magic_number\":%d,\"tick\":{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}}",
+      JsonEscape(ApiKey), (int)MagicNumber, _Symbol, bid, ask);
+   int status;
+   HttpPost("/bridge/market-data", body, status);
   }
 
 void SendTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeResult &result)

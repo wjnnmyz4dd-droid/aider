@@ -65,13 +65,15 @@ class HttpServerTestCase(unittest.TestCase):
 
 
 class TestRegisteredRoutes(HttpServerTestCase):
-    def test_all_nine_endpoints_are_registered(self):
+    def test_all_ten_endpoints_are_registered(self):
+        """9 Phase 1 routes plus Amendment 1's /bridge/market-data."""
         routes = registered_routes()
-        self.assertEqual(len(routes), 9)
+        self.assertEqual(len(routes), 10)
         self.assertIn("GET /bridge/commands/poll", routes)
         for path in (
             "/bridge/heartbeat", "/bridge/account", "/bridge/positions", "/bridge/orders",
             "/bridge/execution/report", "/bridge/trade-transaction", "/bridge/error", "/bridge/emergency-stop",
+            "/bridge/market-data",
         ):
             self.assertIn(f"POST {path}", routes)
 

@@ -18,19 +18,26 @@ architectural redesign. What it starts:
      BridgeEngine.is_connection_healthy -- whether the MT5 EA has
      actually heartbeated recently (not just whether the port is open).
 
-What it deliberately does NOT do, and will not silently pretend to do:
-`RuntimeOrchestrator.run_cycle()` requires live bars, news events,
-spreads, portfolio state, and account state supplied by the CALLER for
-every cycle. Nothing in the minimum live deployment package fetches
-that from MT5 or a market-data provider -- the Bridge's own protocol
-(heartbeat/account/positions/orders/trade-transaction/error/execution-
-report/commands-poll) is entirely about EXECUTION, never market data.
-Building a live trading cycle loop would require a Market Data
-Ingestion component with its own Accepted ADR (see docs/adr/ADR-033 --
-`titan_protocol/market_data_ingestion/` exists but is not yet wired into a
-live entry point). This script reports its real status --
-**DEGRADED, never HEALTHY** -- both on-screen and in state/health.json,
-and never claims otherwise. See KNOWN_GAPS.md.
+Amendment 1 (ADR-023) update: `RuntimeOrchestrator.run_cycle()` now
+receives real, live-sourced bars/spread on a real schedule (see
+`_live_cycle_loop()`), fed by `titan_protocol/bridge/`'s new
+`/bridge/market-data` endpoint through the existing, unmodified
+`MarketDataIngestionEngine` (ADR-033). It is called only when that
+engine's own `is_ready()` says the feed for a pair is warmed-up and
+fresh -- never with fabricated data, and a pair with no data yet is
+simply skipped for that tick (see health.json's `live_cycle` field).
+
+What this still deliberately does NOT do, and will not silently pretend
+to do: there is still no multi-provider news system (Trading
+Economics/Forex Factory), so `events` is always empty; `portfolio_state`/
+`trade_history` use safe, empty defaults rather than a real, persisted
+day-start/peak/lock-aware account model (auto-converting EA-reported
+account state into a fully-tracked one was explicitly out of ADR-023's
+original scope and is not reopened here -- see
+`_build_compliance_account_state()`). This script reports its real
+status -- **DEGRADED, never HEALTHY** -- both on-screen and in
+state/health.json, and never claims otherwise. See KNOWN_GAPS.md and
+the Amendment 1 implementation report for the full account.
 
 Two modes:
   `python start.py`               -- launches the runtime as a
@@ -60,6 +67,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 _HERE = Path(__file__).resolve().parent
 
@@ -89,12 +97,21 @@ from titan_protocol.bridge.connection_health import ConnectionHealth
 from titan_protocol.bridge.engine import BridgeEngine
 from titan_protocol.bridge.server import serve as bridge_serve
 from titan_protocol.compliance_engine.engine import ComplianceEngine
+from titan_protocol.compliance_engine.models import AccountState as ComplianceAccountState
+from titan_protocol.compliance_engine.models import ComplianceLockState
 from titan_protocol.evidence_engine.config import EvidenceEngineConfig
 from titan_protocol.evidence_engine.engine import EvidenceEngine
+from titan_protocol.market_data_ingestion.config import MarketDataIngestionConfig
+from titan_protocol.market_data_ingestion.engine import MarketDataIngestionEngine
+from titan_protocol.market_data_ingestion.metrics import MarketDataIngestionMetrics
+from titan_protocol.market_data_ingestion.models import Timeframe as IngestionTimeframe
 from titan_protocol.market_intelligence.engine import MarketIntelligenceEngine
+from titan_protocol.market_intelligence.models import MarketSafetyInputs
 from titan_protocol.reliability.engine import ReliabilityEngine
 from titan_protocol.risk_engine.engine import RiskEngine
+from titan_protocol.risk_engine.models import PortfolioState
 from titan_protocol.runtime.engine import RuntimeOrchestrator
+from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.runtime import profiles as trading_profiles
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
@@ -113,7 +130,49 @@ _PROFILE_FACTORIES = {
 _HEARTBEAT_INTERVAL_SECONDS = 5.0
 _RESTARTABLE_ENGINES = ("evidence_engine", "market_intelligence", "strategy_engine", "risk_engine")
 
+# Amendment 1 (ADR-023) -- live-cycle loop constants.
+_LIVE_CYCLE_INTERVAL_SECONDS = 15.0
+# Runtime takes exactly one bar sequence per pair per cycle (Evidence
+# Engine's own single-timeframe design) -- M15 is this deployment's
+# primary timeframe, matching every trading profile's own granularity.
+_PRIMARY_TIMEFRAME = IngestionTimeframe.M15
+
 _shutdown_event = threading.Event()
+
+
+class _LiveCycleStatus:
+    """Shared, lock-protected holder the live-cycle loop writes to and
+    `_write_health_snapshot` reads from -- avoids two threads writing
+    health.json at once. Observability only; never a decision input."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.active = False
+        self.last_cycle_at: Optional[datetime] = None
+        self.last_cycle_id: Optional[str] = None
+        self.evaluated_pairs: Tuple[str, ...] = ()
+        self.skipped_pairs: Dict[str, str] = {}
+
+    def update(self, now: datetime, cycle_id: str, evaluated_pairs, skipped_pairs: Dict[str, str]) -> None:
+        with self._lock:
+            self.active = True
+            self.last_cycle_at = now
+            self.last_cycle_id = cycle_id
+            self.evaluated_pairs = tuple(evaluated_pairs)
+            self.skipped_pairs = dict(skipped_pairs)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "active": self.active,
+                "last_cycle_at": self.last_cycle_at.isoformat() if self.last_cycle_at else None,
+                "last_cycle_id": self.last_cycle_id,
+                "evaluated_pairs": list(self.evaluated_pairs),
+                "skipped_pairs": dict(self.skipped_pairs),
+            }
+
+
+_live_cycle_status = _LiveCycleStatus()
 
 
 def _utc_now() -> datetime:
@@ -206,9 +265,49 @@ def _bridge_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, bridge_engine: BridgeEngine, bridge_host: str, bridge_port: int, queue_depth: int) -> None:
+def _market_data_health_payload(market_data_engine: Optional[MarketDataIngestionEngine], market_data_metrics: Optional[MarketDataIngestionMetrics], now: datetime) -> Optional[dict]:
+    """Amendment 1 (ADR-023) -- exposes `MarketDataIngestionEngine`'s
+    own existing health/metrics objects verbatim. No new metric is
+    computed here; `MarketDataIngestionMetrics` does not track
+    ingestion latency, so it is honestly omitted rather than
+    approximated."""
+    if market_data_engine is None:
+        return None
+    snapshot = market_data_engine.health_snapshot(now)
+    payload = {
+        "warmup_statuses": [
+            {"symbol": s.symbol, "timeframe": s.timeframe.value, "bars_received": s.bars_received, "bars_required": s.bars_required, "ready": s.ready}
+            for s in snapshot.warmup_statuses
+        ],
+        "freshness": [
+            {
+                "symbol": f.symbol, "timeframe": f.timeframe.value,
+                "last_bar_open_time": f.last_bar_open_time.isoformat() if f.last_bar_open_time else None,
+                "is_stale": f.is_stale,
+            }
+            for f in snapshot.freshness
+        ],
+        "recent_gap_reasons": list(snapshot.reasons),
+    }
+    if market_data_metrics is not None:
+        payload["metrics"] = {
+            "bars_accepted": market_data_metrics.accepted_count,
+            "bars_rejected": market_data_metrics.rejected_count,
+            "gaps_detected": market_data_metrics.gaps_detected_count,
+            "ticks_ingested": market_data_metrics.ticks_ingested_count,
+        }
+    return payload
+
+
+def _write_health_snapshot(
+    state_dir: Path, reliability: ReliabilityEngine, bridge_engine: BridgeEngine, bridge_host: str, bridge_port: int, queue_depth: int,
+    market_data_engine: Optional[MarketDataIngestionEngine] = None,
+    market_data_metrics: Optional[MarketDataIngestionMetrics] = None,
+    runtime_metrics: Optional[RuntimeMetrics] = None,
+) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
+    live_cycle = _live_cycle_status.snapshot()
     payload = {
         "generated_at": now.isoformat(),
         "degradation_level": snapshot.degradation_level.value,
@@ -219,24 +318,38 @@ def _write_health_snapshot(state_dir: Path, reliability: ReliabilityEngine, brid
         "bridge_reachable": _bridge_reachable(bridge_host, bridge_port),
         "mt5_connected": bridge_engine.is_connection_healthy,
         "bridge_command_queue_depth": queue_depth,
-        "cycle_loop_active": False,
-        "cycle_loop_inactive_reason": (
-            "No market-data ingestion component is wired into this entry point -- "
-            "see KNOWN_GAPS.md. Bridge (execution channel) and Reliability (this "
-            "health monitor) are live; the trading decision cycle is not."
+        # Amendment 1 (ADR-023): the loop itself is active whenever this
+        # process constructed it -- individual pairs may still be
+        # skipped per-tick (see live_cycle.skipped_pairs) when their
+        # market data isn't ready. "Active" here mirrors "reliability
+        # monitor alive"'s own meaning: the loop is running, not that
+        # every pair traded this tick.
+        "cycle_loop_active": live_cycle["active"],
+        "live_cycle": live_cycle,
+        "market_data": _market_data_health_payload(market_data_engine, market_data_metrics, now),
+        "runtime_cycle_counts": (
+            {"cycle_count": runtime_metrics.cycle_count, "failure_count": runtime_metrics.failure_count}
+            if runtime_metrics is not None else None
         ),
     }
     (state_dir / "health.json").write_text(json.dumps(payload, indent=2))
 
 
-def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine, command_queue: CommandQueue, state_dir: Path, bridge_host: str, bridge_port: int) -> None:
+def _heartbeat_loop(
+    reliability: ReliabilityEngine, bridge_engine: BridgeEngine, command_queue: CommandQueue, state_dir: Path, bridge_host: str, bridge_port: int,
+    market_data_engine: Optional[MarketDataIngestionEngine] = None,
+    market_data_metrics: Optional[MarketDataIngestionMetrics] = None,
+    runtime_metrics: Optional[RuntimeMetrics] = None,
+) -> None:
     logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
         now = _utc_now()
         for component in _RESTARTABLE_ENGINES:
             # Process-liveness heartbeat: this process is alive and these
             # engine objects were constructed and remain importable/usable.
-            # This is NOT a trade-cycle heartbeat -- no cycles are running.
+            # This is NOT a trade-cycle heartbeat -- the live-cycle loop
+            # (a separate thread) reports its own activity via health.json's
+            # live_cycle/cycle_loop_active fields instead.
             reliability.report_heartbeat(component, now)
         try:
             reliability.report_resource_usage(now)
@@ -248,10 +361,96 @@ def _heartbeat_loop(reliability: ReliabilityEngine, bridge_engine: BridgeEngine,
         except Exception:  # noqa: BLE001
             logger.exception("failed to report queue depth")
         try:
-            _write_health_snapshot(state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth)
+            _write_health_snapshot(state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth, market_data_engine, market_data_metrics, runtime_metrics)
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
         _shutdown_event.wait(_HEARTBEAT_INTERVAL_SECONDS)
+
+
+def _build_compliance_account_state(bridge_engine: BridgeEngine) -> Optional[ComplianceAccountState]:
+    """Amendment 1 (ADR-023) -- maps the EA-reported balance (already
+    flowing in via the existing, unmodified `/bridge/account` endpoint)
+    onto `compliance_engine.models.AccountState`'s required fields.
+
+    KNOWN LIMITATION (see the Amendment 1 implementation report):
+    `daily_starting_balance`/`peak_balance` both mirror the current
+    balance and `compliance_lock` always starts unlocked -- this
+    integration does not yet persist day-start/peak/lock state across
+    cycles. That auto-conversion was explicitly out of this ADR's
+    original scope (SS7: "Auto-converting EA-reported account state...")
+    and is not reopened by Amendment 1; a caller wanting real
+    day-start/peak tracking composes it themselves, same as the
+    original ADR already said. Returns `None` (caller skips the cycle)
+    if the EA has not reported account state yet."""
+
+    latest = bridge_engine.latest_account_state
+    if latest is None:
+        return None
+    return ComplianceAccountState(
+        account_balance=latest.balance,
+        daily_starting_balance=latest.balance,
+        peak_balance=latest.balance,
+        compliance_lock=ComplianceLockState(),
+    )
+
+
+def _live_cycle_loop(
+    orchestrator: RuntimeOrchestrator,
+    market_data_engine: MarketDataIngestionEngine,
+    bridge_engine: BridgeEngine,
+    profile,
+) -> None:
+    """Amendment 1 (ADR-023) -- the only genuinely new orchestration
+    logic this amendment adds. Per pair, per tick: checks
+    `MarketDataIngestionEngine.is_ready()` (already implemented,
+    already checking warmup + staleness) and only calls
+    `RuntimeOrchestrator.run_cycle_for_pair()` (unmodified) when ready.
+    A pair with no ready market data, no reported spread yet, or no
+    reported account state yet is skipped for this tick -- logged, never
+    faked. `events`/`market_safety_inputs`/`portfolio_state`/
+    `trade_history` use the safe, honest defaults every existing test
+    fixture already uses for "no special condition" (news ingestion and
+    live portfolio/account auto-conversion remain separate, undeclared
+    scopes -- see KNOWN_GAPS.md and the Amendment 1 implementation
+    report)."""
+
+    logger = logging.getLogger("titan_protocol.deploy.live_cycle")
+    cycle_number = 0
+    while not _shutdown_event.is_set():
+        now = _utc_now()
+        cycle_number += 1
+        cycle_id = f"live-{cycle_number}"
+        skipped: Dict[str, str] = {}
+        inputs: Dict[str, tuple] = {}
+
+        account_state = _build_compliance_account_state(bridge_engine)
+
+        for pair in profile.allowed_pairs:
+            if account_state is None:
+                skipped[pair] = "no_account_state_reported_yet"
+                continue
+            if not market_data_engine.is_ready(pair, _PRIMARY_TIMEFRAME, now):
+                skipped[pair] = "market_data_not_ready"
+                continue
+            spread = market_data_engine.latest_spread(pair)
+            if spread is None:
+                skipped[pair] = "no_spread_data_yet"
+                continue
+            current_spread, average_spread = spread
+            bars = market_data_engine.get_bars(pair, _PRIMARY_TIMEFRAME)
+            inputs[pair] = (
+                bars, (), current_spread, average_spread, MarketSafetyInputs(),
+                PortfolioState(), None, account_state,
+            )
+
+        if inputs:
+            try:
+                orchestrator.run_cycle(tuple(inputs.keys()), profile, inputs, now, cycle_id)
+            except Exception:  # noqa: BLE001 -- the live-cycle loop must never crash the process
+                logger.exception("live cycle %s failed", cycle_id)
+
+        _live_cycle_status.update(now, cycle_id, inputs.keys(), skipped)
+        _shutdown_event.wait(_LIVE_CYCLE_INTERVAL_SECONDS)
 
 
 def run_foreground(config_path: Path) -> int:
@@ -292,9 +491,19 @@ def run_foreground(config_path: Path) -> int:
         return 2
     logger.info("Trading profile %s validated OK", profile.profile_id)
 
+    # Amendment 1 (ADR-023): reuses BridgeConfig's own allowed_symbols as
+    # the single source of truth for which symbols this deployment
+    # ingests market data for -- no second, duplicate pairs list.
+    market_data_config = (
+        MarketDataIngestionConfig(enabled_pairs=settings.bridge_config.allowed_symbols)
+        if settings.bridge_config.allowed_symbols else MarketDataIngestionConfig()
+    )
+    market_data_metrics = MarketDataIngestionMetrics()
+    market_data_engine = MarketDataIngestionEngine(market_data_config, market_data_metrics)
+
     command_queue = CommandQueue(settings.bridge_config)
     connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
-    bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now)
+    bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now, market_data_engine=market_data_engine)
     try:
         http_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
     except OSError as exc:
@@ -314,19 +523,31 @@ def run_foreground(config_path: Path) -> int:
     def bridge_submit(command, now):
         return bridge_engine.submit_command(command, now)
 
+    runtime_metrics = RuntimeMetrics()
     orchestrator = RuntimeOrchestrator(
         settings.runtime_config, evidence_engine, market_intelligence_engine,
         strategy_engine, risk_engine, compliance_engine, bridge_submit,
+        metrics=runtime_metrics,
     )
-    logger.info("RuntimeOrchestrator constructed (cycle loop NOT started -- see KNOWN_GAPS.md)")
-    del orchestrator
+    logger.info("RuntimeOrchestrator constructed")
 
     reliability = ReliabilityEngine(settings.reliability_config)
     heartbeat_thread = threading.Thread(
-        target=_heartbeat_loop, args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, settings.bridge_port),
+        target=_heartbeat_loop,
+        args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, settings.bridge_port,
+              market_data_engine, market_data_metrics, runtime_metrics),
         name="titan_protocol-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
+
+    # Amendment 1 (ADR-023): the live-cycle loop -- fail-closed per pair
+    # via MarketDataIngestionEngine.is_ready(), never bypassed.
+    live_cycle_thread = threading.Thread(
+        target=_live_cycle_loop, args=(orchestrator, market_data_engine, bridge_engine, profile),
+        name="titan_protocol-live-cycle", daemon=True,
+    )
+    live_cycle_thread.start()
+    logger.info("Live-cycle loop started (fail-closed per pair on market-data readiness)")
 
     def _handle_shutdown(signum, _frame):
         logger.info("Received signal %s -- shutting down", signum)
@@ -341,12 +562,14 @@ def run_foreground(config_path: Path) -> int:
     print(f"  Trading profile      : {profile.profile_id} (validated OK)")
     print("  5 core engines       : constructed OK")
     print("  Reliability monitor  : running (process-liveness + Bridge/MT5 heartbeats)")
-    print("  LIVE TRADING CYCLE   : NOT ACTIVE -- no market-data ingestion")
-    print("                          component is wired into this entry point.")
-    print("                          See KNOWN_GAPS.md before relying on this")
-    print("                          for real trading.")
+    print("  LIVE TRADING CYCLE   : RUNNING (Amendment 1) -- fails closed per pair")
+    print("                          until the EA reports account state and its")
+    print("                          bar feed clears warmup/freshness checks. No")
+    print("                          news-provider redundancy and no persisted")
+    print("                          day-start/peak/lock tracking yet -- still")
+    print("                          DEGRADED, never HEALTHY. See KNOWN_GAPS.md.")
     print("=" * 72)
-    logger.warning("STATUS=DEGRADED -- Bridge+Reliability running; trading cycle loop is NOT active (see KNOWN_GAPS.md)")
+    logger.warning("STATUS=DEGRADED -- Bridge+Reliability+live-cycle-loop running; see KNOWN_GAPS.md for remaining gaps")
 
     try:
         while not _shutdown_event.is_set():

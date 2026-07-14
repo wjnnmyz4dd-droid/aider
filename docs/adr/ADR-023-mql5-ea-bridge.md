@@ -1,8 +1,28 @@
 # ADR-023 — Hybrid MT5 MQL5 EA Bridge
 
-Status: Accepted
+Status: **Accepted**
 
-Acceptance Date: 2026-07-08
+**Amendment 1 (2026-07-14):** closes `KNOWN_GAPS.md` §1 (no live
+market-data ingestion wired into a live entry point) by connecting four
+already-accepted, already-built components — `mt5/TitanProtocolEA.mq5`,
+`titan_protocol/bridge/`, `titan_protocol/market_data_ingestion/`
+(ADR-033, Accepted, unmodified), and `titan_protocol/runtime/engine.py`'s
+`RuntimeOrchestrator` (ADR-031, Accepted, unmodified) — into a single
+canonical live data path. Integration-only: extends the Bridge's
+transport surface by exactly one new message type and one new endpoint,
+reusing `MarketDataIngestionEngine` exactly as implemented. Does not
+modify Evidence, Market Intelligence, Strategy, Risk, or Compliance
+Engine logic. Note: this ADR's original body below (§§1-8) describes an
+earlier, pre-rename design centered on `phantom_pipeline/ea_bridge/`,
+`mt5_bridge`, and `data_pipeline` — packages that were never what
+actually shipped. The real, live implementation this amendment extends
+is `titan_protocol/bridge/` (verified by reading its actual source), a
+self-contained transport package with no `data_pipeline`/`BrokerAdapter`
+dependency. This amendment is written against what is actually running.
+Full amendment content: `docs/plans/live-market-data-wiring.md`'s
+companion ADR text, reproduced below in §§9-15.
+
+Acceptance Date: 2026-07-08 (original); Amendment 1 accepted 2026-07-14
 
 Accepted By: User direction, this session (explicit, full specification:
 EA capabilities/prohibitions, architecture constraints, 6 named
@@ -355,3 +375,148 @@ backtesting/algo-trading engines — relevant only to a possible future
 replay/backtest-certification effort, not to this ADR). None of these
 three are cited further here; no code or dependency change was made for
 any of them.
+
+---
+
+# 9. (Amendment 1) Canonical data flow
+
+```
+TitanProtocolEA.mq5
+     |  (new: bar/tick report, same HTTP + API-key transport as today)
+     v
+titan_protocol/bridge/  (+1 endpoint, existing routing/auth/validation pattern)
+     |
+     v
+titan_protocol/market_data_ingestion/  (existing, UNMODIFIED --
+     |   ingest_bar()/ingest_tick()/is_ready()/get_bars()/latest_spread()/
+     |   health_snapshot(), all already implemented, ADR-033)
+     v
+titan_protocol/runtime/engine.py -- RuntimeOrchestrator.run_cycle_for_pair()
+     |   (existing, UNMODIFIED -- already takes bars: Sequence[Bar])
+     v
+Evidence -> Market Intelligence -> Strategy -> Risk -> Compliance -> Bridge
+     (existing, UNMODIFIED -- ADR-001's pipeline order, unchanged)
+```
+
+# 10. (Amendment 1) Ownership
+
+- **`TitanProtocolEA.mq5`** owns: collecting broker-reported bars (and
+  ticks, for spread) and publishing them to the Bridge. It does not
+  validate, normalize, or interpret them — the same "transport only"
+  posture Hard Rule 1 already establishes for execution, now explicitly
+  extended to market-data messages too.
+- **`titan_protocol/bridge/`** owns: transport, API-key authentication,
+  routing, and request-shape validation (well-formed JSON, required
+  fields present) for the new message — identical to every existing
+  message type. It does **not** validate bar *content* (ordering,
+  staleness, duplicates, gaps) — that is `MarketDataIngestionEngine`'s
+  job exclusively, never re-implemented here.
+- **`titan_protocol/market_data_ingestion/`** owns, exclusively and
+  unchanged: validation, normalization, ordering, duplicate detection,
+  gap detection, warmup, freshness, and canonical `Bar` production.
+- **`RuntimeOrchestrator`** owns: scheduling the live cycle and calling
+  `run_cycle_for_pair()` per pair, per interval — its own internal
+  Evidence→...→Compliance sequencing is unchanged (ADR-031).
+- **Evidence Engine** remains the sole authority for interpreting market
+  structure from bars.
+
+# 11. (Amendment 1) New EA messages
+
+Two new wire types, added to `titan_protocol/bridge/models.py` alongside
+the existing message types (same `@dataclass(frozen=True)`,
+`schema_version`-carrying convention), mapping directly onto
+`market_data_ingestion.models.RawBar`/`TickEvent`:
+
+```python
+@dataclass(frozen=True)
+class RawBarMessage:
+    schema_version: int
+    symbol: str
+    timeframe: str        # "M1"/"M5"/"M15"/"M30"/"H1"/"H4"/"D1"
+    broker_timestamp: datetime   # MT5 TimeCurrent() at capture
+    source_timestamp: datetime   # MT5 TimeLocal() at capture (clock-skew check)
+    bar_open_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    is_closed: bool
+    sequence_number: int
+    bid: Optional[float]
+    ask: Optional[float]
+    magic_number: int
+    received_at: datetime   # Bridge-assigned
+
+@dataclass(frozen=True)
+class RawTickMessage:
+    schema_version: int
+    symbol: str
+    bid: float
+    ask: float
+    magic_number: int
+    received_at: datetime
+```
+
+# 12. (Amendment 1) Bridge: one new endpoint
+
+**`POST /bridge/market-data`** — added to `server.py`'s `_POST_ROUTES`
+table alongside the existing routes. Same API-key header, same
+JSON-body-in/JSON-status-out convention, same `BridgeConfig`-driven
+allowed-symbols/magic-number checks every existing route already
+applies before touching payload content. No new transport pattern, no
+new auth mechanism, no new error envelope shape. The handler's only
+responsibilities: validate the transport envelope, construct a `RawBar`
+or `TickEvent`, and call `MarketDataIngestionEngine.ingest_bar()`/
+`ingest_tick()` — nothing else.
+
+# 13. (Amendment 1) Fail-closed
+
+The live-cycle loop (new orchestration code in `start.py`) calls
+`MarketDataIngestionEngine.is_ready(symbol, timeframe, now)` — already
+implemented, already checking warmup completeness and staleness —
+before calling `run_cycle_for_pair()` for that pair on each tick.
+Trading decisions pause (that pair's cycle is skipped, logged, never
+faked) whenever: the feed is stale, warmup is incomplete, a bar fails
+ordering/duplicate checks, a required timeframe has no bars yet, the
+Bridge itself is unreachable, or the inbound message fails schema
+validation. Existing open positions continue under existing
+management — this amendment only gates *new* `run_cycle_for_pair()`
+calls.
+
+# 14. (Amendment 1) Observability
+
+`MarketDataIngestionEngine.health_snapshot()` and
+`MarketDataIngestionMetrics` already track last-bar/freshness per
+symbol-timeframe, warmup progress, recent gap reasons, and
+accepted/rejected/tick counts. This amendment exposes these existing
+objects through `health_check.py` and `start.py`'s health snapshot —
+no new metric-collection logic.
+
+# 15. (Amendment 1) Hard Rule 9 — no duplicate market-data logic
+
+9. **No duplicate market-data logic, anywhere.** No new/second
+   market-data engine; no duplicate bar validation; no duplicate
+   normalization; no duplicate warmup tracking; no duplicate gap
+   detection. `titan_protocol/market_data_ingestion/` is reused exactly
+   as implemented — the Bridge-side handler for the new endpoint does
+   nothing but deserialize the wire message and call that engine's
+   existing public methods. Verified by a structural test confirming no
+   file outside `titan_protocol/bridge/` and
+   `deployment_windows/start.py`/`health_check.py` changed, and that
+   `titan_protocol/market_data_ingestion/*.py` is byte-for-byte
+   unchanged.
+
+**Amendment 1 acceptance criteria:** `TitanProtocolEA.mq5` streams live
+bars to the new endpoint; the Bridge routes them via the new endpoint
+applying only transport/auth/schema validation;
+`MarketDataIngestionEngine.ingest_bar()`/`ingest_tick()` process every
+message exactly as their existing tests already cover;
+`RuntimeOrchestrator.run_cycle_for_pair()` is called with real,
+live-sourced `bars` on a real schedule; Evidence Engine receives
+canonical `Bar` objects from the existing engine, unmodified;
+pre-amendment test suite stays green, unmodified; new integration tests
+cover the full live path and every fail-closed condition; `git diff
+--stat` against `evidence_engine/`, `market_intelligence/`,
+`strategy_engine/`, `risk_engine/`, `compliance_engine/`, `runtime/`
+(besides the new loop), and `market_data_ingestion/` is empty.

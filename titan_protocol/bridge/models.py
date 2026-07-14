@@ -188,6 +188,52 @@ class ErrorReport:
 
 
 @dataclass(frozen=True)
+class RawBarMessage:
+    """One EA-reported price bar (Amendment 1, ADR-023). A transport-
+    layer record only -- maps 1:1 onto
+    `market_data_ingestion.models.RawBar`, which alone validates/
+    normalizes it. `timeframe` is the plain string value
+    (`market_data_ingestion.models.Timeframe`'s `.value`, e.g. "M15"),
+    never re-typed as an enum here to avoid a second definition of the
+    same concept. `broker_timestamp`/`source_timestamp` are two
+    independent clock readings the EA takes at capture time (MT5's
+    `TimeCurrent()`/`TimeLocal()`) -- `market_data_ingestion.validation`
+    compares them for clock skew, never against Bridge's own wall
+    clock."""
+
+    schema_version: int
+    symbol: str
+    timeframe: str
+    broker_timestamp: datetime
+    source_timestamp: datetime
+    bar_open_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    is_closed: bool
+    sequence_number: int
+    bid: Optional[float]
+    ask: Optional[float]
+    magic_number: int
+    received_at: datetime
+
+
+@dataclass(frozen=True)
+class RawTickMessage:
+    """One EA-reported tick (Amendment 1, ADR-023) -- maps 1:1 onto
+    `market_data_ingestion.models.TickEvent`."""
+
+    schema_version: int
+    symbol: str
+    bid: float
+    ask: float
+    magic_number: int
+    received_at: datetime
+
+
+@dataclass(frozen=True)
 class EmergencyStopState:
     """`active=True` halts all new command issuance and is surfaced to
     the EA on its next poll so it can fail closed even if it never
@@ -215,4 +261,6 @@ __all__ = [
     "TradeTransactionReport",
     "ErrorReport",
     "EmergencyStopState",
+    "RawBarMessage",
+    "RawTickMessage",
 ]

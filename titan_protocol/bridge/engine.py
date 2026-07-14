@@ -45,6 +45,11 @@ from .models import (
     TradeTransactionReport,
 )
 
+# Amendment 1 (ADR-023): market_data_ingestion imports only
+# titan_protocol.evidence_engine.models -- no cycle with this package.
+from titan_protocol.market_data_ingestion.engine import MarketDataIngestionEngine
+from titan_protocol.market_data_ingestion.models import IngestionResult, RawBar, TickEvent
+
 
 class BridgeEngine:
     def __init__(
@@ -54,12 +59,17 @@ class BridgeEngine:
         connection_health: ConnectionHealth,
         clock: Callable[[], datetime],
         metrics: Optional[BridgeMetrics] = None,
+        market_data_engine: Optional[MarketDataIngestionEngine] = None,
     ) -> None:
         self.config = config
         self._queue = command_queue
         self._health = connection_health
         self._clock = clock
         self.metrics = metrics
+        # Amendment 1 (ADR-023): optional so every existing call site
+        # (start.py, every pre-amendment test) is unaffected -- market
+        # data is a new, additive capability, never a required one.
+        self._market_data_engine = market_data_engine
         self._latest_account_state: Optional[AccountState] = None
         self._latest_positions: Dict[str, PositionReport] = {}
         self._latest_pending_orders: Dict[str, PendingOrderReport] = {}
@@ -96,6 +106,29 @@ class BridgeEngine:
         log_pending_orders(len(orders), self.config.magic_number)
         if self.metrics is not None:
             self.metrics.record_pending_order_update()
+
+    # -- Market data (Amendment 1, ADR-023) -----------------------------
+    #
+    # Both methods do nothing but delegate to `MarketDataIngestionEngine`
+    # -- no validation, normalization, ordering, or freshness logic is
+    # (or may ever be) duplicated here. If no engine was constructed
+    # (`market_data_engine=None`, the default), the message is accepted
+    # at the transport layer and silently has nowhere to go -- callers
+    # gate on `has_market_data_engine` before wiring the endpoint at all.
+
+    @property
+    def has_market_data_engine(self) -> bool:
+        return self._market_data_engine is not None
+
+    def handle_bar(self, raw: RawBar, now: datetime) -> Optional[IngestionResult]:
+        if self._market_data_engine is None:
+            return None
+        return self._market_data_engine.ingest_bar(raw, now)
+
+    def handle_tick(self, tick: TickEvent, now: datetime) -> Optional[IngestionResult]:
+        if self._market_data_engine is None:
+            return None
+        return self._market_data_engine.ingest_tick(tick, now)
 
     # -- Command submission and relay (the execution authority) -------
 
