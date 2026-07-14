@@ -10,8 +10,10 @@ phase, not built here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
+
+from .symbol_mapping import SymbolMapping
 
 BRIDGE_VERSION = "1.0.0-phase1"
 
@@ -20,6 +22,11 @@ BRIDGE_VERSION = "1.0.0-phase1"
 class BridgeConfig:
     api_key: str
     allowed_symbols: Tuple[str, ...]
+    #: Broker-native symbol <-> canonical pair-name normalization
+    #: (Final Release Hardening, symbol-universe consistency). Defaults
+    #: to a no-op mapping (identity) -- fully backward compatible with
+    #: every existing call site that never set this.
+    symbol_mapping: SymbolMapping = field(default_factory=SymbolMapping)
     magic_number: int = 20260709
     max_lot_size: float = 5.0
     max_slippage_points: int = 20

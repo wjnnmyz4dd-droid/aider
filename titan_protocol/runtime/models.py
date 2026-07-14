@@ -122,7 +122,19 @@ class StageTiming:
 @dataclass(frozen=True)
 class RuntimeAuditRecord:
     """No trade instruction beyond what the pipeline already approved
-    -- pure record (ADR-031 SS12)."""
+    -- pure record (ADR-031 SS12).
+
+    Final Release Hardening (requirement 4, audit-record completeness)
+    added the fields below `engine_versions`. Every one of them records
+    an already-computed value from another engine's own snapshot (or a
+    hash/ID derived purely from values already on this same record) --
+    none of them duplicate a calculation (CLAUDE.md SS1.4). In
+    particular, `market_intelligence_summary` records Market
+    Intelligence's own computed trade-readiness explanation, never
+    which news provider produced its events -- Market Intelligence
+    itself is never told the provider (Phase 3E), so this record can't
+    be either; provider identity stays recorded only in the deployment
+    layer's health.json."""
 
     cycle_id: str
     pair: str
@@ -142,6 +154,20 @@ class RuntimeAuditRecord:
     reasons: Tuple[str, ...]
     stage_timings: Tuple[StageTiming, ...]
     engine_versions: Tuple[Tuple[str, str], ...]
+
+    # -- Final Release Hardening additions (all defaulted -- additive only) --
+    decision_id: str = ""
+    config_schema_version: int = 0
+    timeframe: str = ""
+    evidence_summary: str = ""
+    market_intelligence_summary: str = ""
+    risk_reasons: Tuple[str, ...] = ()
+    compliance_triggered_rules: Tuple[str, ...] = ()
+    compliance_lock_trigger: Optional[bool] = None
+    compliance_lock_reason: Optional[str] = None
+    bridge_correlation_id: Optional[str] = None
+    snapshot_hash: str = ""
+    decision_fingerprint: str = ""
 
 
 @dataclass(frozen=True)

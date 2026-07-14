@@ -98,7 +98,7 @@ def _handle_positions(engine: BridgeEngine, config: BridgeConfig, body: dict, no
         PositionReport(
             schema_version=SCHEMA_VERSION,
             position_id=raw["position_id"],
-            symbol=raw["symbol"],
+            symbol=config.symbol_mapping.to_canonical(raw["symbol"]),
             direction=PositionDirection(raw["direction"]),
             volume=float(raw["volume"]),
             open_price=float(raw["open_price"]),
@@ -122,7 +122,7 @@ def _handle_orders(engine: BridgeEngine, config: BridgeConfig, body: dict, now: 
         PendingOrderReport(
             schema_version=SCHEMA_VERSION,
             order_id=raw["order_id"],
-            symbol=raw["symbol"],
+            symbol=config.symbol_mapping.to_canonical(raw["symbol"]),
             order_type=raw["order_type"],
             volume=float(raw["volume"]),
             price=float(raw["price"]),
@@ -194,10 +194,11 @@ def _handle_trade_transaction(engine: BridgeEngine, config: BridgeConfig, body: 
     reason = validation.validate_inbound_message(body.get("api_key"), body.get("magic_number", -1), config)
     if reason is not None:
         return (401 if "KEY" in reason.value else 400), {"error": reason.value}
+    raw_symbol = body.get("symbol")
     report = TradeTransactionReport(
         schema_version=SCHEMA_VERSION,
         magic_number=body["magic_number"],
-        symbol=body.get("symbol"),
+        symbol=config.symbol_mapping.to_canonical(raw_symbol) if raw_symbol is not None else None,
         deal_ticket=body.get("deal_ticket"),
         order_ticket=body.get("order_ticket"),
         transaction_type=body.get("transaction_type", "UNKNOWN"),
@@ -270,7 +271,7 @@ def _handle_market_data(engine: BridgeEngine, config: BridgeConfig, body: dict, 
     bar_result = None
     if bar_raw is not None:
         raw_bar = RawBar(
-            symbol=bar_raw["symbol"],
+            symbol=config.symbol_mapping.to_canonical(bar_raw["symbol"]),
             timeframe=IngestionTimeframe(bar_raw["timeframe"]),
             broker_timestamp=_parse_datetime(bar_raw["broker_timestamp"]),
             source_timestamp=_parse_datetime(bar_raw["source_timestamp"]),
@@ -290,7 +291,7 @@ def _handle_market_data(engine: BridgeEngine, config: BridgeConfig, body: dict, 
     tick_result = None
     if tick_raw is not None:
         tick = TickEvent(
-            symbol=tick_raw["symbol"],
+            symbol=config.symbol_mapping.to_canonical(tick_raw["symbol"]),
             timestamp=_parse_datetime(tick_raw["timestamp"]) if "timestamp" in tick_raw else now,
             bid=float(tick_raw["bid"]),
             ask=float(tick_raw["ask"]),

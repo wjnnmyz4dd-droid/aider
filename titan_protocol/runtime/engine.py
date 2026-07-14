@@ -13,6 +13,7 @@ execution."""
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -33,9 +34,17 @@ from .bridge_handoff import build_trade_command
 from .config import RUNTIME_VERSION, RuntimeConfig
 from .logging_sink import log_runtime_audit_record
 from .metrics import RuntimeMetrics
-from .models import CycleOutcome, CycleReport, CycleStage, RuntimeAuditRecord, StageTiming, TradingProfile
+from .models import SCHEMA_VERSION, CycleOutcome, CycleReport, CycleStage, RuntimeAuditRecord, StageTiming, TradingProfile
 
 BridgeSubmit = Callable[[TradeCommand, datetime], Optional[ErrorCode]]
+
+
+def _fingerprint(*values: object) -> str:
+    """Deterministic, truncated SHA-256 over already-computed values --
+    a checksum, never a new decision computation (Final Release
+    Hardening, requirement 4: 'Do not duplicate engine calculations')."""
+
+    return hashlib.sha256(repr(values).encode("utf-8")).hexdigest()[:16]
 
 
 def _engine_versions() -> Tuple[Tuple[str, str], ...]:
@@ -69,6 +78,7 @@ class RuntimeOrchestrator:
         compliance_engine: ComplianceEngine,
         bridge_submit: Optional[BridgeSubmit] = None,
         metrics: Optional[RuntimeMetrics] = None,
+        timeframe: str = "",
     ) -> None:
         self.config = config
         self.evidence_engine = evidence_engine
@@ -78,6 +88,11 @@ class RuntimeOrchestrator:
         self.compliance_engine = compliance_engine
         self.bridge_submit = bridge_submit
         self.metrics = metrics
+        # Final Release Hardening -- recorded on every RuntimeAuditRecord
+        # (requirement 4: "symbol and timeframe"). A plain label, not the
+        # market_data_ingestion.Timeframe enum -- Runtime does not import
+        # that pipeline-stage package for a label alone.
+        self.timeframe = timeframe
 
     def run_cycle_for_pair(
         self,
@@ -108,6 +123,11 @@ class RuntimeOrchestrator:
             compliance_decision: Optional[ComplianceDecision] = None,
             bridge_error: Optional[ErrorCode] = None,
             reasons: Tuple[str, ...] = (),
+            evidence=None,
+            market_intelligence=None,
+            risk=None,
+            compliance=None,
+            bridge_correlation_id: Optional[str] = None,
         ) -> RuntimeAuditRecord:
             # `ended_at` is the same caller-supplied `now`, never a fresh
             # `datetime.now()` read -- Runtime has exactly one notion of
@@ -118,6 +138,30 @@ class RuntimeOrchestrator:
             # between runs -- they are operational metrics, not decisions.
             ended_at = now
             duration_ms = sum(t.duration_ms for t in stage_timings)
+
+            # Final Release Hardening (requirement 4) -- every field below
+            # records an already-computed value from the snapshot passed
+            # in by whichever call site reached that far; no new decision
+            # logic is evaluated here, only extraction and hashing.
+            evidence_summary = evidence.report.confidence_explanation if evidence is not None else ""
+            market_intelligence_summary = (
+                market_intelligence.explanation.trade_readiness_explanation if market_intelligence is not None else ""
+            )
+            risk_reasons = risk.reasons if risk is not None else ()
+            compliance_triggered_rules = (
+                tuple(rule.value for rule in compliance.triggered_rules) if compliance is not None else ()
+            )
+            lock_recommendation = compliance.lock_recommendation if compliance is not None else None
+            compliance_lock_trigger = lock_recommendation.trigger if lock_recommendation is not None else None
+            compliance_lock_reason = lock_recommendation.reason if lock_recommendation is not None else None
+            decision_id = f"{cycle_id}:{pair}"
+            snapshot_hash = _fingerprint(pair, profile.profile_id, profile.version, SCHEMA_VERSION, evidence_id, self.timeframe)
+            decision_fingerprint = _fingerprint(
+                outcome.value, stage_reached.value if stage_reached is not None else None,
+                selected_strategy, trade_intent.value,
+                risk_approved, compliance_decision.value if compliance_decision is not None else None, reasons,
+            )
+
             record = RuntimeAuditRecord(
                 cycle_id=cycle_id, pair=pair, profile_id=profile.profile_id,
                 configuration_version=profile.version, started_at=started_at, ended_at=ended_at,
@@ -125,6 +169,12 @@ class RuntimeOrchestrator:
                 evidence_id=evidence_id, selected_strategy=selected_strategy, trade_intent=trade_intent,
                 risk_approved=risk_approved, compliance_decision=compliance_decision, bridge_error=bridge_error,
                 reasons=reasons, stage_timings=tuple(stage_timings), engine_versions=_ENGINE_VERSIONS,
+                decision_id=decision_id, config_schema_version=SCHEMA_VERSION, timeframe=self.timeframe,
+                evidence_summary=evidence_summary, market_intelligence_summary=market_intelligence_summary,
+                risk_reasons=risk_reasons, compliance_triggered_rules=compliance_triggered_rules,
+                compliance_lock_trigger=compliance_lock_trigger, compliance_lock_reason=compliance_lock_reason,
+                bridge_correlation_id=bridge_correlation_id, snapshot_hash=snapshot_hash,
+                decision_fingerprint=decision_fingerprint,
             )
             log_runtime_audit_record(record)
             return record
@@ -143,6 +193,7 @@ class RuntimeOrchestrator:
                 return _record(
                     CycleOutcome.SESSION_NOT_ALLOWED, CycleStage.EVIDENCE, evidence_id=evidence_id,
                     reasons=(f"session {evidence.session.session.value} not in this profile's session_rules",),
+                    evidence=evidence,
                 )
 
             last_stage = CycleStage.MARKET_INTELLIGENCE
@@ -161,6 +212,7 @@ class RuntimeOrchestrator:
                 return _record(
                     CycleOutcome.NO_STRATEGY, CycleStage.STRATEGY, evidence_id=evidence_id,
                     reasons=(strategy.rejection_reason or "no strategy qualified",),
+                    evidence=evidence, market_intelligence=market_intelligence,
                 )
 
             last_stage = CycleStage.RISK
@@ -174,6 +226,7 @@ class RuntimeOrchestrator:
                     selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
                     risk_approved=False,
                     reasons=risk.reasons or (risk.rejection_reason.value if risk.rejection_reason else "rejected",),
+                    evidence=evidence, market_intelligence=market_intelligence, risk=risk,
                 )
 
             last_stage = CycleStage.COMPLIANCE
@@ -188,15 +241,18 @@ class RuntimeOrchestrator:
                     CycleOutcome.COMPLIANCE_REJECTED, CycleStage.COMPLIANCE, evidence_id=evidence_id,
                     selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
                     risk_approved=True, compliance_decision=compliance.decision, reasons=(compliance.reason,),
+                    evidence=evidence, market_intelligence=market_intelligence, risk=risk, compliance=compliance,
                 )
 
             last_stage = CycleStage.BRIDGE
             stage_start = time.monotonic()
             bridge_error: Optional[ErrorCode] = None
+            command = None
             if self.bridge_submit is not None and compliance.ready_for_bridge:
                 command = build_trade_command(pair, strategy, risk, compliance, cycle_id, now, self.config)
                 bridge_error = self.bridge_submit(command, now)
             stage_timings.append(StageTiming(CycleStage.BRIDGE, (time.monotonic() - stage_start) * 1000.0))
+            bridge_correlation_id = command.correlation_id if command is not None else None
 
             if bridge_error is not None:
                 return _record(
@@ -204,12 +260,16 @@ class RuntimeOrchestrator:
                     selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
                     risk_approved=True, compliance_decision=compliance.decision, bridge_error=bridge_error,
                     reasons=(bridge_error.value,),
+                    evidence=evidence, market_intelligence=market_intelligence, risk=risk, compliance=compliance,
+                    bridge_correlation_id=bridge_correlation_id,
                 )
 
             return _record(
                 CycleOutcome.SUBMITTED, CycleStage.BRIDGE, evidence_id=evidence_id,
                 selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
                 risk_approved=True, compliance_decision=compliance.decision, reasons=(compliance.reason,),
+                evidence=evidence, market_intelligence=market_intelligence, risk=risk, compliance=compliance,
+                bridge_correlation_id=bridge_correlation_id,
             )
         except Exception as exc:  # noqa: BLE001 -- fail closed, never propagate a partial cycle
             if self.metrics is not None:

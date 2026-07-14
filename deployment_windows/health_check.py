@@ -51,18 +51,9 @@ _REPO_ROOT = _find_repo_root(_HERE)
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
-from config_loader import ConfigError, load_settings
+from config_loader import ConfigError, build_trading_profile, load_settings
 from titan_protocol.runtime.validation import validate_profile
-from titan_protocol.runtime import profiles as trading_profiles
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
-
-_PROFILE_FACTORIES = {
-    "london_conservative": trading_profiles.make_london_conservative_profile,
-    "london_aggressive": trading_profiles.make_london_aggressive_profile,
-    "new_york_conservative": trading_profiles.make_new_york_conservative_profile,
-    "new_york_aggressive": trading_profiles.make_new_york_aggressive_profile,
-    "london_and_new_york": trading_profiles.make_london_and_new_york_profile,
-}
 
 _HEALTH_JSON_STALE_AFTER_SECONDS = 30.0  # 6x the heartbeat loop's own interval
 
@@ -104,10 +95,12 @@ def run(config_path: Path) -> int:
         _report(checks)
         return 2  # nothing else can be checked without valid config
 
-    if settings.selected_profile == "custom":
-        checks.append(("trading profile valid", False, "selected_profile=custom cannot be auto-validated by health_check"))
-    else:
-        profile = _PROFILE_FACTORIES[settings.selected_profile]()
+    try:
+        profile = build_trading_profile(settings)
+    except ConfigError as exc:
+        checks.append(("trading profile valid", False, str(exc)))
+        profile = None
+    if profile is not None:
         result = validate_profile(profile, StrategyEngineConfig(), settings.compliance_config)
         checks.append(("trading profile valid", result.valid, f"{profile.profile_id}: {result.issues if not result.valid else 'ok'}"))
 

@@ -36,15 +36,21 @@ providers are down, the live-cycle loop skips *every* pair for that tick
 events through silently. Market Intelligence Engine itself is
 unmodified and never knows which provider produced its events.
 
-What this still deliberately does NOT do, and will not silently pretend
-to do: `portfolio_state`/`trade_history` use safe, empty defaults rather
-than a real, persisted day-start/peak/lock-aware account model
-(auto-converting EA-reported account state into a fully-tracked one was
-explicitly out of ADR-023's original scope and is not reopened here --
-see `_build_compliance_account_state()`). This script reports its real
-status -- **DEGRADED, never HEALTHY** -- both on-screen and in
-state/health.json, and never claims otherwise. See KNOWN_GAPS.md and
-the Amendment 1 / Phase 3E implementation reports for the full account.
+Final Release Hardening update: `daily_starting_balance`, `peak_balance`
+(the total-drawdown reference), `compliance_lock`, and the active
+trading-day identifier are now restart-safe -- persisted via
+`titan_protocol.compliance_state_store` (a narrowly-scoped, caller-owned
+state store; `ComplianceEngine` itself remains stateless and unmodified,
+see `_build_compliance_account_state()`). "Current daily loss" and
+"daily profit state" are deliberately NOT persisted separately: they
+are already derived live by the engine's own `daily_loss.py`/
+`profit_protection.py` from `account_balance` vs `daily_starting_balance`
+-- storing them again would duplicate a calculation the engine already
+owns. `portfolio_state`/`trade_history` still use safe, empty defaults
+(auto-converting EA-reported position/order state into a fully-tracked
+portfolio model remains out of scope -- see KNOWN_GAPS.md). This script
+reports its real status -- **DEGRADED, never HEALTHY** -- both
+on-screen and in state/health.json, and never claims otherwise.
 
 Two modes:
   `python start.py`               -- launches the runtime as a
@@ -105,7 +111,10 @@ from titan_protocol.bridge.engine import BridgeEngine
 from titan_protocol.bridge.server import serve as bridge_serve
 from titan_protocol.compliance_engine.engine import ComplianceEngine
 from titan_protocol.compliance_engine.models import AccountState as ComplianceAccountState
-from titan_protocol.compliance_engine.models import ComplianceLockState
+from titan_protocol.compliance_state_store.config import ComplianceStateStoreConfig
+from titan_protocol.compliance_state_store.models import CorruptStateError, PersistedComplianceState
+from titan_protocol.compliance_state_store.store import ComplianceStateStore
+from titan_protocol.compliance_state_store.store import to_account_state as _compliance_state_to_account_state
 from titan_protocol.evidence_engine.config import EvidenceEngineConfig
 from titan_protocol.evidence_engine.engine import EvidenceEngine
 from titan_protocol.market_data_ingestion.config import MarketDataIngestionConfig
@@ -126,19 +135,10 @@ from titan_protocol.risk_engine.models import PortfolioState
 from titan_protocol.runtime.engine import RuntimeOrchestrator
 from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.validation import validate_profile
-from titan_protocol.runtime import profiles as trading_profiles
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
 from titan_protocol.strategy_engine.engine import StrategyEngine
 
-from config_loader import ConfigError, load_settings
-
-_PROFILE_FACTORIES = {
-    "london_conservative": trading_profiles.make_london_conservative_profile,
-    "london_aggressive": trading_profiles.make_london_aggressive_profile,
-    "new_york_conservative": trading_profiles.make_new_york_conservative_profile,
-    "new_york_aggressive": trading_profiles.make_new_york_aggressive_profile,
-    "london_and_new_york": trading_profiles.make_london_and_new_york_profile,
-}
+from config_loader import ConfigError, build_trading_profile, load_settings
 
 _HEARTBEAT_INTERVAL_SECONDS = 5.0
 _RESTARTABLE_ENGINES = ("evidence_engine", "market_intelligence", "strategy_engine", "risk_engine")
@@ -434,31 +434,33 @@ def _heartbeat_loop(
         _shutdown_event.wait(_HEARTBEAT_INTERVAL_SECONDS)
 
 
-def _build_compliance_account_state(bridge_engine: BridgeEngine) -> Optional[ComplianceAccountState]:
-    """Amendment 1 (ADR-023) -- maps the EA-reported balance (already
-    flowing in via the existing, unmodified `/bridge/account` endpoint)
-    onto `compliance_engine.models.AccountState`'s required fields.
+def _build_compliance_account_state(
+    bridge_engine: BridgeEngine,
+    compliance_state_store: ComplianceStateStore,
+    persisted_state: Optional[PersistedComplianceState],
+    now: datetime,
+) -> Tuple[Optional[ComplianceAccountState], Optional[PersistedComplianceState]]:
+    """Amendment 1 (ADR-023) + Final Release Hardening -- maps the
+    EA-reported balance (already flowing in via the existing,
+    unmodified `/bridge/account` endpoint) onto
+    `compliance_engine.models.AccountState`'s required fields, using
+    restart-safe `daily_starting_balance`/`peak_balance`/
+    `compliance_lock` loaded from `compliance_state_store` rather than
+    hardcoded per-cycle defaults.
 
-    KNOWN LIMITATION (see the Amendment 1 implementation report):
-    `daily_starting_balance`/`peak_balance` both mirror the current
-    balance and `compliance_lock` always starts unlocked -- this
-    integration does not yet persist day-start/peak/lock state across
-    cycles. That auto-conversion was explicitly out of this ADR's
-    original scope (SS7: "Auto-converting EA-reported account state...")
-    and is not reopened by Amendment 1; a caller wanting real
-    day-start/peak tracking composes it themselves, same as the
-    original ADR already said. Returns `None` (caller skips the cycle)
-    if the EA has not reported account state yet."""
+    Returns `(None, persisted_state)` (caller skips the cycle) if the
+    EA has not reported account state yet -- day-state is only ever
+    bootstrapped or reconciled once a real balance is available, never
+    guessed."""
 
     latest = bridge_engine.latest_account_state
     if latest is None:
-        return None
-    return ComplianceAccountState(
-        account_balance=latest.balance,
-        daily_starting_balance=latest.balance,
-        peak_balance=latest.balance,
-        compliance_lock=ComplianceLockState(),
-    )
+        return None, persisted_state
+    if persisted_state is None:
+        persisted_state = compliance_state_store.load_or_bootstrap(now, latest.balance)
+    persisted_state = compliance_state_store.reconcile(persisted_state, now, latest.balance)
+    account_state = _compliance_state_to_account_state(persisted_state, latest.balance)
+    return account_state, persisted_state
 
 
 def _live_cycle_loop(
@@ -466,11 +468,13 @@ def _live_cycle_loop(
     market_data_engine: MarketDataIngestionEngine,
     bridge_engine: BridgeEngine,
     profile,
+    compliance_state_store: ComplianceStateStore,
     news_engine: Optional[NewsIngestionEngine] = None,
 ) -> None:
-    """Amendment 1 (ADR-023) + Phase 3E (ADR-033 Part 2). Per pair, per
-    tick: checks `MarketDataIngestionEngine.is_ready()` (already
-    implemented, already checking warmup + staleness) and only calls
+    """Amendment 1 (ADR-023) + Phase 3E (ADR-033 Part 2) + Final Release
+    Hardening. Per pair, per tick: checks
+    `MarketDataIngestionEngine.is_ready()` (already implemented, already
+    checking warmup + staleness) and only calls
     `RuntimeOrchestrator.run_cycle_for_pair()` (unmodified) when ready.
     A pair with no ready market data, no reported spread yet, or no
     reported account state yet is skipped for this tick -- logged, never
@@ -491,13 +495,21 @@ def _live_cycle_loop(
     `market_safety_inputs`/`portfolio_state`/`trade_history` use the
     safe, honest defaults every existing test fixture already uses for
     "no special condition" (live portfolio/account auto-conversion
-    remains a separate, undeclared scope -- see KNOWN_GAPS.md)."""
+    remains a separate, undeclared scope -- see KNOWN_GAPS.md).
+
+    Final Release Hardening adds restart-safe day-state: `persisted_state`
+    is loaded/bootstrapped once (on the first cycle a real balance is
+    available) and reconciled every cycle thereafter via
+    `compliance_state_store`, so `daily_starting_balance`/`peak_balance`/
+    `compliance_lock` survive a Runtime/Python/MT5/VPS restart and reset
+    only at the configured broker-time trading-day boundary."""
 
     logger = logging.getLogger("titan_protocol.deploy.live_cycle")
     cycle_number = 0
     news_events: tuple = ()
     news_trusted = True
     last_news_fetch_at: Optional[datetime] = None
+    persisted_compliance_state: Optional[PersistedComplianceState] = None
     while not _shutdown_event.is_set():
         now = _utc_now()
         cycle_number += 1
@@ -516,7 +528,16 @@ def _live_cycle_loop(
                 news_events, news_trusted = (), False
             last_news_fetch_at = now
 
-        account_state = _build_compliance_account_state(bridge_engine)
+        try:
+            account_state, persisted_compliance_state = _build_compliance_account_state(
+                bridge_engine, compliance_state_store, persisted_compliance_state, now,
+            )
+        except CorruptStateError:
+            logger.critical(
+                "persisted compliance state is corrupted/ambiguous -- failing closed, "
+                "skipping every pair this cycle until an operator resolves it"
+            )
+            account_state = None
 
         for pair in profile.allowed_pairs:
             if news_engine is not None and not news_trusted:
@@ -570,16 +591,11 @@ def run_foreground(config_path: Path) -> int:
     logger.info("Titan Protocol deployment layer starting (pid=%s, config=%s)", os.getpid(), config_path)
 
     strategy_config = StrategyEngineConfig()
-    if settings.selected_profile == "custom":
-        print(
-            "FAILED: selected_profile is 'custom' -- a custom TradingProfile "
-            "cannot be built from the config file alone (it needs an explicit "
-            "allowed_pairs/allowed_strategies list). Edit this script's "
-            "run_foreground() to call titan_protocol.runtime.profiles.make_custom_profile(...) directly.",
-            file=sys.stderr,
-        )
+    try:
+        profile = build_trading_profile(settings)
+    except ConfigError as exc:
+        print(f"FAILED: {exc}", file=sys.stderr)
         return 2
-    profile = _PROFILE_FACTORIES[settings.selected_profile]()
     validation_result = validate_profile(profile, strategy_config, settings.compliance_config)
     if not validation_result.valid:
         logger.error("Trading profile %s failed validation: %s", profile.profile_id, validation_result.issues)
@@ -641,6 +657,12 @@ def run_foreground(config_path: Path) -> int:
     strategy_engine = StrategyEngine(strategy_config)
     risk_engine = RiskEngine(settings.risk_config)
     compliance_engine = ComplianceEngine(settings.compliance_config)
+    compliance_state_store = ComplianceStateStore(
+        ComplianceStateStoreConfig(
+            state_file=settings.state_dir / "compliance_state.json",
+            daily_reset_hour_utc=settings.compliance_daily_reset_hour_utc,
+        )
+    )
 
     def bridge_submit(command, now):
         return bridge_engine.submit_command(command, now)
@@ -649,7 +671,7 @@ def run_foreground(config_path: Path) -> int:
     orchestrator = RuntimeOrchestrator(
         settings.runtime_config, evidence_engine, market_intelligence_engine,
         strategy_engine, risk_engine, compliance_engine, bridge_submit,
-        metrics=runtime_metrics,
+        metrics=runtime_metrics, timeframe=_PRIMARY_TIMEFRAME.name,
     )
     logger.info("RuntimeOrchestrator constructed")
 
@@ -667,7 +689,8 @@ def run_foreground(config_path: Path) -> int:
     # and fail-closed for every pair at once when both news providers are
     # down, never bypassed.
     live_cycle_thread = threading.Thread(
-        target=_live_cycle_loop, args=(orchestrator, market_data_engine, bridge_engine, profile, news_engine),
+        target=_live_cycle_loop,
+        args=(orchestrator, market_data_engine, bridge_engine, profile, compliance_state_store, news_engine),
         name="titan_protocol-live-cycle", daemon=True,
     )
     live_cycle_thread.start()

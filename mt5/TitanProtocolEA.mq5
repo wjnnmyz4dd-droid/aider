@@ -51,6 +51,13 @@ string   g_allowedSymbols[];
 datetime g_lastBarOpenTime = 0;
 long     g_barSequence     = 0;
 
+// Final Release Hardening -- server-side emergency-stop sync. Learned
+// only from /bridge/commands/poll's own `emergency_stop` field, never
+// polled via a separate endpoint -- one source of truth, no duplicate
+// state machine. Independent of, and OR'd with, the local
+// EmergencyDisable input (see IsEmergencyStopped()).
+bool g_serverEmergencyStop = false;
+
 const string API_KEY_HEADER = "X-Titan-Protocol-Api-Key";
 
 //+------------------------------------------------------------------+
@@ -160,6 +167,18 @@ bool IsFailClosed()
    if(EmergencyDisable)
       return(true);
    return((TimeCurrent() - g_lastSuccessfulContact) > FailClosedTimeoutSeconds);
+  }
+
+// Final Release Hardening -- effective emergency-stopped state is the
+// local operator kill switch OR the server-reported emergency stop
+// (learned via /bridge/commands/poll's `emergency_stop` field). Used to
+// reject execution of any already-received command; it does NOT by
+// itself halt polling/telemetry the way EmergencyDisable's own OnTimer
+// early-return does, since the EA must keep polling to learn when a
+// server-side stop clears.
+bool IsEmergencyStopped()
+  {
+   return(EmergencyDisable || g_serverEmergencyStop);
   }
 
 //+------------------------------------------------------------------+
@@ -315,6 +334,27 @@ double JsonGetDouble(const string json, const string key, const double defaultVa
 long JsonGetLong(const string json, const string key, const long defaultValue)
   {
    return((long)JsonGetDouble(json, key, (double)defaultValue));
+  }
+
+// Extract a top-level `true`/`false` literal field. Returns defaultValue
+// if the key is absent or the value is neither literal (e.g. null).
+bool JsonGetBool(const string json, const string key, const bool defaultValue)
+  {
+   string needle = "\"" + key + "\"";
+   int keyPos = StringFind(json, needle);
+   if(keyPos < 0)
+      return(defaultValue);
+   int colon = StringFind(json, ":", keyPos);
+   if(colon < 0)
+      return(defaultValue);
+   int i = colon + 1;
+   while(i < StringLen(json) && StringGetCharacter(json, i) == ' ')
+      i++;
+   if(StringSubstr(json, i, 4) == "true")
+      return(true);
+   if(StringSubstr(json, i, 5) == "false")
+      return(false);
+   return(defaultValue);
   }
 
 // Bounded brace-matching extraction of the Nth object in a top-level
@@ -944,6 +984,19 @@ void PollAndExecuteCommands()
    if(response == "")
       return; // no successful contact this cycle -- handled by the fail-closed check next tick
 
+   // Final Release Hardening -- learn the server's emergency-stop state
+   // from this same poll response (no separate endpoint, no duplicate
+   // state machine). Logged only on transition, never every cycle.
+   bool newServerEmergencyStop = JsonGetBool(response, "emergency_stop", false);
+   if(newServerEmergencyStop != g_serverEmergencyStop)
+     {
+      if(newServerEmergencyStop)
+         Print("TitanProtocolEA: server-side emergency stop ACTIVATED -- rejecting new execution commands locally until cleared.");
+      else
+         Print("TitanProtocolEA: server-side emergency stop CLEARED -- resuming normal command execution.");
+      g_serverEmergencyStop = newServerEmergencyStop;
+     }
+
    // Bounded to avoid any possibility of an unbounded loop on a
    // malformed or hostile response.
    for(int i = 0; i < 50; i++)
@@ -962,6 +1015,16 @@ void PollAndExecuteCommands()
          // Redundant defense-in-depth re-check -- the server already
          // filters by magic number, but this EA never trusts a single
          // layer alone.
+         continue;
+        }
+
+      if(IsEmergencyStopped())
+        {
+         // Defense-in-depth: the server should already stop queuing new
+         // commands during an emergency stop, but this EA never relies
+         // on a single layer alone -- reject execution locally too.
+         // Existing positions are never auto-closed here.
+         ReportError("EMERGENCY_STOP_ACTIVE", "Command rejected -- local or server-side emergency stop is active", correlationId);
          continue;
         }
 

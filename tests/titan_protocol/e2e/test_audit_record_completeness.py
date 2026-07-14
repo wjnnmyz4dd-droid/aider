@@ -1,52 +1,41 @@
-"""Phase 3B auditability audit: checks `RuntimeAuditRecord`'s actual
-field list (`titan_protocol/runtime/models.py`, frozen for Phase 3B) against
-this checklist's own required-field list -- Decision ID, Configuration
-Version, Trading Profile, Evidence Summary, Market Intelligence
-Summary, Strategy, Trade Intent, Risk Decision, Compliance Decision,
-Bridge Decision, Execution Result, Reason Chain, Timing -- and records
-the real gaps as Known Limitations rather than silently patching the
-frozen Runtime package (Phase 3B's own bug policy: additive fixes for
-real defects only, no feature additions).
+"""Auditability audit: checks `RuntimeAuditRecord`'s actual field list
+(`titan_protocol/runtime/models.py`) against this checklist's own
+required-field list -- Decision ID, Configuration Version, Trading
+Profile, Evidence Summary, Market Intelligence Summary, Strategy, Trade
+Intent, Risk Decision, Compliance Decision, Bridge Decision, Execution
+Result, Reason Chain, Timing.
+
+Originally written for Phase 3B (ADR-031), when several categories were
+only PARTIAL or MISSING and documented as Known Limitations pending a
+future amendment, since Phase 3B's own bug policy allowed only
+defect fixes to the then-frozen Runtime package, not new fields.
+
+Final Release Hardening (requirement 4, "audit-record completeness")
+is that amendment: it closed every gap this file used to document,
+purely additively (every new field records an already-computed value
+from another engine's own snapshot -- see
+`titan_protocol/runtime/engine.py`'s `_record()` closure). This file
+now asserts the closed state instead of the old gaps, so a future
+regression that silently drops one of these fields is still caught.
 
 Confirmed mapping (by reading the dataclass, not inferred):
 
-| Checklist field           | `RuntimeAuditRecord` field(s)              | Status  |
-|----------------------------|--------------------------------------------|---------|
-| Decision ID                | `cycle_id` + `pair`                         | present |
-| Configuration Version      | `configuration_version`                     | present |
-| Trading Profile            | `profile_id` (id only, not the full object) | present |
-| Evidence Summary           | `evidence_id` (an id string, not a summary) | PARTIAL |
-| Market Intelligence Summary| *(no field at all)*                         | MISSING |
-| Strategy                   | `selected_strategy`                         | present |
-| Trade Intent                | `trade_intent`                              | present |
-| Risk Decision               | `risk_approved` (bool only, no sizing/tier) | PARTIAL |
-| Compliance Decision         | `compliance_decision` (enum, no reduction%) | PARTIAL |
-| Bridge Decision              | `bridge_error` (error path only)            | PARTIAL |
-| Execution Result            | *(no field -- `outcome` implies it)*        | PARTIAL |
-| Reason Chain                | `reasons`                                   | present |
-| Timing                      | `started_at`/`ended_at`/`duration_ms`/`stage_timings` | present |
-
-Known Limitations (recommended future ADR-031 Amendment, not
-implemented here -- out of Phase 3B's scope, which may only fix real
-defects in what's already Accepted, not add new fields to a frozen
-type):
-  - No Market Intelligence summary field exists on `RuntimeAuditRecord`
-    at all -- an auditor cannot recover *why* a cycle's Market
-    Intelligence stage passed or failed from the audit record alone.
-  - `evidence_id` is an identifier, not a summary (composite score,
-    trend, session) -- recovering the actual Evidence facts behind a
-    decision requires re-fetching the original `EvidenceSnapshot`
-    elsewhere, which may no longer be retained.
-  - `risk_approved` collapses the whole Risk Decision to a bool --
-    `approved_risk_r`, `confidence_tier`, and any rejection reason are
-    not separately retained on the audit record itself (though
-    `reasons` often carries a human-readable version of the same
-    information).
-  - `bridge_error` only covers the failure path; a successful
-    submission's bridge-side result (e.g. broker ticket id) is not
-    captured on the audit record -- `outcome == SUBMITTED` only tells
-    you a `TradeCommand` was handed to the bridge, not what became of
-    it.
+| Checklist field            | `RuntimeAuditRecord` field(s)                        | Status |
+|-----------------------------|-------------------------------------------------------|--------|
+| Decision ID                 | `decision_id` (+ `cycle_id`/`pair`)                    | present |
+| Configuration Version       | `configuration_version` + `config_schema_version`      | present |
+| Trading Profile             | `profile_id`                                           | present |
+| Symbol / Timeframe          | `pair` + `timeframe`                                   | present |
+| Evidence Summary            | `evidence_id` + `evidence_summary`                     | present |
+| Market Intelligence Summary | `market_intelligence_summary`                          | present |
+| Strategy                    | `selected_strategy`                                    | present |
+| Trade Intent                | `trade_intent`                                         | present |
+| Risk Decision                | `risk_approved` + `risk_reasons`                       | present |
+| Compliance Decision           | `compliance_decision` + `compliance_triggered_rules` + `compliance_lock_trigger`/`compliance_lock_reason` | present |
+| Bridge Decision                | `bridge_error` + `bridge_correlation_id`              | present |
+| Reason Chain                    | `reasons`                                            | present |
+| Timing                           | `started_at`/`ended_at`/`duration_ms`/`stage_timings` | present |
+| Snapshot hash / decision fingerprint | `snapshot_hash` + `decision_fingerprint`          | present |
 """
 
 from __future__ import annotations
@@ -58,22 +47,25 @@ from titan_protocol.runtime.models import RuntimeAuditRecord
 
 _ACTUAL_FIELDS = {f.name for f in dataclasses.fields(RuntimeAuditRecord)}
 
-# Every checklist category this session could map to at least one real
-# field -- i.e. "present" or "PARTIAL" in the table above, never
-# "MISSING" (those are asserted separately, as an absence).
 _MAPPED_CHECKLIST_CATEGORIES = {
-    "decision_id": {"cycle_id", "pair"},
-    "configuration_version": {"configuration_version"},
+    "decision_id": {"cycle_id", "pair", "decision_id"},
+    "configuration_version": {"configuration_version", "config_schema_version"},
     "trading_profile": {"profile_id"},
-    "evidence_summary": {"evidence_id"},
+    "symbol_timeframe": {"pair", "timeframe"},
+    "evidence_summary": {"evidence_id", "evidence_summary"},
+    "market_intelligence_summary": {"market_intelligence_summary"},
     "strategy": {"selected_strategy"},
     "trade_intent": {"trade_intent"},
-    "risk_decision": {"risk_approved"},
-    "compliance_decision": {"compliance_decision"},
-    "bridge_decision": {"bridge_error"},
+    "risk_decision": {"risk_approved", "risk_reasons"},
+    "compliance_decision": {
+        "compliance_decision", "compliance_triggered_rules",
+        "compliance_lock_trigger", "compliance_lock_reason",
+    },
+    "bridge_decision": {"bridge_error", "bridge_correlation_id"},
     "execution_result": {"outcome"},
     "reason_chain": {"reasons"},
     "timing": {"started_at", "ended_at", "duration_ms", "stage_timings"},
+    "fingerprints": {"snapshot_hash", "decision_fingerprint"},
 }
 
 
@@ -91,29 +83,32 @@ class TestMappedChecklistCategoriesArePresent(unittest.TestCase):
         mapped_fields = {f for fields in _MAPPED_CHECKLIST_CATEGORIES.values() for f in fields}
         # `stage_reached` (which stage a failed/rejected cycle reached)
         # and `engine_versions` (audit provenance) are legitimate fields
-        # that don't correspond to one of the 13 named checklist
+        # that don't correspond to one of the named checklist
         # categories -- accounted for explicitly, not silently dropped.
         unaccounted = _ACTUAL_FIELDS - mapped_fields - {"stage_reached", "engine_versions"}
         self.assertEqual(unaccounted, set(), f"unmapped RuntimeAuditRecord field(s): {unaccounted}")
 
 
-class TestConfirmedGaps(unittest.TestCase):
-    def test_no_market_intelligence_summary_field_exists(self):
-        """Confirmed MISSING category -- no field of any name related to
-        Market Intelligence exists on RuntimeAuditRecord."""
-        self.assertFalse(any("market_intelligence" in name or name == "mi_id" for name in _ACTUAL_FIELDS))
+class TestPreviouslyDocumentedGapsAreNowClosed(unittest.TestCase):
+    """Mirror-image of the old `TestConfirmedGaps` class this file used
+    to have -- each of these used to assert an absence (documented as a
+    Known Limitation); Final Release Hardening closed every one, so
+    these now assert presence instead."""
 
-    def test_evidence_field_is_an_identifier_not_a_rich_summary(self):
-        evidence_field = next(f for f in dataclasses.fields(RuntimeAuditRecord) if f.name == "evidence_id")
-        self.assertEqual(evidence_field.type, "Optional[str]")
+    def test_a_market_intelligence_summary_field_now_exists(self):
+        self.assertIn("market_intelligence_summary", _ACTUAL_FIELDS)
 
-    def test_risk_decision_is_a_bare_bool_not_a_structured_decision(self):
-        risk_field = next(f for f in dataclasses.fields(RuntimeAuditRecord) if f.name == "risk_approved")
-        self.assertEqual(risk_field.type, "Optional[bool]")
+    def test_evidence_summary_is_now_a_rich_string_not_only_an_identifier(self):
+        field = next(f for f in dataclasses.fields(RuntimeAuditRecord) if f.name == "evidence_summary")
+        self.assertEqual(field.type, "str")
 
-    def test_bridge_field_only_models_the_error_path(self):
-        bridge_field = next(f for f in dataclasses.fields(RuntimeAuditRecord) if f.name == "bridge_error")
-        self.assertIn("ErrorCode", bridge_field.type)
+    def test_risk_decision_now_carries_reasons_alongside_the_bare_bool(self):
+        field = next(f for f in dataclasses.fields(RuntimeAuditRecord) if f.name == "risk_reasons")
+        self.assertEqual(field.type, "Tuple[str, ...]")
+
+    def test_bridge_decision_now_carries_a_correlation_id_for_the_success_path_too(self):
+        field = next(f for f in dataclasses.fields(RuntimeAuditRecord) if f.name == "bridge_correlation_id")
+        self.assertEqual(field.type, "Optional[str]")
 
 
 if __name__ == "__main__":

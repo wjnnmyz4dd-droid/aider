@@ -19,18 +19,33 @@ back to disk.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from titan_protocol.bridge.config import BridgeConfig
+from titan_protocol.bridge.symbol_mapping import SymbolMapping
 from titan_protocol.compliance_engine.config import ComplianceEngineConfig
 from titan_protocol.market_intelligence.config import MarketIntelligenceConfig
 from titan_protocol.risk_engine.config import RiskEngineConfig
 from titan_protocol.reliability.config import ReliabilityConfig
 from titan_protocol.runtime.config import RuntimeConfig
+from titan_protocol.runtime.models import TradingProfile
+from titan_protocol.runtime import profiles as trading_profiles
+
+_PAIR_NAME_RE = re.compile(r"^[A-Z]{6}$")
+
+_PROFILE_FACTORIES = {
+    "london_conservative": trading_profiles.make_london_conservative_profile,
+    "london_aggressive": trading_profiles.make_london_aggressive_profile,
+    "new_york_conservative": trading_profiles.make_new_york_conservative_profile,
+    "new_york_aggressive": trading_profiles.make_new_york_aggressive_profile,
+    "london_and_new_york": trading_profiles.make_london_and_new_york_profile,
+}
 
 _VALID_PROFILES = (
     "london_conservative", "london_aggressive",
@@ -78,6 +93,7 @@ class DeploymentSettings:
     risk_config: RiskEngineConfig
     compliance_config: ComplianceEngineConfig
     compliance_rule_profile_name: str
+    compliance_daily_reset_hour_utc: int
     news_config: MarketIntelligenceConfig
     news_feed_trusted: bool
     news_provider_settings: NewsProviderSettings
@@ -229,13 +245,42 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     raw_symbols = bridge_section.get("allowed_symbols")
     if not isinstance(raw_symbols, list) or not raw_symbols:
         raise ConfigError("bridge.allowed_symbols must be a non-empty JSON array of symbol strings")
-    allowed_symbols: Tuple[str, ...] = tuple(str(s).strip().upper() for s in raw_symbols if str(s).strip())
-    if not allowed_symbols:
+    cleaned_symbols = [str(s).strip().upper() for s in raw_symbols if str(s).strip()]
+    if not cleaned_symbols:
         raise ConfigError("bridge.allowed_symbols must name at least one symbol")
+    # Symbol-universe consistency (Final Release Hardening): a duplicate
+    # or malformed entry here is a configuration mistake worth catching
+    # at startup, not a silent no-op -- every downstream comparison
+    # (pair_currencies()'s 3+3 slicing, enabled_pairs membership) assumes
+    # each canonical pair name is a distinct, well-formed 6-letter code.
+    seen: set = set()
+    duplicates = sorted({s for s in cleaned_symbols if s in seen or seen.add(s)})
+    if duplicates:
+        raise ConfigError(f"bridge.allowed_symbols contains duplicate pair(s): {duplicates}")
+    malformed = [s for s in cleaned_symbols if not _PAIR_NAME_RE.match(s)]
+    if malformed:
+        raise ConfigError(
+            f"bridge.allowed_symbols contains invalid pair name(s) {malformed} -- "
+            "every canonical pair must be exactly 6 letters (e.g. 'EURUSD'). If your "
+            "broker reports symbols with a suffix/prefix (e.g. 'EURUSD.a'), configure "
+            "bridge.symbol_mapping instead of putting the broker-native name here."
+        )
+    allowed_symbols: Tuple[str, ...] = tuple(cleaned_symbols)
+
+    symbol_mapping_section = _section(bridge_section, "symbol_mapping")
+    raw_explicit_map = symbol_mapping_section.get("explicit_map", {})
+    if not isinstance(raw_explicit_map, dict):
+        raise ConfigError("bridge.symbol_mapping.explicit_map must be a JSON object")
+    symbol_mapping = SymbolMapping(
+        broker_suffix=_get_str(symbol_mapping_section, "broker_suffix", ""),
+        broker_prefix=_get_str(symbol_mapping_section, "broker_prefix", ""),
+        explicit_map={str(k).strip().upper(): str(v).strip() for k, v in raw_explicit_map.items()},
+    )
 
     bridge_config = BridgeConfig(
         api_key=api_key,
         allowed_symbols=allowed_symbols,
+        symbol_mapping=symbol_mapping,
         magic_number=_get_int(bridge_section, "magic_number", 20260709),
         max_lot_size=_get_float(bridge_section, "max_lot_size", 5.0),
         max_slippage_points=_get_int(bridge_section, "max_slippage_points", 20),
@@ -289,6 +334,11 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         compliance_config.profile_for(compliance_rule_profile_name)
     except ValueError as exc:
         raise ConfigError(f"compliance.rule_profile_name: {exc}") from exc
+    compliance_daily_reset_hour_utc = _get_int(compliance_section, "daily_reset_hour_utc", 0)
+    if not (0 <= compliance_daily_reset_hour_utc <= 23):
+        raise ConfigError(
+            f"compliance.daily_reset_hour_utc must be between 0 and 23, got {compliance_daily_reset_hour_utc}"
+        )
 
     news_section = _section(data, "news")
     news_config = MarketIntelligenceConfig(
@@ -347,6 +397,7 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         runtime_config=runtime_config, selected_profile=selected_profile,
         risk_config=risk_config, compliance_config=compliance_config,
         compliance_rule_profile_name=compliance_rule_profile_name,
+        compliance_daily_reset_hour_utc=compliance_daily_reset_hour_utc,
         news_config=news_config, news_feed_trusted=news_feed_trusted,
         news_provider_settings=news_provider_settings,
         reliability_config=reliability_config,
@@ -355,7 +406,52 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     )
 
 
+def build_trading_profile(settings: "DeploymentSettings") -> TradingProfile:
+    """Symbol-universe consistency (Final Release Hardening): the single
+    shared place `start.py` and `health_check.py` both build the actual
+    `TradingProfile` object, so the override-and-validate logic below
+    exists exactly once, not duplicated across two files.
+
+    Makes `bridge.allowed_symbols` the one canonical pair-universe
+    source: every named profile's own `allowed_pairs` default
+    (`_TRADEABLE_PAIR_UNIVERSE`, a strategy-eligibility union that predates
+    this deployment layer) is overridden here to exactly the Bridge's
+    configured symbols via `dataclasses.replace()` -- `titan_protocol/
+    runtime/profiles.py` itself is never modified. This makes the
+    "every profile pair must be Bridge-accepted" check below trivially
+    true for every named profile today; it is kept anyway as fail-closed
+    defense in depth, per this phase's explicit "do not silently skip an
+    unsupported pair" requirement, and because it still means something
+    real if `titan_protocol/runtime/profiles.py` ever changes upstream of
+    this deployment layer.
+
+    Raises `ConfigError` -- never silently skips -- for `selected_profile
+    == "custom"` (a pre-existing, explicit dead end requiring a direct
+    code edit; unchanged from before this phase) or if any profile pair
+    is not in `bridge.allowed_symbols` after the override (today this can
+    only happen via that same manual custom-profile code edit)."""
+    if settings.selected_profile == "custom":
+        raise ConfigError(
+            "trading_profile.selected_profile is 'custom' -- a custom TradingProfile "
+            "cannot be built from the config file alone (it needs an explicit "
+            "allowed_pairs/allowed_strategies list). Edit deployment code to call "
+            "titan_protocol.runtime.profiles.make_custom_profile(...) directly."
+        )
+    profile = _PROFILE_FACTORIES[settings.selected_profile]()
+    profile = dataclasses.replace(profile, allowed_pairs=settings.bridge_config.allowed_symbols)
+    unsupported = [pair for pair in profile.allowed_pairs if pair not in settings.bridge_config.allowed_symbols]
+    if unsupported:
+        raise ConfigError(
+            f"Trading profile {profile.profile_id!r} allows pair(s) {unsupported} not present in "
+            f"bridge.allowed_symbols ({list(settings.bridge_config.allowed_symbols)}). Startup refuses "
+            "to silently skip an unsupported pair -- add it to bridge.allowed_symbols (configuring "
+            "bridge.symbol_mapping if your broker uses a suffixed/prefixed symbol name) or remove it "
+            "from the trading profile."
+        )
+    return profile
+
+
 __all__ = [
     "DeploymentSettings", "NewsProviderSettings", "ConfigError", "load_settings",
-    "generated_secret_path", "CONFIG_SCHEMA_VERSION",
+    "generated_secret_path", "CONFIG_SCHEMA_VERSION", "build_trading_profile",
 ]
