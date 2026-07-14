@@ -51,21 +51,11 @@ _REPO_ROOT = _find_repo_root(_HERE)
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
-from config_loader import ConfigError, build_trading_profile, load_settings
+from config_loader import ConfigError, build_trading_profile, is_process_alive, load_settings
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
 _HEALTH_JSON_STALE_AFTER_SECONDS = 30.0  # 6x the heartbeat loop's own interval
-
-
-def _is_pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-    except AttributeError:
-        return False  # os.kill unavailable -- treat as unknown/not-confirmed
 
 
 def _parse_iso_epoch(iso_string: str) -> float:
@@ -140,7 +130,7 @@ def run(config_path: Path) -> int:
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
-            alive = _is_pid_alive(pid)
+            alive = is_process_alive(pid)
             checks.append(("no duplicate Titan Protocol processes", True, f"single recorded pid {pid}, alive={alive}"))
             checks.append(("runtime process alive", alive, f"pid {pid}"))
         except ValueError:

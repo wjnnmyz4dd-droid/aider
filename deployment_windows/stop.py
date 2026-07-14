@@ -50,18 +50,10 @@ _REPO_ROOT = _find_repo_root(_HERE)
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
-from config_loader import ConfigError, load_settings
+from config_loader import ConfigError, is_process_alive, load_settings
 
 _GRACEFUL_WAIT_SECONDS = 10.0
 _POLL_INTERVAL_SECONDS = 0.5
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def _is_python_process(pid: int) -> bool:
@@ -84,7 +76,7 @@ def _is_python_process(pid: int) -> bool:
                 return "python" in comm_path.read_text().strip().lower()
             except OSError:
                 return False
-        return _pid_alive(pid)  # weaker guarantee, but never worse than assuming it's fine
+        return is_process_alive(pid)  # weaker guarantee, but never worse than assuming it's fine
 
 
 def _graceful_stop(pid: int) -> None:
@@ -134,7 +126,7 @@ def run(config_path: Path) -> int:
 
     elapsed = 0.0
     while elapsed < _GRACEFUL_WAIT_SECONDS:
-        if not _pid_alive(pid):
+        if not is_process_alive(pid):
             print(f"Titan Protocol stopped gracefully after {elapsed:.1f}s.")
             pid_file.unlink(missing_ok=True)
             return 0
@@ -144,7 +136,7 @@ def run(config_path: Path) -> int:
     print(f"Graceful shutdown did not complete within {_GRACEFUL_WAIT_SECONDS}s -- forcing termination of pid {pid} only.")
     _force_stop(pid)
     time.sleep(1.0)
-    if not _pid_alive(pid):
+    if not is_process_alive(pid):
         print("Titan Protocol force-stopped.")
         pid_file.unlink(missing_ok=True)
         return 0

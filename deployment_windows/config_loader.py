@@ -22,7 +22,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import platform
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -145,6 +147,43 @@ def _get_bool(section: Dict[str, Any], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"config key {key!r} must be a boolean")
     return value
+
+
+def is_process_alive(pid: int) -> bool:
+    """Reliable, cross-platform process-liveness check.
+
+    `os.kill(pid, 0)` is the standard POSIX liveness probe, but it is
+    NOT a liveness probe on Windows: CPython maps signal value 0 to
+    `CTRL_C_EVENT` there, which `GenerateConsoleCtrlEvent` can only
+    deliver to a process sharing the caller's console. Titan Protocol's
+    background process is always launched with `CREATE_NEW_CONSOLE`
+    (see `start.py`'s `launch_and_report()`) specifically so it survives
+    the launching shell closing -- which means it never shares a console
+    with whatever later calls `os.kill(pid, 0)` to check on it (a
+    separate `start.py`, `stop.py`, or `health_check.py` invocation).
+    That call always raises OSError there, so the previous per-script
+    `os.kill(pid, 0)`-based checks always reported a perfectly healthy
+    background process as dead on Windows -- a real, verified defect
+    (Final Release Hardening follow-up), not a hardening feature. This
+    is the one, single fix: `tasklist` on Windows, `os.kill(pid, 0)`
+    everywhere else."""
+
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return str(pid) in result.stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+    except AttributeError:
+        return False  # os.kill unavailable -- treat as unknown/not-confirmed
 
 
 GENERATED_SECRET_FILENAME = ".bridge_api_key.secret"
@@ -454,4 +493,5 @@ def build_trading_profile(settings: "DeploymentSettings") -> TradingProfile:
 __all__ = [
     "DeploymentSettings", "NewsProviderSettings", "ConfigError", "load_settings",
     "generated_secret_path", "CONFIG_SCHEMA_VERSION", "build_trading_profile",
+    "is_process_alive",
 ]

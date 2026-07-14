@@ -138,7 +138,7 @@ from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
 from titan_protocol.strategy_engine.engine import StrategyEngine
 
-from config_loader import ConfigError, build_trading_profile, load_settings
+from config_loader import ConfigError, build_trading_profile, is_process_alive, load_settings
 
 _HEARTBEAT_INTERVAL_SECONDS = 5.0
 _RESTARTABLE_ENGINES = ("evidence_engine", "market_intelligence", "strategy_engine", "risk_engine")
@@ -745,11 +745,9 @@ def _existing_pid(state_dir: Path) -> "int | None":
         pid = int(pid_file.read_text().strip())
     except ValueError:
         return None
-    try:
-        os.kill(pid, 0)
+    if is_process_alive(pid):
         return pid
-    except OSError:
-        return None
+    return None
 
 
 def launch_and_report(config_path: Path) -> int:
