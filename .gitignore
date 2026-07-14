@@ -5,4 +5,5 @@ phantom.log.jsonl
 .pytest_cache/
 .venv/
 venv/
+dist/
 
