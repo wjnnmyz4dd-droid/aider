@@ -39,6 +39,7 @@ input int    MaxRetries               = 3;                         // Bounded HT
 input int    RetryDelayMs             = 250;                       // Delay between bounded HTTP retries
 input int    MaxRequoteRetries        = 2;                         // Bounded trade-level retry count on requote/price-changed only
 input int    RequoteRetryDelayMs      = 100;                       // Delay between bounded requote retries
+input bool   DiagnosticMode           = false;                     // Transport-only HTTP diagnostics -- no behavior change when false
 
 //--- Globals ------------------------------------------------------------
 CTrade   g_trade;
@@ -405,6 +406,43 @@ string JsonGetArrayObjectAt(const string json, const string arrayKey, const int 
   }
 
 //+------------------------------------------------------------------+
+//| Diagnostics-only helper (DiagnosticMode) -- never called, and     |
+//| costs nothing, unless the input is explicitly turned on. Prints   |
+//| exactly the transport-level facts needed to tell apart a          |
+//| WebRequest()-layer failure from a real-but-rejected HTTP response, |
+//| never the API key or any account/credential value.                |
+//+------------------------------------------------------------------+
+void LogHttpDiagnostics(const string method, const string url, const int payloadBytes,
+                         const string headers, const bool apiKeyPresent,
+                         const int webRequestReturn, const int lastError, const uint elapsedMs,
+                         const string responseHeaders, const string responseBody)
+  {
+   int headerCount = 0;
+   int pos = 0;
+   while(true)
+     {
+      pos = StringFind(headers, "\r\n", pos);
+      if(pos < 0)
+         break;
+      headerCount++;
+      pos += 2;
+     }
+   Print("======== TITAN HTTP ========");
+   Print("Method: ", method);
+   Print("URL: ", url);
+   Print("Return: ", webRequestReturn);
+   Print("GetLastError(): ", lastError);
+   Print("Elapsed: ", elapsedMs, " ms");
+   Print("Payload bytes: ", payloadBytes);
+   Print("Header bytes: ", StringLen(headers));
+   Print("Header count: ", headerCount);
+   Print("API Key: ", apiKeyPresent ? "Present" : "Absent");
+   Print("Response Headers: ", (StringLen(responseHeaders) > 0 ? responseHeaders : "<empty>"));
+   Print("Response Body: ", (StringLen(responseBody) > 0 ? responseBody : "<empty>"));
+   Print("============================");
+  }
+
+//+------------------------------------------------------------------+
 //| Bounded-retry HTTP helpers                                          |
 //+------------------------------------------------------------------+
 string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
@@ -417,11 +455,18 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
    string headers = "Content-Type: application/json\r\n" + API_KEY_HEADER + ": " + ApiKey + "\r\n";
    uchar result[];
    string resultHeaders;
+   string fullUrl = BackendUrl + endpoint;
 
    for(int attempt = 0; attempt < MaxRetries; attempt++)
      {
       ResetLastError();
-      int status = WebRequest("POST", BackendUrl + endpoint, headers, 5000, postData, result, resultHeaders);
+      uint startTick = DiagnosticMode ? GetTickCount() : 0;
+      int status = WebRequest("POST", fullUrl, headers, 5000, postData, result, resultHeaders);
+      int lastErr = GetLastError();
+      if(DiagnosticMode)
+         LogHttpDiagnostics("POST", fullUrl, ArraySize(postData), headers, StringLen(ApiKey) > 0,
+                             status, lastErr, GetTickCount() - startTick, resultHeaders,
+                             CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
       if(status >= 200 && status < 300)
         {
          statusOut = status;
@@ -438,7 +483,7 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
       // status <= 0: WebRequest itself failed (network/DNS/not-allowed) -- retry.
-      Print("TitanProtocolEA: POST ", endpoint, " WebRequest failed, GetLastError=", GetLastError(),
+      Print("TitanProtocolEA: POST ", endpoint, " WebRequest failed, GetLastError=", lastErr,
             " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
@@ -453,11 +498,18 @@ string HttpGet(const string endpoint, int &statusOut)
    string headers = API_KEY_HEADER + ": " + ApiKey + "\r\n";
    uchar result[];
    string resultHeaders;
+   string fullUrl = BackendUrl + endpoint;
 
    for(int attempt = 0; attempt < MaxRetries; attempt++)
      {
       ResetLastError();
-      int status = WebRequest("GET", BackendUrl + endpoint, headers, 5000, postData, result, resultHeaders);
+      uint startTick = DiagnosticMode ? GetTickCount() : 0;
+      int status = WebRequest("GET", fullUrl, headers, 5000, postData, result, resultHeaders);
+      int lastErr = GetLastError();
+      if(DiagnosticMode)
+         LogHttpDiagnostics("GET", fullUrl, ArraySize(postData), headers, StringLen(ApiKey) > 0,
+                             status, lastErr, GetTickCount() - startTick, resultHeaders,
+                             CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
       if(status >= 200 && status < 300)
         {
          statusOut = status;
@@ -471,7 +523,7 @@ string HttpGet(const string endpoint, int &statusOut)
                CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
-      Print("TitanProtocolEA: GET ", endpoint, " WebRequest failed, GetLastError=", GetLastError(),
+      Print("TitanProtocolEA: GET ", endpoint, " WebRequest failed, GetLastError=", lastErr,
             " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
