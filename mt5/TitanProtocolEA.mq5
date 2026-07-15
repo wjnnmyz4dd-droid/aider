@@ -433,9 +433,13 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
          // A real HTTP response, just not success -- do not treat as a
          // dead link, but do not retry a validation rejection either.
          statusOut = status;
+         Print("TitanProtocolEA: POST ", endpoint, " rejected, HTTP ", status, ": ",
+               CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
       // status <= 0: WebRequest itself failed (network/DNS/not-allowed) -- retry.
+      Print("TitanProtocolEA: POST ", endpoint, " WebRequest failed, GetLastError=", GetLastError(),
+            " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
      }
@@ -463,8 +467,12 @@ string HttpGet(const string endpoint, int &statusOut)
       if(status > 0)
         {
          statusOut = status;
+         Print("TitanProtocolEA: GET ", endpoint, " rejected, HTTP ", status, ": ",
+               CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
+      Print("TitanProtocolEA: GET ", endpoint, " WebRequest failed, GetLastError=", GetLastError(),
+            " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
      }
