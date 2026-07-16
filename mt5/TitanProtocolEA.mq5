@@ -38,7 +38,7 @@ input string BackendUrl               = "http://127.0.0.1:8787"; // Titan Protoc
 input string ApiKey                   = "";                       // X-Titan-Protocol-Api-Key
 input int    HeartbeatIntervalSeconds = 5;                        // Heartbeat / telemetry cadence
 input string AllowedSymbolsCsv        = "";                        // Comma-separated allowlist (empty = current chart symbol only)
-input long   MagicNumber              = 20260709;                  // Must match BridgeConfig.magic_number
+input long   MagicNumber              = 20260710;                  // Must match BridgeConfig.magic_number
 input int    MaxSlippagePoints        = 20;                        // Deviation passed to CTrade
 input int    FailClosedTimeoutSeconds = 30;                        // No successful contact within this window => halt
 input bool   EmergencyDisable         = false;                     // Manual kill switch -- never polls/executes when true
@@ -55,7 +55,7 @@ enum ENUM_TRANSPORT_MODE
    TRANSPORT_SOCKET   // native MQL5 TCP socket -- ADR-034
   };
 
-input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_HTTP;      // ADR-034 transport substrate (Http = rollback path)
+input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_SOCKET;    // ADR-034 transport substrate (Amendment 2 default; Http = rollback path)
 input string SocketHost                     = "127.0.0.1";         // Bridge socket host (Transport=Socket only)
 input int    SocketPort                     = 8788;                // Bridge socket port -- must match BridgeConfig.socket_port
 input int    SocketConnectTimeoutMs         = 5000;                // SocketConnect() timeout

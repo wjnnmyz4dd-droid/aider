@@ -33,7 +33,10 @@ class BridgeConfig:
     #: to a no-op mapping (identity) -- fully backward compatible with
     #: every existing call site that never set this.
     symbol_mapping: SymbolMapping = field(default_factory=SymbolMapping)
-    magic_number: int = 20260709
+    #: Canonical default -- must equal `titan_protocol.runtime.config.RuntimeConfig.magic_number`
+    #: (the same EA instance reads both; `deployment_windows/config_loader.py`
+    #: enforces this at startup and refuses to start on any mismatch).
+    magic_number: int = 20260710
     max_lot_size: float = 5.0
     max_slippage_points: int = 20
     heartbeat_timeout_seconds: float = 30.0
@@ -65,10 +68,13 @@ class BridgeConfig:
     max_error_history: int = 1000
     max_trade_transaction_history: int = 1000
 
-    # -- ADR-034: native MQL5 socket transport (additive; every field
-    # here defaults to preserving today's HTTP-only behavior exactly).
-    # `transport="http"` is unaffected by any field below.
-    transport: str = "http"
+    # -- ADR-034: native MQL5 socket transport. `transport="socket"` is
+    # the shipped default (Amendment 2) -- it bypasses the WinINet-layer
+    # instability `"http"` is documented to suffer under. `"http"`
+    # remains fully supported as the explicit rollback value; set it and
+    # restart to fall back, never a second concurrently-running
+    # transport (ADR-034 Amendment 1).
+    transport: str = "socket"
     socket_port: int = 8788
     #: Rejected (frame refused, connection closed) before the payload is
     #: ever read -- bounds worst-case per-message memory, independent of

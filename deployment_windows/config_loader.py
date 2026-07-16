@@ -316,9 +316,12 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         explicit_map={str(k).strip().upper(): str(v).strip() for k, v in raw_explicit_map.items()},
     )
 
-    # ADR-034: transport substrate selector -- "http" (default, unchanged
-    # behavior) or "socket". Exactly one is ever active; see start.py.
-    transport = _get_str(bridge_section, "transport", "http").strip().lower()
+    # ADR-034: transport substrate selector -- "socket" (default,
+    # Amendment 2) or "http" (the explicit rollback value). Exactly one
+    # is ever active; see start.py. Falls back to BridgeConfig's own
+    # default rather than a second hardcoded literal here, so this
+    # module can never drift from the dataclass it's populating.
+    transport = _get_str(bridge_section, "transport", BridgeConfig.transport).strip().lower()
     if transport not in VALID_TRANSPORTS:
         raise ConfigError(
             f"bridge.transport must be one of {VALID_TRANSPORTS}, got {transport!r}"
@@ -328,7 +331,10 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         api_key=api_key,
         allowed_symbols=allowed_symbols,
         symbol_mapping=symbol_mapping,
-        magic_number=_get_int(bridge_section, "magic_number", 20260709),
+        # Canonical default sourced from BridgeConfig itself (single
+        # source of truth) -- never a second hardcoded literal that
+        # could silently drift from it.
+        magic_number=_get_int(bridge_section, "magic_number", BridgeConfig.magic_number),
         max_lot_size=_get_float(bridge_section, "max_lot_size", 5.0),
         max_slippage_points=_get_int(bridge_section, "max_slippage_points", 20),
         heartbeat_timeout_seconds=_get_float(bridge_section, "heartbeat_timeout_seconds", 30.0),
@@ -344,7 +350,8 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
 
     runtime_section = _section(data, "runtime")
     runtime_config = RuntimeConfig(
-        magic_number=_get_int(runtime_section, "magic_number", 20260710),
+        # Same single-source-of-truth pattern as bridge_config above.
+        magic_number=_get_int(runtime_section, "magic_number", RuntimeConfig.magic_number),
         max_slippage_points=_get_int(runtime_section, "max_slippage_points", 20),
         max_cycle_duration_ms=_get_float(runtime_section, "max_cycle_duration_ms", 250.0),
         engine_timeout_ms=_get_float(runtime_section, "engine_timeout_ms", 100.0),

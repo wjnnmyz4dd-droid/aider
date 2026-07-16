@@ -27,16 +27,16 @@ class TestBridgeConfig(unittest.TestCase):
 
 
 class TestSocketTransportFields(unittest.TestCase):
-    """ADR-034 -- every field defaults to preserving today's HTTP-only
-    behavior exactly."""
+    """ADR-034 (Amendment 2) -- socket is the shipped default; http
+    remains fully supported as the explicit rollback value."""
 
-    def test_transport_defaults_to_http(self):
+    def test_transport_defaults_to_socket(self):
         config = BridgeConfig(api_key="k", allowed_symbols=("EURUSD",))
-        self.assertEqual(config.transport, "http")
-
-    def test_transport_socket_is_accepted(self):
-        config = BridgeConfig(api_key="k", allowed_symbols=("EURUSD",), transport="socket")
         self.assertEqual(config.transport, "socket")
+
+    def test_transport_http_rollback_is_accepted(self):
+        config = BridgeConfig(api_key="k", allowed_symbols=("EURUSD",), transport="http")
+        self.assertEqual(config.transport, "http")
 
     def test_invalid_transport_rejected(self):
         with self.assertRaises(ValueError):

@@ -17,6 +17,26 @@ back, restart) — not a second concurrently-running transport. This is a
 tightening of §5's already-additive, already-reversible design, not a
 change to §4's recommendation or §2/§3's option comparison.
 
+**Amendment 2 (2026-07-16 — "Produce a Clean Deployment Release"):**
+`BridgeConfig.transport`'s shipped default flips from `"http"` to
+`"socket"`, matching `TitanProtocolEA.mq5`'s `Transport` input default,
+which also flips from `Http` to `Socket` — at explicit user direction, so
+a fresh install ships already running the transport §4 recommended,
+rather than requiring an opt-in edit after every clean install. `"http"`
+remains fully supported and becomes the explicit rollback value
+(`transport="http"` / `Transport=Http`) — no code path, message schema,
+or validation rule from the base ADR or Amendment 1 changes; only which
+value ships as the out-of-the-box default. `mt5/TitanProtocolEA.set`'s
+`Transport` line is deliberately still omitted (see the file's own
+comment) since this session could not confirm MQL5's `.set` serialization
+convention for a custom enum input with confidence — the compiled
+default carries the new value instead, which MT5 already applies
+whenever a `.set` file's key is absent. Also normalizes
+`BridgeConfig.magic_number`'s default from `20260709` to `20260710`
+(matching `RuntimeConfig.magic_number`, which was already `20260710`) —
+these two literals silently diverging was itself a drift risk this
+amendment closes, not an architecture change.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

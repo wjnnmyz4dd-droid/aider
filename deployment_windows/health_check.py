@@ -13,7 +13,11 @@ from the now-live MarketDataIngestionEngine) and whether the
 live-cycle loop is actually evaluating pairs. Since Phase 3E
 (ADR-033 Part 2) also reports the real, dynamic dual-provider news
 failover state (active provider, per-provider health, failover/
-recovery counts) from the now-live NewsIngestionEngine.
+recovery counts) from the now-live NewsIngestionEngine. Since ADR-034
+Amendment 2 ("Produce a Clean Deployment Release"), also reports the
+active transport, the resolved API key source, an explicit magic-number-
+consistency confirmation, and cross-checks the personalized MT5 .set
+file's MagicNumber against the live config to catch configuration drift.
 
 Exit codes: 0 = HEALTHY, 1 = DEGRADED, 2 = FAILED.
 """
@@ -27,6 +31,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from typing import Dict, Optional
 
 _HERE = Path(__file__).resolve().parent
 
@@ -51,7 +56,8 @@ _REPO_ROOT = _find_repo_root(_HERE)
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_HERE))
 
-from config_loader import ConfigError, build_trading_profile, is_process_alive, load_settings
+import install_mt5_files as install_mt5_module
+from config_loader import ConfigError, build_trading_profile, generated_secret_path, is_process_alive, load_settings
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
@@ -67,6 +73,42 @@ def _report(checks) -> None:
     for name, ok, detail in checks:
         status = "PASS" if ok else "FAIL"
         print(f"[{status}] {name}{': ' + detail if detail else ''}")
+
+
+def _describe_api_key_source(settings, config_path: Path) -> str:
+    """Replicates config_loader.py's own 3-tier `_resolve_secret` priority
+    order (env var -> generated secret file -> inline value) read-only,
+    to report which one is actually active -- without changing
+    `_resolve_secret`'s existing return contract."""
+    env_var_name = settings.api_key_env_var_name
+    if env_var_name and os.environ.get(env_var_name):
+        return f"environment variable {env_var_name}"
+    secret_path = generated_secret_path(config_path)
+    if secret_path.exists() and secret_path.read_text(encoding="utf-8").strip():
+        return f"generated secret file ({secret_path})"
+    return "inline value in titan_protocol_config.json (bridge.api_key) -- not recommended for a real deployment"
+
+
+def _find_personalized_set_file() -> Optional[Path]:
+    """Only returns a path when exactly one MT5 data folder is
+    auto-detectable (the same detection install_mt5_files.py itself
+    uses) and it has already been personalized -- an ambiguous or
+    not-yet-installed case is reported separately, never guessed at."""
+    candidates = install_mt5_module._find_mt5_data_dirs()
+    if len(candidates) != 1:
+        return None
+    set_path = candidates[0] / "MQL5" / "Presets" / "TitanProtocol" / "TitanProtocolEA.set"
+    return set_path if set_path.exists() else None
+
+
+def _parse_set_file(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith(";") and "=" in stripped:
+            key, _, value = stripped.partition("=")
+            values[key.strip()] = value.strip()
+    return values
 
 
 def run(config_path: Path) -> int:
@@ -103,6 +145,45 @@ def run(config_path: Path) -> int:
         ))
     else:
         checks.append(("API key environment variable present", True, "bridge.api_key_env_var not configured -- using the generated secret file or an inline value instead"))
+
+    checks.append(("active API key source", True, _describe_api_key_source(settings, config_path)))
+
+    checks.append(("active transport", True, settings.bridge_config.transport))
+
+    checks.append((
+        "magic number consistency (bridge/runtime)", True,
+        f"bridge={settings.bridge_config.magic_number}, runtime={settings.runtime_config.magic_number}"
+        " (load_settings() already refuses to start on any mismatch, so this is a confirmation, not a fresh check)",
+    ))
+
+    set_path = _find_personalized_set_file()
+    if set_path is not None:
+        set_values = _parse_set_file(set_path)
+        set_magic_raw = set_values.get("MagicNumber")
+        try:
+            set_magic = int(set_magic_raw) if set_magic_raw is not None else None
+        except ValueError:
+            set_magic = None
+        magic_matches = set_magic is not None and set_magic == settings.bridge_config.magic_number
+        if magic_matches:
+            checks.append((
+                "EA .set file consistency (configuration drift)", True,
+                f"{set_path}: MagicNumber={set_magic} matches the active configuration",
+            ))
+        else:
+            checks.append((
+                "EA .set file consistency (configuration drift)", False,
+                f"{set_path}: MagicNumber={set_magic_raw!r} does NOT match bridge.magic_number "
+                f"({settings.bridge_config.magic_number}) -- re-run install_mt5_files.py or edit "
+                "the .set file, then reload it in MT5's Inputs tab.",
+            ))
+    else:
+        checks.append((
+            "EA .set file detection", True,
+            "no single MT5 data folder auto-detected (0 or multiple candidates), or the .set file "
+            "has not been personalized yet -- skipped, not fatal; run install_mt5_files.py to "
+            "personalize it, or pass the correct folder explicitly if more than one was found",
+        ))
 
     checks.append((
         "news-feed trust state", True,
@@ -199,6 +280,13 @@ def run(config_path: Path) -> int:
         "MT5 bridge connectivity (EA heartbeat)", "live trading cycle active",
         "market-data readiness", "news-feed trust state", "news provider failover",
         "API key environment variable present",
+        # Indeterminate-detection case only (0 or multiple MT5 folders
+        # found, or nothing personalized yet) -- not fatal by itself.
+        # "EA .set file consistency (configuration drift)" is
+        # deliberately NOT in this set: a real, detected mismatch there
+        # is exactly the drift this check exists to catch, and should
+        # gate like any other real failure.
+        "EA .set file detection",
     }
 
     live_cycle = payload.get("live_cycle")

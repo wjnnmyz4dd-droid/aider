@@ -2,8 +2,9 @@
 
 Locates (or asks for) the active MT5 data folder, copies
 TitanProtocolEA.mq5 into MQL5/Experts/TitanProtocol/ and a *personalized*
-TitanProtocolEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv
-filled in from titan_protocol_config.json, when available) into
+TitanProtocolEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv/
+SocketHost/SocketPort filled in from titan_protocol_config.json, when
+available) into
 MQL5/Presets/TitanProtocol/, taking a timestamped backup of any file it
 would otherwise overwrite. Does NOT compile the .mq5 -- that step can
 only happen inside MetaEditor on the real Windows/MT5 installation;
@@ -51,8 +52,13 @@ _SOURCE_DIR = _REPO_ROOT / "mt5"
 # .set files are plain `key=value` text (see mt5/TitanProtocolEA.set) --
 # these are the keys install.py's auto-generated config has real values
 # for. Every other line in the shipped template (comments, the less
-# safety-critical tuning knobs) passes through unchanged.
-_PERSONALIZABLE_KEYS = ("ApiKey", "MagicNumber", "BackendUrl", "AllowedSymbolsCsv")
+# safety-critical tuning knobs) passes through unchanged. Deliberately
+# excludes "Transport" (ADR-034 Amendment 2): it's a custom MQL5 enum
+# input, and this session could not confirm .set's serialization
+# convention for a custom enum with confidence -- the EA's own compiled
+# default (Socket) applies whenever a .set file omits the key, which is
+# exactly what happens here, so nothing is lost by leaving it out.
+_PERSONALIZABLE_KEYS = ("ApiKey", "MagicNumber", "BackendUrl", "AllowedSymbolsCsv", "SocketHost", "SocketPort")
 
 
 def _find_mt5_data_dirs() -> list:

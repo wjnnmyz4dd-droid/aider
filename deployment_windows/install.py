@@ -167,10 +167,15 @@ def step_install_mt5_files(settings) -> StepReport:
         "MagicNumber": str(settings.bridge_config.magic_number),
         "BackendUrl": f"http://{settings.bridge_host}:{settings.bridge_port}",
         "AllowedSymbolsCsv": ",".join(settings.bridge_config.allowed_symbols),
+        # ADR-034 -- kept identical to the live Bridge config so the .set
+        # file can never drift from it (Transport itself is deliberately
+        # not personalized here; see install_mt5_files.py's own comment).
+        "SocketHost": settings.bridge_host,
+        "SocketPort": str(settings.bridge_config.socket_port),
     }
     exit_code = install_mt5_module.run(explicit_mt5_dir="", non_interactive=True, personalize=personalize)
     if exit_code == 0:
-        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the auto-detected MT5 data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl")
+        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the auto-detected MT5 data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl/SocketHost/SocketPort")
     if exit_code == 3:
         return StepReport(
             "Copy + personalize MT5 EA files", _SKIPPED,
@@ -182,37 +187,101 @@ def step_install_mt5_files(settings) -> StepReport:
 
 
 def step_verify_bridge(settings) -> StepReport:
+    """ADR-034: verifies whichever transport `bridge.transport` actually
+    names -- binding the HTTP server when a config still says "http"
+    would silently "pass" this step while never proving the transport
+    that's actually going to run works at all."""
     from titan_protocol.bridge.command_queue import CommandQueue
     from titan_protocol.bridge.connection_health import ConnectionHealth
     from titan_protocol.bridge.engine import BridgeEngine
-    from titan_protocol.bridge.server import serve as bridge_serve
+
+    transport = settings.bridge_config.transport
+    active_port = settings.bridge_config.socket_port if transport == "socket" else settings.bridge_port
 
     try:
         command_queue = CommandQueue(settings.bridge_config)
         connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
         bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now)
-        http_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
+        if transport == "socket":
+            from titan_protocol.bridge.socket_transport import serve_socket
+            transport_server = serve_socket(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_port)
+        else:
+            from titan_protocol.bridge.server import serve as bridge_serve
+            transport_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_port)
     except OSError as exc:
-        return StepReport("Verify Bridge", _FAILED, f"Could not bind {settings.bridge_host}:{settings.bridge_port}: {exc}")
+        return StepReport("Verify Bridge (socket transport)" if transport == "socket" else "Verify Bridge (HTTP transport)", _FAILED, f"Could not bind {settings.bridge_host}:{active_port}: {exc}")
     except Exception as exc:  # noqa: BLE001 -- report any construction failure, don't let it crash the installer
         return StepReport("Verify Bridge", _FAILED, f"Bridge construction failed: {exc}")
 
-    server_thread = threading.Thread(target=http_server.serve_forever, name="titan_protocol-install-bridge-smoketest", daemon=True)
+    server_thread = threading.Thread(target=transport_server.serve_forever, name="titan_protocol-install-bridge-smoketest", daemon=True)
     server_thread.start()
     try:
-        with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
+        with socket.create_connection((settings.bridge_host, active_port), timeout=2.0):
             reachable = True
     except OSError as exc:
         reachable = False
         detail_extra = f" (socket connect failed: {exc})"
     else:
         detail_extra = ""
-    http_server.shutdown()
-    http_server.server_close()
+    transport_server.shutdown()
+    transport_server.server_close()
 
+    label = f"Verify Bridge ({transport} transport)"
     if reachable:
-        return StepReport("Verify Bridge", _OK, f"Constructed BridgeEngine and bound the real HTTP server on {settings.bridge_host}:{settings.bridge_port}; confirmed reachable via a live socket connection, then shut it down cleanly")
-    return StepReport("Verify Bridge", _FAILED, f"Bridge bound but was not reachable{detail_extra}")
+        return StepReport(label, _OK, f"Constructed BridgeEngine and bound the real {transport} server on {settings.bridge_host}:{active_port}; confirmed reachable via a live socket connection, then shut it down cleanly")
+    return StepReport(label, _FAILED, f"Bridge bound but was not reachable{detail_extra}")
+
+
+def step_verify_magic_number_consistency(settings) -> StepReport:
+    """In practice this can never FAIL by the time it runs -- `load_settings()`
+    already raises `ConfigError` at config-load time if `bridge.magic_number`
+    and `runtime.magic_number` disagree (see config_loader.py), which the
+    installer already treats as a fatal step before this one ever runs.
+    Kept as its own, explicitly-named, always-run step anyway so this
+    specific consistency guarantee is a visible line in the installation
+    report, not just an implicit side effect of a config-parsing step."""
+    bridge_magic = settings.bridge_config.magic_number
+    runtime_magic = settings.runtime_config.magic_number
+    if bridge_magic != runtime_magic:
+        return StepReport(
+            "Verify magic number consistency", _FAILED,
+            f"bridge.magic_number ({bridge_magic}) != runtime.magic_number ({runtime_magic}) in {_CONFIG_PATH}",
+        )
+    return StepReport(
+        "Verify magic number consistency", _OK,
+        f"bridge.magic_number == runtime.magic_number == {bridge_magic} in {_CONFIG_PATH}",
+    )
+
+
+def step_report_mt5_prerequisites(settings) -> StepReport:
+    """Cannot be verified by this script -- Tools > Options > Expert
+    Advisors lives entirely inside the real MT5 GUI, which no Python
+    process can inspect or set. Reported honestly as INFO (not silently
+    skipped) so the installation report has an explicit line item for
+    it, matching this module's existing honesty precedent (see
+    step_verify_news_providers)."""
+    active_port = settings.bridge_config.socket_port if settings.bridge_config.transport == "socket" else settings.bridge_port
+    return StepReport(
+        "MT5 WebRequest/socket prerequisites", _INFO,
+        f"Cannot be verified by this script -- requires the real MT5 GUI. In MT5: "
+        f"Tools > Options > Expert Advisors > check 'Allow WebRequest for listed URL' "
+        f"and add {settings.bridge_host}:{active_port} to the list (MQL5's WebRequest() "
+        f"and Socket*() functions share this same allowed-address list).",
+    )
+
+
+def step_run_health_check() -> StepReport:
+    import health_check as health_check_module
+    buffer = io.StringIO()
+    try:
+        with redirect_stdout(buffer):
+            exit_code = health_check_module.run(_CONFIG_PATH)
+    finally:
+        print(buffer.getvalue(), end="")
+    label = {0: "HEALTHY", 1: "DEGRADED", 2: "FAILED"}.get(exit_code, "UNKNOWN")
+    if exit_code in (0, 1):
+        return StepReport("Run health check", _OK, f"health_check.py reports: {label} (see output above for the full per-check breakdown)")
+    return StepReport("Run health check", _FAILED, f"health_check.py reports: {label} -- see output above")
 
 
 def step_verify_runtime(settings) -> StepReport:
@@ -427,6 +496,10 @@ def main() -> int:
         _write_report(steps, overall_ok=False)
         return 1
 
+    if run_step(step_verify_magic_number_consistency(settings)):
+        _write_report(steps, overall_ok=False)
+        return 1
+
     # MT5 file install is non-blocking by design -- SKIPPED/FAILED here
     # still leaves Bridge/Runtime/Reliability verification meaningful.
     run_step(step_install_mt5_files(settings))
@@ -442,9 +515,14 @@ def main() -> int:
         return 1
 
     run_step(step_verify_news_providers(settings))
+    run_step(step_report_mt5_prerequisites(settings))
     run_step(step_create_desktop_shortcuts())
 
     if run_step(step_launch_titan_protocol()):
+        _write_report(steps, overall_ok=False)
+        return 1
+
+    if run_step(step_run_health_check()):
         _write_report(steps, overall_ok=False)
         return 1
 

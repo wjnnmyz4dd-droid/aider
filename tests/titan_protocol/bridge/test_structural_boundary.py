@@ -94,12 +94,14 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
         start.py/health_check.py; Phase 3E, ADR-033 Part 2, legitimately
         adds config_loader.py/install.py/KNOWN_GAPS.md/config/
         titan_protocol_config.example.json for the new dual-provider
-        news wiring -- no other deployment_windows/ file is expected to
-        change for either phase), and this repo's established
-        root-level `PHANTOM_*.md` phase-deliverable report convention
-        (historical -- these files were never renamed; see the Titan
-        Protocol rename's own report) is touched. Skipped (not failed)
-        outside a git checkout."""
+        news wiring; ADR-034 Amendment 2 ("Produce a Clean Deployment
+        Release") legitimately adds install_mt5_files.py, to personalize
+        the new SocketHost/SocketPort .set-file fields -- no other
+        deployment_windows/ file is expected to change for any of these
+        phases), and this repo's established root-level `PHANTOM_*.md`
+        phase-deliverable report convention (historical -- these files
+        were never renamed; see the Titan Protocol rename's own report)
+        is touched. Skipped (not failed) outside a git checkout."""
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
@@ -110,6 +112,7 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "titan_protocol/", "mt5/", "tests/titan_protocol/", "docs/research/", "docs/adr/",
             "deployment_windows/start.py", "deployment_windows/health_check.py",
             "deployment_windows/config_loader.py", "deployment_windows/install.py",
+            "deployment_windows/install_mt5_files.py",
             "deployment_windows/KNOWN_GAPS.md",
             "deployment_windows/config/titan_protocol_config.example.json",
         )

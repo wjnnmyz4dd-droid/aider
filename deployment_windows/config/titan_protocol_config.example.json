@@ -19,12 +19,12 @@
 
   "bridge": {
     "_maps_to": "titan_protocol.bridge.config.BridgeConfig",
-    "_transport_note": "ADR-034: transport is 'http' (default, WebRequest()-based, today's rollback path) or 'socket' (native MQL5 TCP socket -- see docs/adr/ADR-034-mt5-bridge-transport-hardening.md). Exactly one is ever active; switching is a config edit + restart, not a simultaneous dual-listen. socket_* fields are read only when transport is 'socket'.",
+    "_transport_note": "ADR-034 (Amendment 2): transport is 'socket' (default -- native MQL5 TCP socket, bypasses the WinINet-layer instability 'http' is documented to suffer under; see docs/adr/ADR-034-mt5-bridge-transport-hardening.md) or 'http' (the explicit rollback value). Exactly one is ever active; switching is a config edit + restart, not a simultaneous dual-listen. socket_* fields are read only when transport is 'socket'.",
     "api_key_env_var": "TITAN_PROTOCOL_BRIDGE_API_KEY",
     "api_key": "REPLACE_WITH_YOUR_BRIDGE_API_KEY",
     "host": "127.0.0.1",
     "port": 8787,
-    "transport": "http",
+    "transport": "socket",
     "socket_port": 8788,
     "socket_max_message_bytes": 65536,
     "socket_idle_timeout_seconds": 60.0,
