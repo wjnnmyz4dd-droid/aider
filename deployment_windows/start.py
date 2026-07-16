@@ -683,6 +683,31 @@ def run_foreground(config_path: Path) -> int:
     server_thread.start()
     logger.info("Bridge %s service listening on %s:%s", transport_label, settings.bridge_host, active_bridge_port)
 
+    # ADR-034 Amendment 3: when socket is the primary transport, also bind
+    # an HTTP fallback listener on the same BridgeEngine -- an EA that
+    # cannot reach the socket port (e.g. a Tools>Options>Expert Advisors
+    # permission this deployment layer cannot pre-validate) falls back to
+    # HTTP on its own; without this listener that fallback would just
+    # trade one connection failure for another. Bind failure here is a
+    # warning, not fatal -- the primary (socket) transport above is
+    # already confirmed bound.
+    http_fallback_active = False
+    fallback_server = None
+    if transport_is_socket:
+        try:
+            fallback_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
+        except OSError as exc:
+            logger.warning(
+                "Bridge HTTP fallback listener failed to bind %s:%s -- %s (socket transport still "
+                "active; an EA that falls back to HTTP will not be reachable until this is resolved)",
+                settings.bridge_host, settings.bridge_port, exc,
+            )
+        else:
+            fallback_thread = threading.Thread(target=fallback_server.serve_forever, name="titan_protocol-bridge-http-fallback", daemon=True)
+            fallback_thread.start()
+            http_fallback_active = True
+            logger.info("Bridge HTTP fallback listener also active on %s:%s", settings.bridge_host, settings.bridge_port)
+
     evidence_engine = EvidenceEngine(EvidenceEngineConfig())
     market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
     strategy_engine = StrategyEngine(strategy_config)
@@ -738,6 +763,8 @@ def run_foreground(config_path: Path) -> int:
     print("=" * 72)
     print("TITAN_PROTOCOL DEPLOYMENT LAYER -- STATUS: DEGRADED")
     print(f"  Bridge {transport_label} service : LIVE on {settings.bridge_host}:{active_bridge_port}")
+    if transport_is_socket:
+        print(f"  Bridge HTTP fallback : {'LIVE on ' + settings.bridge_host + ':' + str(settings.bridge_port) if http_fallback_active else 'NOT ACTIVE (see log -- bind failed)'}")
     print(f"  Trading profile      : {profile.profile_id} (validated OK)")
     print("  5 core engines       : constructed OK")
     print("  Reliability monitor  : running (process-liveness + Bridge/MT5 heartbeats)")
@@ -757,9 +784,13 @@ def run_foreground(config_path: Path) -> int:
         while not _shutdown_event.is_set():
             time.sleep(1.0)
     finally:
-        logger.info("Stopping Bridge HTTP server")
-        http_server.shutdown()
-        http_server.server_close()
+        logger.info("Stopping Bridge %s server", transport_label)
+        transport_server.shutdown()
+        transport_server.server_close()
+        if fallback_server is not None:
+            logger.info("Stopping Bridge HTTP fallback server")
+            fallback_server.shutdown()
+            fallback_server.server_close()
         try:
             pid_file.unlink()
         except OSError:

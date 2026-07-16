@@ -63,6 +63,7 @@ input int    SocketReadTimeoutMs            = 5000;                // SocketRead
 input int    SocketReconnectBaseDelayMs     = 500;                 // First reconnect backoff delay
 input int    SocketReconnectMaxDelayMs      = 15000;                // Reconnect backoff ceiling
 input int    SocketMaxMessageBytes          = 65536;                // Must match BridgeConfig.socket_max_message_bytes
+input int    SocketFailoverAfterAttempts    = 5;                     // ADR-034 Amendment 3: consecutive failed reconnects before auto-falling back to HTTP (0 = never auto-fallback)
 
 //--- Globals ------------------------------------------------------------
 CTrade   g_trade;
@@ -81,6 +82,16 @@ int      g_socket               = INVALID_HANDLE;
 long     g_socketSeq            = 0;
 datetime g_lastConnectAttemptAt = 0;
 int      g_reconnectAttempt     = 0;
+
+// ADR-034 Amendment 3 -- the `Transport` input is read-only at runtime
+// (MQL5 inputs cannot be reassigned), so an automatic fallback needs its
+// own runtime-mutable variable. Starts equal to `Transport`; once
+// SocketFailoverAfterAttempts consecutive reconnect attempts fail, this
+// (and only this) flips to TRANSPORT_HTTP for the remainder of the run.
+// Every BridgeRequest()/BridgePollCommands() call consults this, never
+// the raw `Transport` input directly.
+ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_SOCKET;
+bool                g_hasFallenBackToHttp = false;
 
 // Amendment 1 (ADR-023) -- market-data reporting state.
 datetime g_lastBarOpenTime = 0;
@@ -126,8 +137,12 @@ int OnInit()
    // Grace period so the very first fail-closed check doesn't fire
    // before the first heartbeat has had a chance to succeed.
    g_lastSuccessfulContact = TimeCurrent();
+   // ADR-034 Amendment 3 -- starts equal to the Transport input; may
+   // fall back to TRANSPORT_HTTP at runtime (see EnsureSocketConnected).
+   g_effectiveTransport = Transport;
+   g_hasFallenBackToHttp = false;
    EventSetTimer(1);
-   Print("TitanProtocolEA initialized. Symbol=", _Symbol, " Magic=", MagicNumber);
+   Print("TitanProtocolEA initialized. Symbol=", _Symbol, " Magic=", MagicNumber, " Transport=", EnumToString(Transport));
    return(INIT_SUCCEEDED);
   }
 
@@ -642,6 +657,29 @@ void LogSocketDiagnostics(const string operation, const bool success, const long
    Print("===============================");
   }
 
+// ADR-034 Amendment 3 -- called after every failed connection attempt.
+// Once SocketFailoverAfterAttempts consecutive attempts have failed,
+// permanently (for the rest of this run) switches g_effectiveTransport
+// to HTTP so BridgeRequest()/BridgePollCommands() stop calling into the
+// socket path at all. SocketFailoverAfterAttempts=0 disables this
+// (never auto-fallback -- keep retrying Socket forever).
+void CheckSocketFailoverThreshold()
+  {
+   if(SocketFailoverAfterAttempts <= 0)
+      return;
+   if(g_hasFallenBackToHttp || g_effectiveTransport != TRANSPORT_SOCKET)
+      return;
+   if(g_reconnectAttempt < SocketFailoverAfterAttempts)
+      return;
+   g_effectiveTransport = TRANSPORT_HTTP;
+   g_hasFallenBackToHttp = true;
+   Print("TitanProtocolEA: Socket transport failed ", g_reconnectAttempt,
+         " consecutive connection attempts -- automatically falling back to HTTP transport "
+         "for the remainder of this run (ADR-034 Amendment 3). To restore Socket transport, "
+         "verify Tools>Options>Expert Advisors permits this EA's socket address, then "
+         "remove and reattach the EA.");
+  }
+
 // Lazily (re)connects the persistent socket, honoring an exponential
 // reconnect backoff (base * 2^attempt, capped) so a down Bridge is
 // retried with increasing patience rather than hammered every OnTimer
@@ -672,6 +710,7 @@ bool EnsureSocketConnected()
       Print("TitanProtocolEA: SocketCreate failed, GetLastError=", GetLastError());
       LogSocketDiagnostics("SocketCreate", false, GetLastError());
       g_reconnectAttempt++;
+      CheckSocketFailoverThreshold();
       return(false);
      }
    if(!SocketConnect(g_socket, SocketHost, (uint)SocketPort, SocketConnectTimeoutMs))
@@ -682,6 +721,7 @@ bool EnsureSocketConnected()
       SocketClose(g_socket);
       g_socket = INVALID_HANDLE;
       g_reconnectAttempt++;
+      CheckSocketFailoverThreshold();
       return(false);
      }
    Print("TitanProtocolEA: socket connected to ", SocketHost, ":", SocketPort);
@@ -801,10 +841,13 @@ string SocketRequest(const string route, const string bodyJson, int &statusOut)
 
 // Transport-agnostic wrapper -- every Send*/Report* function below
 // calls this instead of HttpPost directly, so Transport=Http and
-// Transport=Socket share one body-construction call site each.
+// Transport=Socket share one body-construction call site each. Reads
+// g_effectiveTransport (ADR-034 Amendment 3), never the raw Transport
+// input directly -- this is what makes the automatic HTTP fallback
+// actually take effect once triggered.
 string BridgeRequest(const string route, const string httpEndpoint, const string bodyJson, int &statusOut)
   {
-   if(Transport == TRANSPORT_SOCKET)
+   if(g_effectiveTransport == TRANSPORT_SOCKET)
       return(SocketRequest(route, bodyJson, statusOut));
    return(HttpPost(httpEndpoint, bodyJson, statusOut));
   }
@@ -814,7 +857,7 @@ string BridgeRequest(const string route, const string httpEndpoint, const string
 // api_key/magic_number fields the HTTP query string carries today.
 string BridgePollCommands(int &statusOut)
   {
-   if(Transport == TRANSPORT_SOCKET)
+   if(g_effectiveTransport == TRANSPORT_SOCKET)
      {
       string body = StringFormat("{\"api_key\":\"%s\",\"magic_number\":%d}", JsonEscape(ApiKey), (int)MagicNumber);
       return(SocketRequest(_COMMANDS_POLL_ROUTE, body, statusOut));

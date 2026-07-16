@@ -232,6 +232,52 @@ def step_verify_bridge(settings) -> StepReport:
     return StepReport(label, _FAILED, f"Bridge bound but was not reachable{detail_extra}")
 
 
+def step_verify_http_fallback_listener(settings) -> StepReport:
+    """ADR-034 Amendment 3: when transport=="socket", start.py also binds
+    an HTTP fallback listener so an EA that auto-falls-back to HTTP (after
+    repeated Socket connection failures) can still reach the Bridge.
+    Verifies that listener can actually bind here too. Non-fatal if it
+    can't -- mirrors start.py's own warning-not-fatal treatment of this
+    listener, since the primary transport is already confirmed by
+    step_verify_bridge above."""
+    if settings.bridge_config.transport != "socket":
+        return StepReport("Verify HTTP fallback listener", _OK, "transport is already http -- no separate fallback listener applies")
+
+    from titan_protocol.bridge.command_queue import CommandQueue
+    from titan_protocol.bridge.connection_health import ConnectionHealth
+    from titan_protocol.bridge.engine import BridgeEngine
+    from titan_protocol.bridge.server import serve as bridge_serve
+
+    try:
+        command_queue = CommandQueue(settings.bridge_config)
+        connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
+        bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now)
+        fallback_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
+    except OSError as exc:
+        return StepReport(
+            "Verify HTTP fallback listener", _FAILED,
+            f"Could not bind HTTP fallback {settings.bridge_host}:{settings.bridge_port}: {exc} -- an EA "
+            "that auto-falls-back to HTTP (ADR-034 Amendment 3) will not be reachable until this port is free",
+        )
+
+    server_thread = threading.Thread(target=fallback_server.serve_forever, name="titan_protocol-install-http-fallback-smoketest", daemon=True)
+    server_thread.start()
+    try:
+        with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
+            reachable = True
+    except OSError as exc:
+        reachable = False
+        detail_extra = f" (socket connect failed: {exc})"
+    else:
+        detail_extra = ""
+    fallback_server.shutdown()
+    fallback_server.server_close()
+
+    if reachable:
+        return StepReport("Verify HTTP fallback listener", _OK, f"Bound and confirmed reachable on {settings.bridge_host}:{settings.bridge_port}, then shut down cleanly")
+    return StepReport("Verify HTTP fallback listener", _FAILED, f"HTTP fallback listener bound but was not reachable{detail_extra}")
+
+
 def step_verify_magic_number_consistency(settings) -> StepReport:
     """In practice this can never FAIL by the time it runs -- `load_settings()`
     already raises `ConfigError` at config-load time if `bridge.magic_number`
@@ -507,6 +553,10 @@ def main() -> int:
     if run_step(step_verify_bridge(settings)):
         _write_report(steps, overall_ok=False)
         return 1
+    # Non-blocking by design -- mirrors start.py's own warning-not-fatal
+    # treatment of the HTTP fallback listener (the primary transport is
+    # already confirmed above).
+    run_step(step_verify_http_fallback_listener(settings))
     if run_step(step_verify_runtime(settings)):
         _write_report(steps, overall_ok=False)
         return 1

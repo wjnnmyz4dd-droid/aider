@@ -37,6 +37,63 @@ whenever a `.set` file's key is absent. Also normalizes
 these two literals silently diverging was itself a drift risk this
 amendment closes, not an architecture change.
 
+**Amendment 3 (2026-07-16 — "Root-Cause: Socket 4014 despite correct
+whitelisting"):** a live deployment hit `SocketConnect` error `4014`
+("address not in Tools→Options→Expert Advisors whitelist") after
+whitelisting `http://127.0.0.1:8788`, `http://127.0.0.1`, and
+`127.0.0.1:8788` — every reasonable variant of the address. This
+session's research (MQL5 docs and forum threads via `mql5.com`) could
+not establish, with the confidence this charter requires before
+shipping a fix, the exact whitelist-entry format MT5 expects for
+`Socket*` functions specifically (as opposed to `WebRequest()`, whose
+format is well-documented) — official documentation is silent on this
+point beyond "add the address," and community threads are inconsistent.
+Guessing a fourth whitelist format and shipping it as "the fix" would
+repeat the exact mistake this charter's §7 ("never guess") exists to
+prevent. Per the originating request's own item 8, this amendment
+instead makes the failure mode self-healing rather than requiring the
+correct answer to a question this session cannot verify:
+
+1. **Bridge dual-listens when `transport="socket"`.** `start.py` now
+   binds *both* the socket listener (primary) and the HTTP listener
+   (fallback) against the same `BridgeEngine`/`CommandQueue`/
+   `ConnectionHealth` instance whenever `bridge.transport == "socket"`
+   — both are already-thread-safe shared state (`ConnectionHealth`'s and
+   `CommandQueue`'s own docstrings established this under concurrent
+   HTTP-handler-thread access; a second listener thread is the same
+   category of access, not a new one). This is a deliberate, narrow
+   exception to Amendment 1's "never both at once" rule, scoped
+   specifically to the fallback safety net — not a return to permanent
+   dual-transport operation. When `transport == "http"`, behavior is
+   unchanged (HTTP only; there is no lower fallback beneath the
+   already-declared rollback value).
+2. **The EA auto-detects and falls back.** `TitanProtocolEA.mq5` tries
+   `Transport=Socket` (the shipped default) first; if
+   `SocketConnect()`/`SocketCreate()` fail for `SocketFailoverAfterAttempts`
+   consecutive reconnect attempts (new input, default `5`), it logs a
+   clear, named Journal message and switches to HTTP for the remainder
+   of the run, via a new runtime-only `g_effectiveTransport` variable
+   (the `Transport` input itself is read-only at runtime in MQL5, so a
+   separate variable is the only way to represent "started as Socket,
+   now effectively HTTP" without reattaching). Because the Bridge is
+   already listening on HTTP too (item 1), this fallback actually
+   reaches it — a client-side-only fallback with no server-side listener
+   would just trade one connection failure for another.
+3. **Not a guarantee of zero errors.** HTTP's own `WebRequest()`/WinINet
+   layer was independently proven earlier this session to have its own
+   intermittent failure mode (`1001`/`1003`). This amendment guarantees
+   the EA is never permanently stuck on a transport it cannot use — not
+   that the fallback transport is itself failure-free. Both transports
+   remain fully implemented, fully tested (Python-side), and this
+   amendment does not change either one's internal behavior once
+   connected.
+4. **Explicitly out of scope, still.** No pipeline-stage engine, no
+   message schema, no validation rule changes. `install.py`/
+   `health_check.py` are updated only to verify/report both listeners
+   when `transport == "socket"`, and to extend the existing `.set`-file
+   drift check to `SocketHost`/`SocketPort` in addition to
+   `MagicNumber`.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

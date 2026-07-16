@@ -213,6 +213,18 @@ def run(config_path: Path) -> int:
     except OSError as exc:
         checks.append((f"bridge reachable ({settings.bridge_config.transport})", False, f"{settings.bridge_host}:{active_bridge_port}: {exc}"))
 
+    # ADR-034 Amendment 3: when socket is primary, start.py also binds an
+    # HTTP fallback listener so an EA that auto-falls-back can still
+    # reach the Bridge. Informational only -- its absence doesn't
+    # degrade overall health, since the primary transport check above
+    # already covers whether the Bridge itself is reachable at all.
+    if settings.bridge_config.transport == "socket":
+        try:
+            with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
+                checks.append(("HTTP fallback listener reachable", True, f"{settings.bridge_host}:{settings.bridge_port}"))
+        except OSError as exc:
+            checks.append(("HTTP fallback listener reachable", False, f"{settings.bridge_host}:{settings.bridge_port}: {exc} -- an EA that auto-falls-back to HTTP will not be reachable"))
+
     pid_file = settings.state_dir / "titan_protocol.pid"
     if pid_file.exists():
         try:
@@ -287,6 +299,11 @@ def run(config_path: Path) -> int:
         # is exactly the drift this check exists to catch, and should
         # gate like any other real failure.
         "EA .set file detection",
+        # ADR-034 Amendment 3: the fallback listener is a safety net, not
+        # the primary transport -- its absence doesn't degrade overall
+        # health since "bridge reachable (<transport>)" above already
+        # covers whether the Bridge itself is up.
+        "HTTP fallback listener reachable",
     }
 
     live_cycle = payload.get("live_cycle")

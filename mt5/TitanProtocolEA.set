@@ -31,3 +31,4 @@ MaxRequoteRetries=2
 RequoteRetryDelayMs=100
 SocketHost=127.0.0.1
 SocketPort=8788
+SocketFailoverAfterAttempts=5
