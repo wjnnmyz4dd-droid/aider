@@ -16,6 +16,13 @@
 //| normalization, ordering, and freshness logic lives exclusively in |
 //| titan_protocol/market_data_ingestion/, never duplicated in MQL5.  |
 //|                                                                    |
+//| ADR-034: Transport=Socket switches every one of the message types |
+//| above onto a persistent native MQL5 TCP socket (SocketCreate/     |
+//| SocketConnect family) instead of WebRequest()/HTTP -- the same    |
+//| message bodies, the same routes, the same fail-closed semantics,  |
+//| just a different substrate underneath. Transport=Http (default)  |
+//| is entirely unchanged and remains the rollback path.              |
+//|                                                                    |
 //| Original implementation. No source code from any reference        |
 //| repository was copied -- see docs/research/ for the architectural |
 //| study this design is informed by.                                  |
@@ -41,12 +48,39 @@ input int    MaxRequoteRetries        = 2;                         // Bounded tr
 input int    RequoteRetryDelayMs      = 100;                       // Delay between bounded requote retries
 input bool   DiagnosticMode           = false;                     // Transport-only HTTP diagnostics -- no behavior change when false
 
+//--- ADR-034: transport substrate selection -----------------------------
+enum ENUM_TRANSPORT_MODE
+  {
+   TRANSPORT_HTTP,    // WebRequest()/HTTP -- today's transport, the rollback path
+   TRANSPORT_SOCKET   // native MQL5 TCP socket -- ADR-034
+  };
+
+input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_HTTP;      // ADR-034 transport substrate (Http = rollback path)
+input string SocketHost                     = "127.0.0.1";         // Bridge socket host (Transport=Socket only)
+input int    SocketPort                     = 8788;                // Bridge socket port -- must match BridgeConfig.socket_port
+input int    SocketConnectTimeoutMs         = 5000;                // SocketConnect() timeout
+input int    SocketReadTimeoutMs            = 5000;                // SocketRead() timeout per response frame
+input int    SocketReconnectBaseDelayMs     = 500;                 // First reconnect backoff delay
+input int    SocketReconnectMaxDelayMs      = 15000;                // Reconnect backoff ceiling
+input int    SocketMaxMessageBytes          = 65536;                // Must match BridgeConfig.socket_max_message_bytes
+
 //--- Globals ------------------------------------------------------------
 CTrade   g_trade;
 datetime g_lastSuccessfulContact = 0;
 datetime g_lastHeartbeatSentAt   = 0;
 datetime g_lastTickAt            = 0;
 string   g_allowedSymbols[];
+
+// ADR-034 -- socket transport state. `g_socketSeq` resets to 0 on every
+// fresh connection, deliberately: the Bridge's own replay guard (seq
+// must strictly increase) is scoped per-TCP-connection, so a new
+// connection legitimately starts a new sequence space -- never a
+// duplicate of the previous connection's sequence, since the Bridge
+// never remembers sequence state across connections either.
+int      g_socket               = INVALID_HANDLE;
+long     g_socketSeq            = 0;
+datetime g_lastConnectAttemptAt = 0;
+int      g_reconnectAttempt     = 0;
 
 // Amendment 1 (ADR-023) -- market-data reporting state.
 datetime g_lastBarOpenTime = 0;
@@ -60,6 +94,11 @@ long     g_barSequence     = 0;
 bool g_serverEmergencyStop = false;
 
 const string API_KEY_HEADER = "X-Titan-Protocol-Api-Key";
+// ADR-034 -- must match titan_protocol/bridge/socket_transport.py's
+// _COMMANDS_POLL_ROUTE exactly; the one route name with no 1:1 HTTP
+// POST-path counterpart in _ROUTE_TO_HTTP_PATH (HTTP's form is a GET
+// with a query string, not a POST body).
+const string _COMMANDS_POLL_ROUTE = "commands_poll";
 
 //+------------------------------------------------------------------+
 //| Event handling                                                     |
@@ -77,6 +116,11 @@ int OnInit()
       Print("TitanProtocolEA: ApiKey is empty -- refusing to run.");
       return(INIT_FAILED);
      }
+   if(Transport == TRANSPORT_SOCKET && SocketHost == "")
+     {
+      Print("TitanProtocolEA: Transport=Socket requires a non-empty SocketHost -- refusing to run.");
+      return(INIT_FAILED);
+     }
    g_trade.SetExpertMagicNumber(MagicNumber);
    g_trade.SetDeviationInPoints(MaxSlippagePoints);
    // Grace period so the very first fail-closed check doesn't fire
@@ -90,6 +134,11 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   if(g_socket != INVALID_HANDLE)
+     {
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+     }
   }
 
 void OnTick()
@@ -405,6 +454,49 @@ string JsonGetArrayObjectAt(const string json, const string arrayKey, const int 
    return("");
   }
 
+// Bounded brace-matching extraction of a top-level JSON *object* field
+// (as opposed to JsonGetArrayObjectAt's array-of-objects case) -- used
+// by the socket transport to pull the response envelope's "body" object
+// back out for callers, which always expect the *body*, never the
+// outer {"seq":...,"status":...,"body":{...}} envelope. Returns "" if
+// the key is absent or its value is not an object.
+string JsonGetObject(const string json, const string key)
+  {
+   string needle = "\"" + key + "\"";
+   int keyPos = StringFind(json, needle);
+   if(keyPos < 0)
+      return("");
+   int colon = StringFind(json, ":", keyPos);
+   if(colon < 0)
+      return("");
+   int i = colon + 1;
+   while(i < StringLen(json) && StringGetCharacter(json, i) == ' ')
+      i++;
+   if(i >= StringLen(json) || StringGetCharacter(json, i) != '{')
+      return("");
+   int depth = 0;
+   int objStart = i;
+   int pos = i;
+   int length = StringLen(json);
+   while(pos < length)
+     {
+      ushort ch = StringGetCharacter(json, pos);
+      if(ch == '{')
+         depth++;
+      else if(ch == '}')
+        {
+         depth--;
+         if(depth == 0)
+           {
+            pos++;
+            break;
+           }
+        }
+      pos++;
+     }
+   return(StringSubstr(json, objStart, pos - objStart));
+  }
+
 //+------------------------------------------------------------------+
 //| Diagnostics-only helper (DiagnosticMode) -- never called, and     |
 //| costs nothing, unless the input is explicitly turned on. Prints   |
@@ -532,6 +624,205 @@ string HttpGet(const string endpoint, int &statusOut)
   }
 
 //+------------------------------------------------------------------+
+//| ADR-034 -- native MQL5 socket transport. Same message bodies, same |
+//| routes, same fail-closed semantics as the HTTP transport above --  |
+//| only the substrate underneath changes. Every function here mirrors|
+//| an HTTP counterpart 1:1: EnsureSocketConnected ~ nothing (HTTP is  |
+//| stateless per-call), SocketRequest ~ HttpPost/HttpGet.             |
+//+------------------------------------------------------------------+
+void LogSocketDiagnostics(const string operation, const bool success, const long detail)
+  {
+   if(!DiagnosticMode)
+      return;
+   Print("======== TITAN SOCKET ========");
+   Print("Operation: ", operation);
+   Print("Success: ", success ? "true" : "false");
+   Print("Detail: ", detail);
+   Print("Connected: ", (g_socket != INVALID_HANDLE && SocketIsConnected(g_socket)) ? "true" : "false");
+   Print("===============================");
+  }
+
+// Lazily (re)connects the persistent socket, honoring an exponential
+// reconnect backoff (base * 2^attempt, capped) so a down Bridge is
+// retried with increasing patience rather than hammered every OnTimer
+// tick. Returns true only if the socket is connected and usable right
+// now -- callers must never send on a socket this returned false for.
+bool EnsureSocketConnected()
+  {
+   if(g_socket != INVALID_HANDLE && SocketIsConnected(g_socket))
+      return(true);
+
+   if(g_socket != INVALID_HANDLE)
+     {
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+     }
+
+   datetime now = TimeCurrent();
+   int cappedAttempt = (g_reconnectAttempt > 10) ? 10 : g_reconnectAttempt;
+   int delayMs = (int)MathMin((double)SocketReconnectBaseDelayMs * MathPow(2.0, cappedAttempt),
+                               (double)SocketReconnectMaxDelayMs);
+   if(g_lastConnectAttemptAt != 0 && ((long)(now - g_lastConnectAttemptAt)) * 1000 < delayMs)
+      return(false); // still backing off -- not yet time to retry
+
+   g_lastConnectAttemptAt = now;
+   g_socket = SocketCreate();
+   if(g_socket == INVALID_HANDLE)
+     {
+      Print("TitanProtocolEA: SocketCreate failed, GetLastError=", GetLastError());
+      LogSocketDiagnostics("SocketCreate", false, GetLastError());
+      g_reconnectAttempt++;
+      return(false);
+     }
+   if(!SocketConnect(g_socket, SocketHost, (uint)SocketPort, SocketConnectTimeoutMs))
+     {
+      Print("TitanProtocolEA: SocketConnect to ", SocketHost, ":", SocketPort, " failed, GetLastError=", GetLastError(),
+            " (4014 = address not in Tools>Options>Expert Advisors whitelist)");
+      LogSocketDiagnostics("SocketConnect", false, GetLastError());
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+      g_reconnectAttempt++;
+      return(false);
+     }
+   Print("TitanProtocolEA: socket connected to ", SocketHost, ":", SocketPort);
+   LogSocketDiagnostics("SocketConnect", true, 0);
+   g_socketSeq = 0;      // fresh connection -- fresh sequence space
+   g_reconnectAttempt = 0;
+   return(true);
+  }
+
+// Sends one length-prefixed frame: a 4-byte big-endian payload length
+// followed by that many bytes of UTF-8 JSON -- the same framing
+// `titan_protocol/bridge/socket_transport.py`'s `encode_frame`/
+// `read_frame` implement, byte for byte.
+bool SocketSendFrame(const string jsonBody)
+  {
+   uchar payload[];
+   int payloadLen = StringToCharArray(jsonBody, payload, 0, WHOLE_ARRAY, CP_UTF8) - 1;
+   ArrayResize(payload, payloadLen);
+
+   uchar frame[];
+   ArrayResize(frame, 4 + payloadLen);
+   frame[0] = (uchar)((payloadLen >> 24) & 0xFF);
+   frame[1] = (uchar)((payloadLen >> 16) & 0xFF);
+   frame[2] = (uchar)((payloadLen >> 8) & 0xFF);
+   frame[3] = (uchar)(payloadLen & 0xFF);
+   ArrayCopy(frame, payload, 4, 0, payloadLen);
+
+   int sent = SocketSend(g_socket, frame, ArraySize(frame));
+   return(sent == ArraySize(frame));
+  }
+
+// Blocking read of exactly `count` bytes, looping across as many
+// SocketRead() calls as needed -- this is what makes a partial-packet
+// response transparent to callers, mirroring the Bridge's own
+// `_recv_exact`. Returns false on timeout, error, or a closed
+// connection; never returns a short buffer.
+bool SocketReadExact(uchar &buffer[], const int count)
+  {
+   ArrayResize(buffer, count);
+   int have = 0;
+   while(have < count)
+     {
+      uchar chunk[];
+      int want = count - have;
+      ArrayResize(chunk, want);
+      int got = SocketRead(g_socket, chunk, want, SocketReadTimeoutMs);
+      if(got <= 0)
+         return(false); // timeout, error, or connection closed
+      ArrayCopy(buffer, chunk, have, 0, got);
+      have += got;
+     }
+   return(true);
+  }
+
+// Reads and returns one complete frame's JSON payload, or "" on any
+// failure (timeout/closed/oversized) -- callers treat "" exactly like
+// HttpPost/HttpGet's own "no successful contact" return. An oversized
+// declared length closes the connection outright (framing trust is
+// broken once a claimed length is refused), mirroring the Bridge's own
+// `FrameTooLargeError` handling.
+string SocketReadFrame()
+  {
+   uchar header[];
+   if(!SocketReadExact(header, 4))
+      return("");
+   long length = ((long)header[0] << 24) | ((long)header[1] << 16) | ((long)header[2] << 8) | (long)header[3];
+   if(length < 0 || length > SocketMaxMessageBytes)
+     {
+      Print("TitanProtocolEA: socket frame declares ", length, " bytes, exceeding SocketMaxMessageBytes -- closing connection.");
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+      return("");
+     }
+   uchar body[];
+   if(!SocketReadExact(body, (int)length))
+      return("");
+   return(CharArrayToString(body, 0, WHOLE_ARRAY, CP_UTF8));
+  }
+
+// Sends one {"seq":N,"route":route,"body":bodyJson} envelope and
+// returns the response envelope's "body" object, exactly matching
+// HttpPost/HttpGet's own return contract ("" = no successful contact
+// this cycle). `bodyJson` is the identical JSON object every existing
+// Send*/Report* function already builds for the HTTP transport -- no
+// second body-construction path exists anywhere in this file.
+string SocketRequest(const string route, const string bodyJson, int &statusOut)
+  {
+   statusOut = 0;
+   if(!EnsureSocketConnected())
+      return("");
+
+   g_socketSeq++;
+   string envelope = StringFormat("{\"seq\":%d,\"route\":\"%s\",\"body\":%s}",
+                                   (int)g_socketSeq, route, bodyJson);
+   if(!SocketSendFrame(envelope))
+     {
+      Print("TitanProtocolEA: socket send failed for route ", route, ", GetLastError=", GetLastError());
+      LogSocketDiagnostics("SocketSend:" + route, false, GetLastError());
+      SocketClose(g_socket);
+      g_socket = INVALID_HANDLE;
+      return("");
+     }
+
+   string response = SocketReadFrame();
+   if(response == "")
+     {
+      LogSocketDiagnostics("SocketRead:" + route, false, 0);
+      return("");
+     }
+
+   statusOut = (int)JsonGetLong(response, "status", 0);
+   LogSocketDiagnostics("SocketRequest:" + route, statusOut >= 200 && statusOut < 300, statusOut);
+   if(statusOut >= 200 && statusOut < 300)
+      g_lastSuccessfulContact = TimeCurrent();
+   return(JsonGetObject(response, "body"));
+  }
+
+// Transport-agnostic wrapper -- every Send*/Report* function below
+// calls this instead of HttpPost directly, so Transport=Http and
+// Transport=Socket share one body-construction call site each.
+string BridgeRequest(const string route, const string httpEndpoint, const string bodyJson, int &statusOut)
+  {
+   if(Transport == TRANSPORT_SOCKET)
+      return(SocketRequest(route, bodyJson, statusOut));
+   return(HttpPost(httpEndpoint, bodyJson, statusOut));
+  }
+
+// Transport-agnostic command-poll wrapper -- HTTP's GET-with-query-
+// string becomes a socket request whose body carries the same
+// api_key/magic_number fields the HTTP query string carries today.
+string BridgePollCommands(int &statusOut)
+  {
+   if(Transport == TRANSPORT_SOCKET)
+     {
+      string body = StringFormat("{\"api_key\":\"%s\",\"magic_number\":%d}", JsonEscape(ApiKey), (int)MagicNumber);
+      return(SocketRequest(_COMMANDS_POLL_ROUTE, body, statusOut));
+     }
+   return(HttpGet("/bridge/commands/poll?magic_number=" + IntegerToString((int)MagicNumber), statusOut));
+  }
+
+//+------------------------------------------------------------------+
 //| Telemetry senders                                                    |
 //+------------------------------------------------------------------+
 void SendHeartbeat()
@@ -541,7 +832,7 @@ void SendHeartbeat()
       JsonEscape(ApiKey), (int)MagicNumber, (int)AccountInfoInteger(ACCOUNT_LOGIN),
       TerminalInfoInteger(TERMINAL_CONNECTED) ? "true" : "false");
    int status;
-   HttpPost("/bridge/heartbeat", body, status);
+   BridgeRequest("heartbeat", "/bridge/heartbeat", body, status);
   }
 
 void SendAccountState()
@@ -553,7 +844,7 @@ void SendAccountState()
       AccountInfoDouble(ACCOUNT_MARGIN), AccountInfoDouble(ACCOUNT_MARGIN_FREE),
       AccountInfoString(ACCOUNT_CURRENCY), (int)AccountInfoInteger(ACCOUNT_LEVERAGE));
    int status;
-   HttpPost("/bridge/account", body, status);
+   BridgeRequest("account", "/bridge/account", body, status);
   }
 
 void SendPositions()
@@ -580,7 +871,7 @@ void SendPositions()
    string body = StringFormat("{\"api_key\":\"%s\",\"magic_number\":%d,\"positions\":[%s]}",
                                JsonEscape(ApiKey), (int)MagicNumber, items);
    int status;
-   HttpPost("/bridge/positions", body, status);
+   BridgeRequest("positions", "/bridge/positions", body, status);
   }
 
 void SendPendingOrders()
@@ -605,7 +896,7 @@ void SendPendingOrders()
    string body = StringFormat("{\"api_key\":\"%s\",\"magic_number\":%d,\"orders\":[%s]}",
                                JsonEscape(ApiKey), (int)MagicNumber, items);
    int status;
-   HttpPost("/bridge/orders", body, status);
+   BridgeRequest("orders", "/bridge/orders", body, status);
   }
 
 //+------------------------------------------------------------------+
@@ -671,7 +962,7 @@ void SendClosedBar(const string timeframe, const MqlRates &bar)
       bar.open, bar.high, bar.low, bar.close, (double)bar.tick_volume,
       (int)g_barSequence, bidField, askField);
    int status;
-   HttpPost("/bridge/market-data", body, status);
+   BridgeRequest("market_data", "/bridge/market-data", body, status);
   }
 
 // Detects a newly-closed bar by watching the chart's own forming-bar
@@ -709,7 +1000,7 @@ void SendTick()
       "{\"api_key\":\"%s\",\"magic_number\":%d,\"tick\":{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}}",
       JsonEscape(ApiKey), (int)MagicNumber, _Symbol, bid, ask);
    int status;
-   HttpPost("/bridge/market-data", body, status);
+   BridgeRequest("market_data", "/bridge/market-data", body, status);
   }
 
 void SendTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeResult &result)
@@ -719,7 +1010,7 @@ void SendTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeResult
       JsonEscape(ApiKey), (int)MagicNumber, trans.symbol,
       trans.deal, trans.order, (int)trans.type, result.volume, result.price);
    int status;
-   HttpPost("/bridge/trade-transaction", body, status);
+   BridgeRequest("trade_transaction", "/bridge/trade-transaction", body, status);
   }
 
 void ReportError(const string errorCode, const string message, const string context)
@@ -728,7 +1019,7 @@ void ReportError(const string errorCode, const string message, const string cont
       "{\"api_key\":\"%s\",\"magic_number\":%d,\"error_code\":\"%s\",\"message\":\"%s\",\"context\":\"%s\"}",
       JsonEscape(ApiKey), (int)MagicNumber, errorCode, JsonEscape(message), JsonEscape(context));
    int status;
-   HttpPost("/bridge/error", body, status);
+   BridgeRequest("error", "/bridge/error", body, status);
   }
 
 void ReportExecutionResult(const string correlationId, const bool success, const ulong ticket,
@@ -740,7 +1031,7 @@ void ReportExecutionResult(const string correlationId, const bool success, const
       JsonEscape(ApiKey), correlationId, (int)MagicNumber, success ? "true" : "false",
       ticket, price, volume, errorField);
    int status;
-   HttpPost("/bridge/execution/report", body, status);
+   BridgeRequest("execution_report", "/bridge/execution/report", body, status);
   }
 
 //+------------------------------------------------------------------+
@@ -1040,7 +1331,7 @@ void ExecutePartialClose(const string correlationId, const string positionId, co
 void PollAndExecuteCommands()
   {
    int status;
-   string response = HttpGet("/bridge/commands/poll?magic_number=" + IntegerToString((int)MagicNumber), status);
+   string response = BridgePollCommands(status);
    if(response == "")
       return; // no successful contact this cycle -- handled by the fail-closed check next tick
 

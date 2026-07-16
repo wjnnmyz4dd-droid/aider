@@ -1,14 +1,21 @@
 # ADR-034 — MT5↔Bridge Transport Hardening (Native Socket Transport)
 
-Status: **Proposed** — not implemented, not approved. Per Phantom Protocol
-rule §1.10, no code in this ADR's scope may be touched until this
-document's status is changed to **Accepted** by explicit user direction.
+Status: **Accepted**
 
-Acceptance Date: N/A (pending approval)
+Acceptance Date: 2026-07-16
 
-Accepted By: Pending — awaiting explicit user approval of this document,
-per the originating request's own closing instruction: "Do not implement
-until the ADR is approved. Stop after the ADR."
+Accepted By: User direction, this session (explicit: "Approve ADR-034 ...
+Implement the native socket transport exactly as specified").
+
+**Amendment 1 (2026-07-16 — accepted alongside the base ADR):** the
+approving request refines §5's migration plan from simultaneous
+HTTP+socket coexistence to a single-active-transport model: `BridgeConfig`
+gains one `transport` field (`"http"` | `"socket"`), and the deployment
+layer starts exactly one listener, selected by that field, never both at
+once. HTTP remains available purely as a rollback path (flip the field
+back, restart) — not a second concurrently-running transport. This is a
+tightening of §5's already-additive, already-reversible design, not a
+change to §4's recommendation or §2/§3's option comparison.
 
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
@@ -270,14 +277,16 @@ codebase does not otherwise have. Option 4 is rejected per §2.
    `DiagnosticMode` logging (commit `6d82dd5`) to cover socket
    connect/send/receive outcomes with the same metadata-only fields
    already established (never payload contents, never the API key).
-5. **Bounded coexistence period.** Both listeners run simultaneously only
-   for as long as a deployer is migrating; this is the one
-   explicitly-scoped exception to Hard Rule 4 ("one canonical transport"),
-   not a second permanent transport.
-6. **Cutover and HTTP removal are out of this ADR's scope.** Removing the
-   HTTP listener entirely is a separate, later, separately-approved
-   change — this ADR delivers the new substrate and its coexistence
-   period only.
+5. **One active transport at a time (Amendment 1).** `BridgeConfig.transport`
+   selects `"http"` or `"socket"`; the deployment layer starts exactly the
+   listener that field names, never both. Migrating means changing the
+   field and restarting the process, not running two listeners
+   concurrently — HTTP is a rollback path, not a second permanent
+   transport, satisfying Hard Rule 4 without needing a coexistence
+   exception.
+6. **HTTP removal is out of this ADR's scope.** Deleting the HTTP code
+   path entirely (as opposed to leaving it as the `"http"` rollback
+   option) is a separate, later, separately-approved change.
 
 ---
 
@@ -356,8 +365,7 @@ codebase does not otherwise have. Option 4 is rejected per §2.
   already explicitly declined this session on architectural-authority
   grounds (`titan_protocol/runtime/profiles.py`'s `TradingWindow` is the
   canonical authority; the EA remains transport-and-execution-only).
-- **Implementation of any kind.** Per the originating request: "Do not
-  implement until the ADR is approved. Stop after the ADR."
+- Deleting the HTTP transport code path (Amendment 1, Hard Rule 6).
 
 ---
 

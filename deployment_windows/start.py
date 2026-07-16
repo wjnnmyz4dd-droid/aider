@@ -108,7 +108,9 @@ sys.path.insert(0, str(_HERE))
 from titan_protocol.bridge.command_queue import CommandQueue
 from titan_protocol.bridge.connection_health import ConnectionHealth
 from titan_protocol.bridge.engine import BridgeEngine
+from titan_protocol.bridge.metrics import BridgeMetrics
 from titan_protocol.bridge.server import serve as bridge_serve
+from titan_protocol.bridge.socket_transport import serve_socket as bridge_serve_socket
 from titan_protocol.compliance_engine.engine import ComplianceEngine
 from titan_protocol.compliance_engine.models import AccountState as ComplianceAccountState
 from titan_protocol.compliance_state_store.config import ComplianceStateStoreConfig
@@ -365,6 +367,8 @@ def _write_health_snapshot(
     runtime_metrics: Optional[RuntimeMetrics] = None,
     news_engine: Optional[NewsIngestionEngine] = None,
     news_metrics: Optional[NewsIngestionMetrics] = None,
+    bridge_transport: Optional[str] = None,
+    bridge_metrics: Optional[BridgeMetrics] = None,
 ) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
@@ -393,6 +397,13 @@ def _write_health_snapshot(
             {"cycle_count": runtime_metrics.cycle_count, "failure_count": runtime_metrics.failure_count}
             if runtime_metrics is not None else None
         ),
+        # ADR-034 -- detailed socket-transport health, only meaningful
+        # (and only ever non-None) when bridge.transport=="socket".
+        "bridge_transport": bridge_transport,
+        "bridge_socket": (
+            bridge_metrics.socket_health_snapshot()
+            if bridge_metrics is not None and bridge_transport == "socket" else None
+        ),
     }
     (state_dir / "health.json").write_text(json.dumps(payload, indent=2))
 
@@ -404,6 +415,8 @@ def _heartbeat_loop(
     runtime_metrics: Optional[RuntimeMetrics] = None,
     news_engine: Optional[NewsIngestionEngine] = None,
     news_metrics: Optional[NewsIngestionMetrics] = None,
+    bridge_transport: Optional[str] = None,
+    bridge_metrics: Optional[BridgeMetrics] = None,
 ) -> None:
     logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
@@ -428,6 +441,7 @@ def _heartbeat_loop(
             _write_health_snapshot(
                 state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth,
                 market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_metrics,
+                bridge_transport=bridge_transport, bridge_metrics=bridge_metrics,
             )
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
@@ -641,16 +655,33 @@ def run_foreground(config_path: Path) -> int:
 
     command_queue = CommandQueue(settings.bridge_config)
     connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
-    bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now, market_data_engine=market_data_engine)
+    bridge_metrics = BridgeMetrics()
+    bridge_engine = BridgeEngine(
+        settings.bridge_config, command_queue, connection_health, _utc_now,
+        metrics=bridge_metrics, market_data_engine=market_data_engine,
+    )
+    # ADR-034: exactly one transport is ever active, selected by
+    # bridge.transport ("http" default, "socket" the ADR-034 substrate).
+    # HTTP remains the rollback path -- flip the config field back and
+    # restart, never a second concurrently-running listener.
+    transport_is_socket = settings.bridge_config.transport == "socket"
+    active_bridge_port = settings.bridge_config.socket_port if transport_is_socket else settings.bridge_port
+    transport_label = "socket" if transport_is_socket else "HTTP"
     try:
-        http_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
+        if transport_is_socket:
+            transport_server = bridge_serve_socket(
+                bridge_engine, settings.bridge_config, _utc_now,
+                host=settings.bridge_host, port=active_bridge_port, metrics=bridge_metrics,
+            )
+        else:
+            transport_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_bridge_port)
     except OSError as exc:
-        logger.error("Bridge HTTP server failed to bind %s:%s -- %s", settings.bridge_host, settings.bridge_port, exc)
-        print(f"FAILED: Bridge could not bind {settings.bridge_host}:{settings.bridge_port}: {exc}", file=sys.stderr)
+        logger.error("Bridge %s server failed to bind %s:%s -- %s", transport_label, settings.bridge_host, active_bridge_port, exc)
+        print(f"FAILED: Bridge could not bind {settings.bridge_host}:{active_bridge_port}: {exc}", file=sys.stderr)
         return 2
-    server_thread = threading.Thread(target=http_server.serve_forever, name="titan_protocol-bridge-http", daemon=True)
+    server_thread = threading.Thread(target=transport_server.serve_forever, name="titan_protocol-bridge-transport", daemon=True)
     server_thread.start()
-    logger.info("Bridge HTTP service listening on %s:%s", settings.bridge_host, settings.bridge_port)
+    logger.info("Bridge %s service listening on %s:%s", transport_label, settings.bridge_host, active_bridge_port)
 
     evidence_engine = EvidenceEngine(EvidenceEngineConfig())
     market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
@@ -678,8 +709,9 @@ def run_foreground(config_path: Path) -> int:
     reliability = ReliabilityEngine(settings.reliability_config)
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, settings.bridge_port,
+        args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, active_bridge_port,
               market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_ingestion_metrics),
+        kwargs={"bridge_transport": settings.bridge_config.transport, "bridge_metrics": bridge_metrics},
         name="titan_protocol-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
@@ -705,7 +737,7 @@ def run_foreground(config_path: Path) -> int:
 
     print("=" * 72)
     print("TITAN_PROTOCOL DEPLOYMENT LAYER -- STATUS: DEGRADED")
-    print(f"  Bridge HTTP service : LIVE on {settings.bridge_host}:{settings.bridge_port}")
+    print(f"  Bridge {transport_label} service : LIVE on {settings.bridge_host}:{active_bridge_port}")
     print(f"  Trading profile      : {profile.profile_id} (validated OK)")
     print("  5 core engines       : constructed OK")
     print("  Reliability monitor  : running (process-liveness + Bridge/MT5 heartbeats)")

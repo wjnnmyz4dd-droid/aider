@@ -17,6 +17,12 @@ from .symbol_mapping import SymbolMapping
 
 BRIDGE_VERSION = "1.0.0-phase1"
 
+#: ADR-034 -- the only two transports this Bridge can serve over. `"http"`
+#: is today's `WebRequest()`-based transport (unchanged); `"socket"` is
+#: the new native-MQL5-socket transport. Exactly one is active per
+#: deployment (Amendment 1) -- `"http"` is also the rollback path.
+VALID_TRANSPORTS: Tuple[str, ...] = ("http", "socket")
+
 
 @dataclass(frozen=True)
 class BridgeConfig:
@@ -59,8 +65,33 @@ class BridgeConfig:
     max_error_history: int = 1000
     max_trade_transaction_history: int = 1000
 
+    # -- ADR-034: native MQL5 socket transport (additive; every field
+    # here defaults to preserving today's HTTP-only behavior exactly).
+    # `transport="http"` is unaffected by any field below.
+    transport: str = "http"
+    socket_port: int = 8788
+    #: Rejected (frame refused, connection closed) before the payload is
+    #: ever read -- bounds worst-case per-message memory, independent of
+    #: `max_lot_size`/queue retention, which bound trading state, not
+    #: wire frames.
+    socket_max_message_bytes: int = 65536
+    #: A connection that sends nothing for this long is treated as a
+    #: stale/dead session and closed -- distinct from
+    #: `heartbeat_timeout_seconds` (an application-level EA-liveness
+    #: fact `ConnectionHealth` tracks); this is a transport-level socket
+    #: fact, enforced by the OS via `socket.settimeout()`.
+    socket_idle_timeout_seconds: float = 60.0
+    #: Bounds concurrently-open socket connections -- mirrors
+    #: `_BridgeHTTPServer.request_queue_size`'s existing precedent of a
+    #: documented, cheap, defensive resource bound.
+    socket_max_connections: int = 8
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "allowed_symbols", tuple(self.allowed_symbols))
+        if self.transport not in VALID_TRANSPORTS:
+            raise ValueError(
+                f"BridgeConfig.transport must be one of {VALID_TRANSPORTS}, got {self.transport!r}"
+            )
 
 
 __all__ = ["BRIDGE_VERSION", "BridgeConfig"]

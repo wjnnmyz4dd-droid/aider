@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from titan_protocol.bridge.config import BridgeConfig
+from titan_protocol.bridge.config import VALID_TRANSPORTS, BridgeConfig
 from titan_protocol.bridge.symbol_mapping import SymbolMapping
 from titan_protocol.compliance_engine.config import ComplianceEngineConfig
 from titan_protocol.market_intelligence.config import MarketIntelligenceConfig
@@ -316,6 +316,14 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         explicit_map={str(k).strip().upper(): str(v).strip() for k, v in raw_explicit_map.items()},
     )
 
+    # ADR-034: transport substrate selector -- "http" (default, unchanged
+    # behavior) or "socket". Exactly one is ever active; see start.py.
+    transport = _get_str(bridge_section, "transport", "http").strip().lower()
+    if transport not in VALID_TRANSPORTS:
+        raise ConfigError(
+            f"bridge.transport must be one of {VALID_TRANSPORTS}, got {transport!r}"
+        )
+
     bridge_config = BridgeConfig(
         api_key=api_key,
         allowed_symbols=allowed_symbols,
@@ -325,6 +333,11 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         max_slippage_points=_get_int(bridge_section, "max_slippage_points", 20),
         heartbeat_timeout_seconds=_get_float(bridge_section, "heartbeat_timeout_seconds", 30.0),
         command_ttl_seconds=_get_float(bridge_section, "command_ttl_seconds", 15.0),
+        transport=transport,
+        socket_port=_get_int(bridge_section, "socket_port", 8788),
+        socket_max_message_bytes=_get_int(bridge_section, "socket_max_message_bytes", 65536),
+        socket_idle_timeout_seconds=_get_float(bridge_section, "socket_idle_timeout_seconds", 60.0),
+        socket_max_connections=_get_int(bridge_section, "socket_max_connections", 8),
     )
     bridge_host = _get_str(bridge_section, "host", "127.0.0.1")
     bridge_port = _get_int(bridge_section, "port", 8787)

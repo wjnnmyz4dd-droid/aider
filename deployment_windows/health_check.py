@@ -120,11 +120,17 @@ def run(config_path: Path) -> int:
         except OSError as exc:
             checks.append((label, False, f"{path}: {exc}"))
 
+    # ADR-034: check whichever transport is actually configured active --
+    # bridge.transport=="socket" means the HTTP port was never bound, so
+    # checking it would report a false "not reachable".
+    active_bridge_port = (
+        settings.bridge_config.socket_port if settings.bridge_config.transport == "socket" else settings.bridge_port
+    )
     try:
-        with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
-            checks.append(("bridge reachable", True, f"{settings.bridge_host}:{settings.bridge_port}"))
+        with socket.create_connection((settings.bridge_host, active_bridge_port), timeout=2.0):
+            checks.append((f"bridge reachable ({settings.bridge_config.transport})", True, f"{settings.bridge_host}:{active_bridge_port}"))
     except OSError as exc:
-        checks.append(("bridge reachable", False, f"{settings.bridge_host}:{settings.bridge_port}: {exc}"))
+        checks.append((f"bridge reachable ({settings.bridge_config.transport})", False, f"{settings.bridge_host}:{active_bridge_port}: {exc}"))
 
     pid_file = settings.state_dir / "titan_protocol.pid"
     if pid_file.exists():
