@@ -23,6 +23,7 @@ as their plain string `.value`.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -314,6 +315,43 @@ _POST_ROUTES: Dict[str, Callable[[BridgeEngine, BridgeConfig, dict, datetime], T
 }
 
 
+def _log_bridge_lifecycle(
+    timestamp: datetime, remote: str, method: str, path: str,
+    auth_result: str, route_matched: bool, handler_entered: bool, handler_completed: bool,
+    response_status: int, elapsed_ms: float,
+    exc_type: Optional[str] = None, exc_message: Optional[str] = None,
+) -> None:
+    """Runtime Audit Phase 1 -- Bridge request-lifecycle diagnostics only.
+    Metadata about the request/response cycle, never payload contents,
+    never the API key, never account numbers -- see the field list this
+    was scoped to. Does not participate in routing or validation; it
+    observes what already happened and changes nothing about it."""
+    print("================================================")
+    print(f"[{timestamp.isoformat()}]")
+    print("REQUEST RECEIVED")
+    print(f"Remote: {remote}")
+    print(f"Method: {method}")
+    print(f"Path: {path}")
+    print(f"Authentication: {auth_result}")
+    print(f"Route: {'Matched' if route_matched else 'Not matched'}")
+    print(f"Handler: {'Entered' if handler_entered else 'Not entered'}")
+    print(f"Handler: {'Completed' if handler_completed else 'Not completed'}")
+    if exc_type is not None:
+        print(f"Exception: {exc_type}")
+        print(f"Message: {exc_message}")
+    print(f"Response: {response_status}")
+    print(f"Elapsed: {elapsed_ms:.0f} ms")
+    print("================================================")
+
+
+def _auth_result_for_status(status: int) -> str:
+    if 200 <= status < 300:
+        return "PASS"
+    if status in (400, 401):
+        return "FAIL"
+    return "N/A"
+
+
 def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[], datetime]):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):  # silence default stderr logging
@@ -328,26 +366,42 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
             self.wfile.write(payload)
 
         def do_GET(self):
+            start = time.monotonic()
+            ts = clock()
+            remote = self.client_address[0] if self.client_address else "unknown"
             parsed = urlparse(self.path)
-            if parsed.path != "/bridge/commands/poll":
+            route_matched = parsed.path == "/bridge/commands/poll"
+            if not route_matched:
                 self._send(404, {"error": "not found", "path": parsed.path})
+                _log_bridge_lifecycle(ts, remote, "GET", parsed.path, "N/A", False, False, False,
+                                       404, (time.monotonic() - start) * 1000)
                 return
             query = parse_qs(parsed.query)
             provided_key = self.headers.get(API_KEY_HEADER)
             if provided_key is not None and "api_key" not in query:
                 query["api_key"] = [provided_key]
             try:
-                status, body = _handle_poll_commands(engine, config, query, clock())
+                status, body = _handle_poll_commands(engine, config, query, ts)
             except Exception as exc:  # pragma: no cover - defensive
                 self._send(500, {"error": str(exc)})
+                _log_bridge_lifecycle(ts, remote, "GET", parsed.path, "N/A", True, True, False,
+                                      500, (time.monotonic() - start) * 1000,
+                                      type(exc).__name__, str(exc))
                 return
             self._send(status, body)
+            _log_bridge_lifecycle(ts, remote, "GET", parsed.path, _auth_result_for_status(status),
+                                   True, True, True, status, (time.monotonic() - start) * 1000)
 
         def do_POST(self):
+            start = time.monotonic()
+            ts = clock()
+            remote = self.client_address[0] if self.client_address else "unknown"
             parsed = urlparse(self.path)
             handler = _POST_ROUTES.get(parsed.path)
             if handler is None:
                 self._send(404, {"error": "not found", "path": parsed.path})
+                _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", False, False, False,
+                                       404, (time.monotonic() - start) * 1000)
                 return
             length = int(self.headers.get("Content-Length", "0") or 0)
             raw = self.rfile.read(length) if length else b""
@@ -355,22 +409,34 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
                 body = json.loads(raw.decode("utf-8") or "{}")
             except (ValueError, UnicodeDecodeError):
                 self._send(400, {"error": "invalid_json_body"})
+                _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, False, False,
+                                       400, (time.monotonic() - start) * 1000)
                 return
             if not isinstance(body, dict):
                 self._send(400, {"error": "json_object_required"})
+                _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, False, False,
+                                       400, (time.monotonic() - start) * 1000)
                 return
             provided_key = self.headers.get(API_KEY_HEADER)
             if provided_key is not None:
                 body.setdefault("api_key", provided_key)
             try:
-                status, response_body = handler(engine, config, body, clock())
+                status, response_body = handler(engine, config, body, ts)
             except (KeyError, ValueError, TypeError) as exc:
                 self._send(400, {"error": f"invalid_payload:{exc}"})
+                _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, True, False,
+                                       400, (time.monotonic() - start) * 1000,
+                                       type(exc).__name__, str(exc))
                 return
             except Exception as exc:  # pragma: no cover - defensive
                 self._send(500, {"error": str(exc)})
+                _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, True, False,
+                                       500, (time.monotonic() - start) * 1000,
+                                       type(exc).__name__, str(exc))
                 return
             self._send(status, response_body)
+            _log_bridge_lifecycle(ts, remote, "POST", parsed.path, _auth_result_for_status(status),
+                                   True, True, True, status, (time.monotonic() - start) * 1000)
 
     return Handler
 
