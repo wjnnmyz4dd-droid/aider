@@ -181,6 +181,19 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
                 self.server.metrics.record_socket_bytes_received(_LENGTH_PREFIX.size + len(payload))
             self._process_frame(payload)
 
+    def _reject_frame(self, seq: Optional[int], error: str) -> None:
+        """Runtime Audit Phase 2 -- every frame-level rejection (before
+        `_dispatch()` is ever reached) now logs the same one-line,
+        precise-cause format `describe_rejection()`'s label table
+        provides, instead of only incrementing a metrics counter with no
+        corresponding log line."""
+        reason = _http_server.describe_rejection(400, {"error": error})
+        logger.warning(
+            "socket_transport: rejected (frame-level) status=400 reason=%s remote=%s",
+            reason, self.client_address,
+        )
+        self._send(seq, 400, {"error": error})
+
     def _process_frame(self, payload: bytes) -> None:
         now = self.server.clock()
         metrics = self.server.metrics
@@ -189,12 +202,12 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
         except (ValueError, UnicodeDecodeError):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._send(None, 400, {"error": "invalid_json_frame"})
+            self._reject_frame(None, "invalid_json_frame")
             return
         if not isinstance(envelope, dict):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._send(None, 400, {"error": "json_object_required"})
+            self._reject_frame(None, "json_object_required")
             return
 
         seq = envelope.get("seq")
@@ -203,28 +216,42 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
         if not isinstance(seq, int) or isinstance(seq, bool):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._send(None, 400, {"error": "missing_or_invalid_seq"})
+            self._reject_frame(None, "missing_or_invalid_seq")
             return
         if not isinstance(route, str):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._send(seq, 400, {"error": "missing_or_invalid_route"})
+            self._reject_frame(seq, "missing_or_invalid_route")
             return
         if not isinstance(body, dict):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._send(seq, 400, {"error": "missing_or_invalid_body"})
+            self._reject_frame(seq, "missing_or_invalid_body")
             return
         if self._last_seq is not None and seq <= self._last_seq:
             if metrics is not None:
                 metrics.record_socket_duplicate_or_replayed_seq()
-            self._send(seq, 400, {"error": "duplicate_or_replayed_seq"})
+            self._reject_frame(seq, "duplicate_or_replayed_seq")
             return
         self._last_seq = seq
 
         status, response_body = self._dispatch(route, body, now)
         if metrics is not None:
             metrics.record_socket_message_processed()
+        rejection_reason = _http_server.describe_rejection(status, response_body)
+        if rejection_reason is not None:
+            # Runtime Audit Phase 2 -- one line naming the exact rejection
+            # cause, shared with server.py's own HTTP-side instrumentation
+            # (same describe_rejection(), same labels) so a request
+            # rejected for the same reason reads identically regardless of
+            # which transport carried it. Previously this transport logged
+            # framing anomalies (malformed/duplicate frames) but nothing
+            # at all for a message that framed correctly and was then
+            # rejected by validation -- this closes that gap.
+            logger.info(
+                "socket_transport: rejected route=%s status=%s reason=%s remote=%s",
+                route, status, rejection_reason, self.client_address,
+            )
         self._send(seq, status, response_body)
 
     def _dispatch(self, route: str, body: dict, now: datetime) -> Tuple[int, dict]:

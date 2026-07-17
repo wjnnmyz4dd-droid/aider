@@ -320,12 +320,19 @@ def _log_bridge_lifecycle(
     auth_result: str, route_matched: bool, handler_entered: bool, handler_completed: bool,
     response_status: int, elapsed_ms: float,
     exc_type: Optional[str] = None, exc_message: Optional[str] = None,
+    rejection_reason: Optional[str] = None,
 ) -> None:
     """Runtime Audit Phase 1 -- Bridge request-lifecycle diagnostics only.
     Metadata about the request/response cycle, never payload contents,
     never the API key, never account numbers -- see the field list this
     was scoped to. Does not participate in routing or validation; it
-    observes what already happened and changes nothing about it."""
+    observes what already happened and changes nothing about it.
+
+    Runtime Audit Phase 2 -- `rejection_reason` (from `describe_rejection`)
+    is the single, precise-cause line every non-2xx response now carries,
+    replacing the old "Authentication: FAIL" as the only clue an operator
+    had. Present only when the response was not 2xx -- a 2xx response has
+    nothing to explain."""
     print("================================================")
     print(f"[{timestamp.isoformat()}]")
     print("REQUEST RECEIVED")
@@ -336,6 +343,8 @@ def _log_bridge_lifecycle(
     print(f"Route: {'Matched' if route_matched else 'Not matched'}")
     print(f"Handler: {'Entered' if handler_entered else 'Not entered'}")
     print(f"Handler: {'Completed' if handler_completed else 'Not completed'}")
+    if rejection_reason is not None:
+        print(f"Rejection reason: {rejection_reason}")
     if exc_type is not None:
         print(f"Exception: {exc_type}")
         print(f"Message: {exc_message}")
@@ -350,6 +359,73 @@ def _auth_result_for_status(status: int) -> str:
     if status in (400, 401):
         return "FAIL"
     return "N/A"
+
+
+# Runtime Audit Phase 2 -- exact rejection-cause instrumentation. Maps every
+# stable ErrorCode (validation.py) and every other literal `error` string
+# this module's own handlers ever return onto one short, human-readable
+# label, so a rejected request's log line names the precise cause instead
+# of a generic PASS/FAIL -- shared by both transports (socket_transport.py
+# imports this rather than re-deriving its own copy) so a request rejected
+# for the same reason is described identically regardless of which
+# transport carried it.
+#
+# Deliberately NOT included here because no such rejection exists in this
+# codebase today (confirmed by reading every handler in this file and
+# validation.py, not assumed): there is no "account rejected" check --
+# `_handle_account` stores whatever AccountState is reported once auth and
+# magic_number pass, per its own docstring ("a read model only"); and there
+# is no per-message "transport mismatch" check -- which transport carried
+# a request is decided by which listener (HTTP vs socket) accepted the
+# underlying connection, not something a route handler validates. Adding
+# either would be inventing business logic no ADR authorizes, not fixing
+# an observability gap.
+_REJECTION_LABELS = {
+    "MISSING_API_KEY": "API key missing",
+    "INVALID_API_KEY": "API key mismatch",
+    "MAGIC_NUMBER_MISMATCH": "MagicNumber mismatch",
+    "SYMBOL_NOT_ALLOWED": "Symbol not in allowed list",
+    "INVALID_VOLUME": "Invalid volume",
+    "VOLUME_EXCEEDS_MAX": "Volume exceeds max lot size",
+    "INVALID_STOP_LOSS": "Invalid stop loss",
+    "INVALID_TAKE_PROFIT": "Invalid take profit",
+    "TIMESTAMP_IN_FUTURE": "Timestamp in future",
+    "STALE_TIMESTAMP": "Stale timestamp",
+    "MISSING_CORRELATION_ID": "Missing correlation id",
+    "DUPLICATE_CORRELATION_ID": "Duplicate correlation id",
+    "UNKNOWN_CORRELATION_ID": "Unknown correlation id",
+    "BRIDGE_NOT_READY": "Bridge not ready",
+    "EMERGENCY_STOP_ACTIVE": "Emergency stop active",
+    "MARKET_DATA_INGESTION_NOT_CONFIGURED": "Market data ingestion not configured",
+    "not found": "Unknown route",
+    "unknown_route": "Unknown route",
+    "invalid_json_body": "Malformed request body (not valid JSON)",
+    "json_object_required": "Request body is not a JSON object",
+    "invalid_json_frame": "Malformed socket frame (not valid JSON)",
+    "missing_or_invalid_seq": "Socket frame missing/invalid seq",
+    "missing_or_invalid_route": "Socket frame missing/invalid route",
+    "missing_or_invalid_body": "Socket frame missing/invalid body",
+    "duplicate_or_replayed_seq": "Duplicate or replayed socket seq",
+}
+
+
+def describe_rejection(status: int, response_body: dict) -> Optional[str]:
+    """Returns one short, human-readable line naming the exact rejection
+    cause for a non-2xx response, or None for a 2xx one. Every value this
+    function can see was already produced deterministically by a handler
+    in this file (or, for the socket transport, the identical shared
+    handlers via socket_transport.py) -- this only relabels an existing,
+    known reason; it never infers or guesses one."""
+    if 200 <= status < 300:
+        return None
+    error = response_body.get("error") if isinstance(response_body, dict) else None
+    if error is None:
+        return f"Rejected (HTTP {status}, no error detail)"
+    if error in _REJECTION_LABELS:
+        return _REJECTION_LABELS[error]
+    if isinstance(error, str) and error.startswith("invalid_payload:"):
+        return f"Invalid payload -- {error[len('invalid_payload:'):]}"
+    return str(error)
 
 
 def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[], datetime]):
@@ -372,9 +448,11 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
             parsed = urlparse(self.path)
             route_matched = parsed.path == "/bridge/commands/poll"
             if not route_matched:
-                self._send(404, {"error": "not found", "path": parsed.path})
+                body = {"error": "not found", "path": parsed.path}
+                self._send(404, body)
                 _log_bridge_lifecycle(ts, remote, "GET", parsed.path, "N/A", False, False, False,
-                                       404, (time.monotonic() - start) * 1000)
+                                       404, (time.monotonic() - start) * 1000,
+                                       rejection_reason=describe_rejection(404, body))
                 return
             query = parse_qs(parsed.query)
             provided_key = self.headers.get(API_KEY_HEADER)
@@ -390,7 +468,8 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
                 return
             self._send(status, body)
             _log_bridge_lifecycle(ts, remote, "GET", parsed.path, _auth_result_for_status(status),
-                                   True, True, True, status, (time.monotonic() - start) * 1000)
+                                   True, True, True, status, (time.monotonic() - start) * 1000,
+                                   rejection_reason=describe_rejection(status, body))
 
         def do_POST(self):
             start = time.monotonic()
@@ -399,23 +478,29 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
             parsed = urlparse(self.path)
             handler = _POST_ROUTES.get(parsed.path)
             if handler is None:
-                self._send(404, {"error": "not found", "path": parsed.path})
+                body = {"error": "not found", "path": parsed.path}
+                self._send(404, body)
                 _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", False, False, False,
-                                       404, (time.monotonic() - start) * 1000)
+                                       404, (time.monotonic() - start) * 1000,
+                                       rejection_reason=describe_rejection(404, body))
                 return
             length = int(self.headers.get("Content-Length", "0") or 0)
             raw = self.rfile.read(length) if length else b""
             try:
                 body = json.loads(raw.decode("utf-8") or "{}")
             except (ValueError, UnicodeDecodeError):
-                self._send(400, {"error": "invalid_json_body"})
+                error_body = {"error": "invalid_json_body"}
+                self._send(400, error_body)
                 _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, False, False,
-                                       400, (time.monotonic() - start) * 1000)
+                                       400, (time.monotonic() - start) * 1000,
+                                       rejection_reason=describe_rejection(400, error_body))
                 return
             if not isinstance(body, dict):
-                self._send(400, {"error": "json_object_required"})
+                error_body = {"error": "json_object_required"}
+                self._send(400, error_body)
                 _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, False, False,
-                                       400, (time.monotonic() - start) * 1000)
+                                       400, (time.monotonic() - start) * 1000,
+                                       rejection_reason=describe_rejection(400, error_body))
                 return
             provided_key = self.headers.get(API_KEY_HEADER)
             if provided_key is not None:
@@ -423,10 +508,12 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
             try:
                 status, response_body = handler(engine, config, body, ts)
             except (KeyError, ValueError, TypeError) as exc:
-                self._send(400, {"error": f"invalid_payload:{exc}"})
+                error_body = {"error": f"invalid_payload:{exc}"}
+                self._send(400, error_body)
                 _log_bridge_lifecycle(ts, remote, "POST", parsed.path, "N/A", True, True, False,
                                        400, (time.monotonic() - start) * 1000,
-                                       type(exc).__name__, str(exc))
+                                       type(exc).__name__, str(exc),
+                                       rejection_reason=describe_rejection(400, error_body))
                 return
             except Exception as exc:  # pragma: no cover - defensive
                 self._send(500, {"error": str(exc)})
@@ -436,7 +523,8 @@ def make_handler(engine: BridgeEngine, config: BridgeConfig, clock: Callable[[],
                 return
             self._send(status, response_body)
             _log_bridge_lifecycle(ts, remote, "POST", parsed.path, _auth_result_for_status(status),
-                                   True, True, True, status, (time.monotonic() - start) * 1000)
+                                   True, True, True, status, (time.monotonic() - start) * 1000,
+                                   rejection_reason=describe_rejection(status, response_body))
 
     return Handler
 
@@ -474,4 +562,4 @@ def registered_routes():
     return routes
 
 
-__all__ = ["make_handler", "serve", "registered_routes", "API_KEY_HEADER"]
+__all__ = ["make_handler", "serve", "registered_routes", "API_KEY_HEADER", "describe_rejection"]
