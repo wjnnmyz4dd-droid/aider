@@ -1,5 +1,13 @@
 # 08 — Final Phase 1 Sign-Off Template
 
+**Status: DEPRECATED.** Written for `mt5/PhantomBridgeEA.mq5` (ADR-023's
+original HTTP-only-transport EA), which no longer exists in this
+repository -- it was replaced by `mt5/TitanProtocolEA.mq5` (socket
+transport by default, with automatic HTTP fallback; ADR-034). See
+`deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md` for the current
+real-MT5 validation checklist. Kept for historical reference only.
+
+
 Fill this in only from actual results observed on a real MetaEditor +
 MT5 demo/live environment. Do not fill in any field from inference,
 memory of a prior audit, or expectation of what "should" happen — every

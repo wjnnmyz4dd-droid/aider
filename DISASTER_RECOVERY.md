@@ -1,5 +1,13 @@
 # Disaster Recovery
 
+**Status: DEPRECATED.** Written for the pre-Titan-Protocol
+`phantom_pipeline/deployment/` package's `backup_manager.py`/
+`logging_manager.py`, which the current Titan Protocol Windows release
+(`deployment_windows/`) does not use. See
+`deployment_windows/WINDOWS_OPERATOR_GUIDE.md`'s "Rollback" section for
+the current release's much simpler backup/removal story. Kept for
+historical reference only.
+
 Backup, restore, and incident-response reference for a production Phantom
 deployment, built on `phantom_pipeline/deployment/backup_manager.py` and
 `logging_manager.py`.

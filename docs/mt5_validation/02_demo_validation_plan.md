@@ -1,5 +1,13 @@
 # 02 — Demo Account Validation Plan
 
+**Status: DEPRECATED.** Written for `mt5/PhantomBridgeEA.mq5` (ADR-023's
+original HTTP-only-transport EA), which no longer exists in this
+repository -- it was replaced by `mt5/TitanProtocolEA.mq5` (socket
+transport by default, with automatic HTTP fallback; ADR-034). See
+`deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md` for the current
+real-MT5 validation checklist. Kept for historical reference only.
+
+
 **Every test in this file requires a real MetaTrader 5 demo account,
 a running instance of the Python bridge server (`phantom.bridge.server`),
 and the compiled `PhantomBridgeEA.ex5` attached to a chart. None of it

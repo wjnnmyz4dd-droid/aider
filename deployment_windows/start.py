@@ -8,8 +8,12 @@ PHANTOM_MT5_DEPLOYMENT_AUDIT.md's own Runtime Startup Order describe --
 it introduces zero new trading logic, zero new engine behavior, and no
 architectural redesign. What it starts:
 
-  1. The Bridge HTTP service (titan_protocol.bridge.server.serve) -- the real,
-     exported, public function the EA's WebRequest calls target.
+  1. The Bridge (titan_protocol.bridge.server.serve /
+     titan_protocol.bridge.socket_transport.serve_socket) -- socket
+     transport by default (ADR-034), with an automatic HTTP fallback
+     listener also bound whenever transport is socket (ADR-034
+     Amendment 3), so an EA that falls back to HTTP client-side is
+     still reachable.
   2. The five core trading engines (Evidence, Market Intelligence,
      Strategy, Risk, Compliance) and the Runtime Orchestrator wired to
      them, per titan_protocol/runtime/engine.py's real constructor signature.

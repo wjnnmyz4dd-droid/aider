@@ -1,5 +1,13 @@
 # 03 — Complete Execution Checklist (Operator Step-by-Step)
 
+**Status: DEPRECATED.** Written for `mt5/PhantomBridgeEA.mq5` (ADR-023's
+original HTTP-only-transport EA), which no longer exists in this
+repository -- it was replaced by `mt5/TitanProtocolEA.mq5` (socket
+transport by default, with automatic HTTP fallback; ADR-034). See
+`deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md` for the current
+real-MT5 validation checklist. Kept for historical reference only.
+
+
 Follow this in order. Each step references the detailed procedure it
 draws from. Do not skip ahead — later steps assume earlier ones passed.
 

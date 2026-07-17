@@ -1,5 +1,12 @@
 # Final Deployment Readiness Report
 
+**Status: HISTORICAL.** `DEPLOYMENT_PACKAGE/` was removed from this
+repository once the Python `deployment_windows/` installer superseded
+it. This report describes a now-removed directory's readiness at a past
+point in time; see `deployment_windows/WINDOWS_OPERATOR_GUIDE.md` and
+`INSTALLATION_REPORT_TEMPLATE.md` for the current release's readiness
+story.
+
 Generated after a full delete-and-rebuild of `DEPLOYMENT_PACKAGE/`
 against the current repository state. See `DEPLOYMENT_AUDIT.md` for the
 complete file listing and `DEPLOYMENT_MANIFEST.md` for the source→VPS

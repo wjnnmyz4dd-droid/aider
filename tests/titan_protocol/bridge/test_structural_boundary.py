@@ -101,7 +101,16 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
         phases), and this repo's established root-level `PHANTOM_*.md`
         phase-deliverable report convention (historical -- these files
         were never renamed; see the Titan Protocol rename's own report)
-        is touched. Skipped (not failed) outside a git checkout."""
+        is touched. A documentation-reconciliation phase (post-ADR-034
+        Amendment 3) legitimately touches a wider, explicitly-enumerated
+        set of docs -- marking obsolete pre-Titan-Protocol/pre-ADR-034
+        guides as deprecated, rewriting COPY_TO_VPS.md/VERIFY_DEPLOYMENT.md
+        for the current deployment_windows/ workflow, correcting stale
+        HTTP-only-transport/pre-Amendment-1 claims in
+        WINDOWS_OPERATOR_GUIDE.md/KNOWN_GAPS.md, and removing the
+        DEPLOYMENT_PACKAGE/ directory once every one of its live
+        references was gone -- no runtime/trading logic is touched by any
+        of it. Skipped (not failed) outside a git checkout."""
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
@@ -115,6 +124,19 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "deployment_windows/install_mt5_files.py",
             "deployment_windows/KNOWN_GAPS.md",
             "deployment_windows/config/titan_protocol_config.example.json",
+            # Documentation-reconciliation phase (post-ADR-034 Amendment 3):
+            # deprecation banners on obsolete pre-Titan-Protocol guides, full
+            # rewrites of the two VPS docs, staleness fixes in the current
+            # operator guide, and the DEPLOYMENT_PACKAGE/ removal it depends on.
+            "deployment_windows/WINDOWS_OPERATOR_GUIDE.md",
+            "docs/mt5_validation/",
+            "DEPLOYMENT_PACKAGE/",
+            "COPY_TO_VPS.md", "VERIFY_DEPLOYMENT.md",
+            "DEPLOYMENT_AUDIT.md", "DEPLOYMENT_MANIFEST.md",
+            "FINAL_DEPLOYMENT_READINESS_REPORT.md",
+            "DISASTER_RECOVERY.md", "KNOWLEDGE_DEPLOYMENT_GUIDE.md",
+            "LIVE_DEPLOYMENT_GUIDE.md", "OPERATOR_CHECKLIST.md",
+            "RESEARCH_DESK_GUIDE.md", "START_PHANTOM.md", "VPS_SETUP_GUIDE.md",
         )
 
         def is_allowed(path: str) -> bool:

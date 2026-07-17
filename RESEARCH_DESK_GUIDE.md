@@ -1,5 +1,12 @@
 # Phantom AI Research Desk — Usage Guide
 
+**Status: DEPRECATED.** Written for the pre-Titan-Protocol
+`phantom_pipeline/research_desk/` package. The current Titan Protocol
+Windows release (`deployment_windows/`) does not wire the Research Desk
+or Knowledge/RAG subsystems into its live runtime, so this guide does
+not describe anything reachable from a current deployment. Kept for
+historical reference only.
+
 How to wire `phantom_pipeline/research_desk/` (`ADR-021`) into a running
 deployment. Like `KNOWLEDGE_DEPLOYMENT_GUIDE.md`, this is read-only
 intelligence — it never affects trading behavior.

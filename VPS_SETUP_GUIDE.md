@@ -1,5 +1,11 @@
 # VPS Setup Guide
 
+**Status: DEPRECATED.** Written for the pre-Titan-Protocol
+`phantom_pipeline/` deployment, superseded by the Python
+`deployment_windows/` installer. See
+`deployment_windows/WINDOWS_OPERATOR_GUIDE.md` for current VPS/Windows
+deployment steps. Kept for historical reference only.
+
 Provisioning guide for the Windows VPS that runs Phantom in production
 (PAPER or LIVE). This is an operational document — it does not describe
 or authorize any change to trading logic.

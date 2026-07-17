@@ -1,5 +1,11 @@
 # Operator Checklist
 
+**Status: DEPRECATED.** Written for the pre-Titan-Protocol
+`phantom_pipeline/deployment/` package, superseded by the Python
+`deployment_windows/` installer. See
+`deployment_windows/WINDOWS_OPERATOR_GUIDE.md` for the current operator
+workflow. Kept for historical reference only.
+
 Print-and-check reference for a Phantom deployment operator. See
 `LIVE_DEPLOYMENT_GUIDE.md`/`VPS_SETUP_GUIDE.md`/`DISASTER_RECOVERY.md` for
 the full explanation behind each item.

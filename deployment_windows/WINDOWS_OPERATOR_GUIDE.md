@@ -1,14 +1,17 @@
 # Titan Protocol Windows Operator Guide
 
 Read `KNOWN_GAPS.md` first. This deployment layer brings up Titan Protocol's
-Bridge (execution channel) and Reliability monitoring honestly and
-completely — it does **not** run a live trading decision loop, because
-no market-data ingestion component is wired into any entry point yet,
-and it does **not** verify Trading Economics/Forex Factory news
-providers, because no such component exists yet either. Every step
-below is accurate to what actually happens; none of it overclaims
-readiness for live trading. `install.py`'s own `INSTALLATION_REPORT.md`
-states this plainly for your specific run (see
+Bridge (execution channel), a real live-cycle loop driving
+`RuntimeOrchestrator.run_cycle()` from EA-reported bars (via
+`titan_protocol/market_data_ingestion/`) and dual-provider news failover
+(via `titan_protocol/news_ingestion/`, Trading Economics primary / Forex
+Factory backup), and Reliability monitoring — honestly and completely.
+Status still reports **DEGRADED**, never HEALTHY, because persisted
+day-start/peak-balance tracking and a configured backup news feed are
+still open gaps (see `KNOWN_GAPS.md`), not because those components
+don't exist. Every step below is accurate to what actually happens;
+none of it overclaims readiness for live trading. `install.py`'s own
+`INSTALLATION_REPORT.md` states this plainly for your specific run (see
 `INSTALLATION_REPORT_TEMPLATE.md` for the shape of that report before
 you've run anything).
 
@@ -97,17 +100,23 @@ This is the master installer. It runs, in order:
    `python install_mt5_files.py` yourself afterward — installation
    still completes; this alone isn't a blocker.
 6. **Verify Bridge** — actually constructs the real `BridgeEngine` and
-   binds its HTTP server on your configured port, confirms it's
-   reachable over a real socket connection, then shuts it down.
+   binds it on your configured transport (socket by default; ADR-034),
+   confirms it's reachable over a real connection, then shuts it down.
+   When transport is socket, also binds and verifies an automatic HTTP
+   fallback listener (ADR-034 Amendment 3) — non-blocking, since the
+   primary transport check above already confirms the Bridge itself is
+   reachable.
 7. **Verify Runtime** — actually constructs all 5 core engines and the
    `RuntimeOrchestrator`.
 8. **Verify Reliability** — actually constructs the `ReliabilityEngine`
    and calls its health-evaluation method once.
-9. **Verify news providers** — reports honestly that Trading
-   Economics/Forex Factory verification is **not available**, because
-   no such component exists in this codebase (see `KNOWN_GAPS.md`
-   section 2). This is not a failure; it's an accurate statement of
-   what does and doesn't exist yet.
+9. **Verify news providers** — actually constructs a real
+   `NewsIngestionEngine` (Trading Economics primary, Forex Factory
+   automatic backup; ADR-033 Part 2). Reports informationally if
+   `forex_factory_base_url` is still empty in your config, since a
+   Trading Economics outage then fails closed immediately with no
+   functioning backup (see `KNOWN_GAPS.md` section 2) — not a failure,
+   an accurate statement of your current configuration.
 10. **Create desktop shortcuts** — Start, Stop, Restart, and Health
     Check, pointing at the right Python interpreter and script. Skipped
     (not a failure) on anything other than real Windows.
@@ -137,10 +146,16 @@ every step's real outcome, and prints next steps.
    `TitanProtocolEA.set` from `<your MT5 data folder>\MQL5\Presets\
    TitanProtocol\` — this loads the personalized `ApiKey`/`MagicNumber`
    `install.py` already filled in. Click **OK**.
-4. Enable **WebRequest** for your Bridge URL if you haven't already:
-   MT5 → **Tools → Options → Expert Advisors** → check **"Allow
-   WebRequest for listed URL"** → add `http://127.0.0.1:8787` (or your
-   configured host/port).
+4. Allow-list the Bridge address if you haven't already: MT5 →
+   **Tools → Options → Expert Advisors**. With the default Socket
+   transport (ADR-034), add your configured socket host/port (default
+   `127.0.0.1:8788`) to the allow-list MT5's `Socket*()` functions
+   consult. If you've rolled back to HTTP transport, check **"Allow
+   WebRequest for listed URL"** instead and add
+   `http://127.0.0.1:8787` (or your configured host/port) — this is
+   also the address an EA that auto-falls-back to HTTP needs
+   allow-listed (see `docs/adr/ADR-034-mt5-bridge-transport-hardening.md`
+   Amendment 3).
 
 ### 6. Verify it's working
 
@@ -149,21 +164,27 @@ python health_check.py
 ```
 
 Reports, among other things:
-- `bridge reachable` / `MT5 bridge connectivity (EA heartbeat)` — the
-  latter checks the Bridge's real signal that the EA has actually
-  heartbeated, not just that the port is open.
+- `active transport` and `bridge reachable (<transport>)` / `HTTP
+  fallback listener reachable` — which transport is configured, and
+  (when socket) whether the automatic HTTP fallback listener is also
+  up.
+- `MT5 bridge connectivity (EA heartbeat)` — checks the Bridge's real
+  signal that the EA has actually heartbeated, not just that the port
+  is open.
 - `queue health` — the real Bridge command-queue depth against your
   configured degraded/critical thresholds.
 - `API key environment variable present` and `news-feed trust state` —
   real configuration state, reported for visibility (informational,
   never blocking).
-- `market-data readiness` — always reports **NOT AVAILABLE** today (see
-  `KNOWN_GAPS.md` section 1); informational, never blocking.
+- `market-data readiness` and `news provider failover` — real status
+  from the live-cycle loop's market-data and news-provider engines;
+  both need a running, connected EA reporting real bars before they
+  read HEALTHY (see `KNOWN_GAPS.md`).
 
 Also check the "Experts" tab in MT5's Terminal window (bottom panel)
-for the EA's own log lines confirming successful `WebRequest` calls to
-`/bridge/heartbeat`. If you see WebRequest errors, re-check step 5's
-URL allow-list.
+for the EA's own log lines confirming successful Bridge calls. If you
+see repeated `SocketConnect`/`WebRequest` errors, re-check step 5's
+allow-list.
 
 ## Day-to-day operation
 

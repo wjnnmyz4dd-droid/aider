@@ -1,5 +1,11 @@
 # Live Deployment Guide
 
+**Status: DEPRECATED.** Written for the pre-Titan-Protocol
+`phantom_pipeline/deployment/` package, superseded by the Python
+`deployment_windows/` installer. See
+`deployment_windows/WINDOWS_OPERATOR_GUIDE.md` for the current deployment
+workflow. Kept for historical reference only.
+
 Operator guide for taking Phantom from a validated PAPER deployment to a
 live, funded MT5 account on a Windows VPS, using the Phase 5 deployment
 package (`phantom_pipeline/deployment/`).

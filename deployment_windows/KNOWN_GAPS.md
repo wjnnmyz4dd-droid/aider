@@ -1,65 +1,45 @@
 # Titan Protocol Windows Deployment — Known Gaps
 
 This deployment layer wires together every real, existing, public
-interface in `titan_protocol/` (Bridge, the 5 core trading engines, Runtime
-Orchestrator, Reliability) exactly as documented in
-`PHANTOM_MT5_DEPLOYMENT_AUDIT.md`. It adds **zero new trading logic,
-zero engine modifications, and zero architectural redesign.** Two real
-gaps exist in the underlying `titan_protocol/` codebase itself — this
-deployment layer cannot close them without inventing new business
-logic, which was explicitly out of scope for this mission. They are
-recorded here rather than papered over.
+interface in `titan_protocol/` (Bridge, the 5 core trading engines,
+Runtime Orchestrator, Reliability, market-data ingestion, news
+ingestion) exactly as documented in `PHANTOM_MT5_DEPLOYMENT_AUDIT.md`
+(historical) and the ADRs referenced below. It adds **zero new trading
+logic, zero engine modifications, and zero architectural redesign.**
+Both gaps originally recorded here are now CLOSED in code; one residual
+*configuration* limitation remains (section 2) and one residual
+*environmental* limitation applies to both (running status requires a
+real, connected MT5 EA — see section 1). Recorded here rather than
+papered over.
 
-## 1. No live market-data ingestion component is wired into a live entry point
+## 1. Live market-data ingestion — CLOSED, Amendment 1 (ADR-023)
 
-**What's missing:** `RuntimeOrchestrator.run_cycle()` /
-`run_cycle_for_pair()` require the caller to already have, for every
-pair, every cycle: OHLC bars, news events, current/average spread,
-portfolio state, trade history, and account state. `titan_protocol/
-market_data_ingestion/` (ADR-033 Part 1) now exists and normalizes raw
-bars/ticks down to the frozen `Bar` type, but nothing in this
-deployment layer's entry point (`start.py`) constructs or drives it —
-it is a tested, standalone package, not yet wired into a running
-process.
+**Closed by:** `start.py`'s `_live_cycle_loop()`, fed by
+`titan_protocol/market_data_ingestion/` (ADR-033 Part 1). The EA reports
+bars/ticks to the Bridge's `POST /bridge/market-data` endpoint
+(`titan_protocol/bridge/server.py`'s `_handle_market_data`); once
+`MarketDataIngestionEngine.is_ready(pair, timeframe, now)` says a pair's
+feed is warmed-up and fresh, `_live_cycle_loop()` pulls its real
+bars/spread via `get_bars()`/`latest_spread()` and calls
+`RuntimeOrchestrator.run_cycle()` with them — never with fabricated
+data. A pair with no data yet is simply skipped for that tick (see
+`state/health.json`'s `live_cycle` field and `health_check.py`'s
+"market-data readiness" check, which reports real
+warmup/fresh/accepted/rejected/gap/tick counts, not a static
+placeholder).
 
-**Evidence (traced, not assumed):**
-- `titan_protocol/bridge/server.py`'s entire HTTP protocol is
-  execution-only: `/bridge/heartbeat`, `/bridge/account`,
-  `/bridge/positions`, `/bridge/orders`, `/bridge/trade-transaction`,
-  `/bridge/error`, `/bridge/execution/report`,
-  `/bridge/commands/poll`. Zero endpoints exist for bars, candles,
-  OHLC, or market data of any kind.
-- `mt5/TitanProtocolEA.mq5`'s own header comment: *"This EA is a
-  transport + execution bridge ONLY: it never generates, scores, or
-  [fetches market data]."*
-- `start.py` constructs the Bridge, the 5 core engines, and the Runtime
-  Orchestrator, but never imports or constructs anything from
-  `titan_protocol/market_data_ingestion/` — grep `start.py` for
-  `market_data_ingestion` to confirm.
-- `health_check.py`'s "market-data readiness" check always reports
-  **NOT AVAILABLE** for the same reason -- it is not a probe that could
-  someday come back healthy on its own; there is no feed for it to
-  probe.
-
-**What this deployment layer does instead:** `start.py` starts
-the Bridge HTTP service (real, live, reachable by the EA) and
-constructs the Runtime Orchestrator and all 5 engines (proving the
-wiring compiles and the objects are valid), plus starts Reliability
-monitoring the process's own liveness. It does **not** call
-`run_cycle()` in a loop, and does not fabricate bars/news/spread data
-to make one up. `start.py` and `health_check.py` both report
-this honestly: status is always **DEGRADED**, never HEALTHY, and both
-print/expose `cycle_loop_active: false` with this exact reason.
-
-**To close this gap:** wire `titan_protocol/market_data_ingestion/`'s output
-(or a genuine MT5 feed such as `CopyRates`/`CopyTicks` pushed to the
-Bridge via a new endpoint) into a live trading-cycle loop that calls
-`RuntimeOrchestrator.run_cycle()`'s per-pair `inputs` on a real
-schedule. This deployment layer's `start.py` is not the place to add
-that loop without a mission scoped to it — this task's own mission
-("Replace the Windows batch deployment layer with a Python Deployment
-Manager... Do NOT modify any trading engine, runtime logic, bridge
-logic, or business rules") explicitly excludes it.
+**Residual limitation:** this closes the *code* gap, not the
+*environment* one — the feed only becomes ready once a real MT5
+terminal is running `TitanProtocolEA` and actually reporting bars.
+Without a real MT5 EA connected (e.g. in an environment with no MT5
+terminal at all), `is_ready()` never returns true for any pair, the
+live-cycle loop skips every tick, and overall status stays **DEGRADED**
+— this is the live-cycle loop correctly reporting "no real data yet,"
+not a bug. Persisted day-start/peak-balance/lock tracking across
+restarts (`titan_protocol.compliance_state_store`) is real and
+independent of this gap; it does not by itself flip status to HEALTHY
+either, since HEALTHY additionally requires a live, currently-connected
+EA.
 
 ## 2. Multi-provider news system (Trading Economics / Forex Factory) — CLOSED, Phase 3E
 

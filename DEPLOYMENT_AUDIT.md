@@ -1,5 +1,11 @@
 # Deployment Audit — `DEPLOYMENT_PACKAGE/`
 
+**Status: HISTORICAL.** `DEPLOYMENT_PACKAGE/` was removed from this
+repository once the Python `deployment_windows/` installer (with its own
+`RELEASE_MANIFEST.json`, generated fresh per build) fully superseded it.
+This document is a point-in-time record of that now-removed directory's
+contents and is not describing anything present in the repository today.
+
 Complete file listing of the rebuilt `DEPLOYMENT_PACKAGE/`, generated
 fresh from the current repository state (source commit recorded in
 `DEPLOYMENT_PACKAGE/VERSION.txt`). The previous package (14 packages,

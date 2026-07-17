@@ -1,5 +1,13 @@
 # 04 — Deployment Checklist
 
+**Status: DEPRECATED.** Written for `mt5/PhantomBridgeEA.mq5` (ADR-023's
+original HTTP-only-transport EA), which no longer exists in this
+repository -- it was replaced by `mt5/TitanProtocolEA.mq5` (socket
+transport by default, with automatic HTTP fallback; ADR-034). See
+`deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md` for the current
+real-MT5 validation checklist. Kept for historical reference only.
+
+
 Applies once `03_execution_checklist.md` has passed on a demo account
 and a decision has been made to move to a funded/prop-firm evaluation
 account. This checklist does not itself authorize that decision — it

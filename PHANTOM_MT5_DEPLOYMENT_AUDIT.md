@@ -1,5 +1,11 @@
 # Phantom MT5 Deployment Audit
 
+**Status: HISTORICAL.** Written before the Titan Protocol rename and
+before the Python `deployment_windows/` installer existed; its
+`DEPLOYMENT_PACKAGE/` references describe a directory since removed from
+this repository. See `deployment_windows/WINDOWS_OPERATOR_GUIDE.md` and
+`deployment_windows/KNOWN_GAPS.md` for the current deployment story.
+
 **Audit only. Nothing was deleted, moved, or modified.** This document
 classifies every file in the repository and traces real imports (not
 assumptions) to determine the minimum file set required to run Phantom

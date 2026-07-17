@@ -1,5 +1,12 @@
 # Knowledge & RAG Subsystem — Deployment Guide
 
+**Status: DEPRECATED.** Written for the pre-Titan-Protocol
+`phantom_pipeline/knowledge/` package. The current Titan Protocol Windows
+release (`deployment_windows/`) does not wire the Knowledge/RAG or
+Research Desk subsystems into its live runtime, so this guide does not
+describe anything reachable from a current deployment. Kept for
+historical reference only.
+
 How to wire `phantom_pipeline/knowledge/` (`ADR-020`) into a running
 deployment. This subsystem is read-only intelligence — it never affects
 trading behavior; nothing in this guide changes anything described in

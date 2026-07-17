@@ -1,5 +1,12 @@
 # Deployment Manifest — Source -> VPS Destination
 
+**Status: HISTORICAL.** `DEPLOYMENT_PACKAGE/` was removed from this
+repository once the Python `deployment_windows/` installer superseded
+it — the current release's file manifest is `RELEASE_MANIFEST.json`,
+generated fresh inside each built ZIP. This document maps a now-removed
+directory's contents and does not describe anything present in the
+repository today.
+
 Every file in `DEPLOYMENT_PACKAGE/`, mapped to its destination on the
 Windows VPS, assuming `C:\phantom\` as the install root (per
 `VPS_SETUP_GUIDE.md`). Adjust the drive/root prefix if your VPS uses a

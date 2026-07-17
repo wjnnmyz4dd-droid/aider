@@ -1,5 +1,12 @@
 # Start Phantom
 
+**Status: DEPRECATED.** This describes the pre-Titan-Protocol
+`phantom_pipeline/` + `scripts/start_phantom.py` deployment path, which
+the Python `deployment_windows/` installer (`install.py`/`start.py`)
+superseded. For the current, live deployment workflow, see
+`deployment_windows/WINDOWS_OPERATOR_GUIDE.md`. Kept for historical
+reference only — do not follow these instructions for a new deployment.
+
 How to start the deployed package via `scripts/start_phantom.py` — the
 current runtime's entry point ("EA" driver). See `LIVE_DEPLOYMENT_GUIDE.md`
 for the fuller operator background this file assumes.
