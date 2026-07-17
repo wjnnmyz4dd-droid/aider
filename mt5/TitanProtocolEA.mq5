@@ -568,6 +568,12 @@ void LogHttpDiagnostics(const string method, const string url, const int payload
 // terminal instance in one place, rather than just the bare error code.
 void PrintWebRequestWhitelistGuidance(const string method, const string endpoint, int lastErr)
   {
+   // Runtime Audit Phase 3 -- unconditional, greppable marker: WebRequest()
+   // itself never reached the Bridge (status<=0, GetLastError set) --
+   // this is the evidence a request was blocked before it left MT5/Windows,
+   // as distinct from the Bridge receiving and then rejecting it.
+   Print("TITAN_DIAG BLOCKED transport=HTTP method=", method, " endpoint=", endpoint,
+         " lastError=", lastErr, " time=", TimeToIsoString(TimeCurrent()));
    Print("TitanProtocolEA: ", method, " ", endpoint, " WebRequest failed, GetLastError=", lastErr,
          " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
    if(lastErr == 4014)
@@ -735,6 +741,8 @@ bool EnsureSocketConnected()
    g_socket = SocketCreate();
    if(g_socket == INVALID_HANDLE)
      {
+      Print("TITAN_DIAG BLOCKED transport=Socket operation=SocketCreate lastError=", GetLastError(),
+            " time=", TimeToIsoString(TimeCurrent()));
       Print("TitanProtocolEA: SocketCreate failed, GetLastError=", GetLastError());
       LogSocketDiagnostics("SocketCreate", false, GetLastError());
       g_reconnectAttempt++;
@@ -743,6 +751,9 @@ bool EnsureSocketConnected()
      }
    if(!SocketConnect(g_socket, SocketHost, (uint)SocketPort, SocketConnectTimeoutMs))
      {
+      Print("TITAN_DIAG BLOCKED transport=Socket operation=SocketConnect host=", SocketHost,
+            " port=", SocketPort, " lastError=", GetLastError(),
+            " time=", TimeToIsoString(TimeCurrent()));
       Print("TitanProtocolEA: SocketConnect to ", SocketHost, ":", SocketPort, " failed, GetLastError=", GetLastError(),
             " (4014 = address not in Tools>Options>Expert Advisors whitelist)");
       LogSocketDiagnostics("SocketConnect", false, GetLastError());
@@ -846,6 +857,8 @@ string SocketRequest(const string route, const string bodyJson, int &statusOut)
                                    (int)g_socketSeq, route, bodyJson);
    if(!SocketSendFrame(envelope))
      {
+      Print("TITAN_DIAG BLOCKED transport=Socket operation=SocketSend route=", route,
+            " lastError=", GetLastError(), " time=", TimeToIsoString(TimeCurrent()));
       Print("TitanProtocolEA: socket send failed for route ", route, ", GetLastError=", GetLastError());
       LogSocketDiagnostics("SocketSend:" + route, false, GetLastError());
       SocketClose(g_socket);
@@ -856,6 +869,16 @@ string SocketRequest(const string route, const string bodyJson, int &statusOut)
    string response = SocketReadFrame();
    if(response == "")
      {
+      // Runtime Audit Phase 3 -- distinct from BLOCKED: the frame was
+      // sent successfully (the bytes left this process), but no reply
+      // arrived before the read timeout/connection closed. This does NOT
+      // prove the request never reached the Bridge -- it may have been
+      // received and even processed, with only the response lost -- so
+      // it is deliberately not classified as either "blocked before the
+      // Bridge" or "Bridge responded"; a diagnostic reading this log
+      // must treat it as its own, honestly-labeled case.
+      Print("TITAN_DIAG NO_RESPONSE transport=Socket route=", route,
+            " time=", TimeToIsoString(TimeCurrent()));
       LogSocketDiagnostics("SocketRead:" + route, false, 0);
       return("");
      }
@@ -875,6 +898,16 @@ string SocketRequest(const string route, const string bodyJson, int &statusOut)
 // actually take effect once triggered.
 string BridgeRequest(const string route, const string httpEndpoint, const string bodyJson, int &statusOut)
   {
+   // Runtime Audit Phase 3 -- unconditional (not gated by DiagnosticMode),
+   // one line per logical request, printed before any transport-layer
+   // call is made. This is the sole evidence that "MT5 attempted this
+   // request at all" can ever rest on -- everything after this point
+   // (WebRequest/SocketSend succeeding, failing, or the Bridge's own
+   // response) is a separate, later fact; this line's mere presence or
+   // absence in the Experts log is what tells the two apart.
+   Print("TITAN_DIAG ATTEMPT route=", route, " transport=",
+         (g_effectiveTransport == TRANSPORT_SOCKET ? "Socket" : "HTTP"),
+         " time=", TimeToIsoString(TimeCurrent()));
    if(g_effectiveTransport == TRANSPORT_SOCKET)
       return(SocketRequest(route, bodyJson, statusOut));
    return(HttpPost(httpEndpoint, bodyJson, statusOut));
@@ -885,6 +918,11 @@ string BridgeRequest(const string route, const string httpEndpoint, const string
 // api_key/magic_number fields the HTTP query string carries today.
 string BridgePollCommands(int &statusOut)
   {
+   // Runtime Audit Phase 3 -- see BridgeRequest()'s own comment; same
+   // unconditional attempt marker, same reasoning.
+   Print("TITAN_DIAG ATTEMPT route=", _COMMANDS_POLL_ROUTE, " transport=",
+         (g_effectiveTransport == TRANSPORT_SOCKET ? "Socket" : "HTTP"),
+         " time=", TimeToIsoString(TimeCurrent()));
    if(g_effectiveTransport == TRANSPORT_SOCKET)
      {
       string body = StringFormat("{\"api_key\":\"%s\",\"magic_number\":%d}", JsonEscape(ApiKey), (int)MagicNumber);

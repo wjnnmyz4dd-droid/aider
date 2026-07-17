@@ -181,16 +181,23 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
                 self.server.metrics.record_socket_bytes_received(_LENGTH_PREFIX.size + len(payload))
             self._process_frame(payload)
 
-    def _reject_frame(self, seq: Optional[int], error: str) -> None:
+    def _reject_frame(self, seq: Optional[int], error: str, now: datetime) -> None:
         """Runtime Audit Phase 2 -- every frame-level rejection (before
         `_dispatch()` is ever reached) now logs the same one-line,
         precise-cause format `describe_rejection()`'s label table
         provides, instead of only incrementing a metrics counter with no
-        corresponding log line."""
+        corresponding log line.
+
+        Runtime Audit Phase 3 -- `now` (the Bridge's own explicit UTC
+        clock, `self.server.clock()`) is logged verbatim rather than
+        relying on the `logging` module's `%(asctime)s`, which renders in
+        this process's local time zone by default -- a diagnostic tool
+        correlating this line against the EA's own UTC-based timestamps
+        must not have to guess which zone a bare asctime is in."""
         reason = _http_server.describe_rejection(400, {"error": error})
         logger.warning(
-            "socket_transport: rejected (frame-level) status=400 reason=%s remote=%s",
-            reason, self.client_address,
+            "socket_transport: rejected (frame-level) status=400 reason=%s remote=%s now=%s",
+            reason, self.client_address, now.isoformat(),
         )
         self._send(seq, 400, {"error": error})
 
@@ -202,12 +209,12 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
         except (ValueError, UnicodeDecodeError):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._reject_frame(None, "invalid_json_frame")
+            self._reject_frame(None, "invalid_json_frame", now)
             return
         if not isinstance(envelope, dict):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._reject_frame(None, "json_object_required")
+            self._reject_frame(None, "json_object_required", now)
             return
 
         seq = envelope.get("seq")
@@ -216,22 +223,22 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
         if not isinstance(seq, int) or isinstance(seq, bool):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._reject_frame(None, "missing_or_invalid_seq")
+            self._reject_frame(None, "missing_or_invalid_seq", now)
             return
         if not isinstance(route, str):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._reject_frame(seq, "missing_or_invalid_route")
+            self._reject_frame(seq, "missing_or_invalid_route", now)
             return
         if not isinstance(body, dict):
             if metrics is not None:
                 metrics.record_socket_malformed_frame()
-            self._reject_frame(seq, "missing_or_invalid_body")
+            self._reject_frame(seq, "missing_or_invalid_body", now)
             return
         if self._last_seq is not None and seq <= self._last_seq:
             if metrics is not None:
                 metrics.record_socket_duplicate_or_replayed_seq()
-            self._reject_frame(seq, "duplicate_or_replayed_seq")
+            self._reject_frame(seq, "duplicate_or_replayed_seq", now)
             return
         self._last_seq = seq
 
@@ -249,8 +256,20 @@ class _BridgeSocketHandler(socketserver.BaseRequestHandler):
             # at all for a message that framed correctly and was then
             # rejected by validation -- this closes that gap.
             logger.info(
-                "socket_transport: rejected route=%s status=%s reason=%s remote=%s",
-                route, status, rejection_reason, self.client_address,
+                "socket_transport: rejected route=%s status=%s reason=%s remote=%s now=%s",
+                route, status, rejection_reason, self.client_address, now.isoformat(),
+            )
+        else:
+            # Runtime Audit Phase 3 -- a message that was received, framed
+            # correctly, and accepted previously left no trace at all on
+            # this transport (unlike server.py's do_POST/do_GET, which
+            # logs every response, success included). Without this, a
+            # deterministic "did the Bridge receive and accept this
+            # request" classification had evidence for every outcome
+            # except the one that matters most for a healthy path.
+            logger.info(
+                "socket_transport: accepted route=%s status=%s remote=%s now=%s",
+                route, status, self.client_address, now.isoformat(),
             )
         self._send(seq, status, response_body)
 

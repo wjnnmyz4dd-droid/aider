@@ -147,6 +147,17 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "deployment_windows/mt5_terminal.py",
             "deployment_windows/verify_mt5_instance.py",
             "tests/deployment_windows/test_mt5_terminal.py",
+            # Runtime Audit Phase 3 (deterministic communication-state
+            # classifier): describe_rejection()/rejection-reason logging
+            # was already in place (Phase 2); this phase adds the
+            # EA-side TITAN_DIAG attempt/blocked/no-response markers
+            # (mt5/TitanProtocolEA.mq5, already covered by "mt5/" above),
+            # a Bridge-side console-log persistence fix and a socket-side
+            # accepted-request log line (titan_protocol/bridge/, already
+            # covered by "titan_protocol/" above), and the new
+            # diagnose_communication.py classifier + its test coverage.
+            "deployment_windows/diagnose_communication.py",
+            "tests/deployment_windows/test_diagnose_communication.py",
         )
 
         def is_allowed(path: str) -> bool:

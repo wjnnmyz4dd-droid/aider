@@ -835,13 +835,30 @@ def launch_and_report(config_path: Path) -> int:
     python_exe = str(_venv_python()) if _venv_python().exists() else sys.executable
     creation_flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
     print("Starting Titan Protocol in a new background process...")
-    subprocess.Popen(
-        [python_exe, str(_HERE / "start.py"), "--foreground", "--config", str(config_path)],
-        cwd=str(_HERE), creationflags=creation_flags,
-        stdout=None if os.name == "nt" else subprocess.DEVNULL,
-        stderr=None if os.name == "nt" else subprocess.DEVNULL,
-        start_new_session=(os.name != "nt"),
-    )
+
+    # Runtime Audit Phase 3 -- the foreground process's own stdout (every
+    # print()-based line server.py's _log_bridge_lifecycle produces,
+    # including the exact rejection-reason evidence) was previously
+    # discarded outright: inherited into a new, unwatched console window
+    # on Windows (stdout=None + CREATE_NEW_CONSOLE), or sent to os.devnull
+    # on POSIX. Neither path left anything to inspect after the fact, which
+    # defeats the entire point of that evidence existing. Redirect to a
+    # persisted, append-mode file inside log_dir instead -- this changes
+    # only where the existing print() output is captured, nothing about
+    # what the Bridge accepts, rejects, or does.
+    settings.log_dir.mkdir(parents=True, exist_ok=True)
+    console_log_path = settings.log_dir / "bridge_console.log"
+    console_log = open(console_log_path, "a", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            [python_exe, str(_HERE / "start.py"), "--foreground", "--config", str(config_path)],
+            cwd=str(_HERE), creationflags=creation_flags,
+            stdout=console_log, stderr=console_log,
+            start_new_session=(os.name != "nt"),
+        )
+    finally:
+        console_log.close()  # the child received its own duplicated handle
+    print(f"Bridge/runtime console output is captured to {console_log_path}")
 
     print("Waiting for startup to settle...")
     time.sleep(5.0)
