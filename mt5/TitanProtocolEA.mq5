@@ -142,7 +142,16 @@ int OnInit()
    g_effectiveTransport = Transport;
    g_hasFallenBackToHttp = false;
    EventSetTimer(1);
+   // Deployment-bug fix (GetLastError=4014 despite the allow-list having
+   // been edited): TERMINAL_DATA_PATH/TERMINAL_PATH are real, documented
+   // MQL5 identifiers (TerminalInfoString) -- printing them here gives
+   // the operator (and deployment_windows/verify_mt5_instance.py, via
+   // this same Experts-log line) an unambiguous answer to "which
+   // terminal's Tools>Options>Expert Advisors do I need to check",
+   // instead of guessing when more than one MT5 installation exists.
    Print("TitanProtocolEA initialized. Symbol=", _Symbol, " Magic=", MagicNumber, " Transport=", EnumToString(Transport));
+   Print("TitanProtocolEA terminal instance -- TERMINAL_PATH=", TerminalInfoString(TERMINAL_PATH),
+         " TERMINAL_DATA_PATH=", TerminalInfoString(TERMINAL_DATA_PATH));
    return(INIT_SUCCEEDED);
   }
 
@@ -549,6 +558,27 @@ void LogHttpDiagnostics(const string method, const string url, const int payload
    Print("============================");
   }
 
+// Deployment-bug fix -- 4014 persists in the field even after an
+// operator adds the URL to Tools>Options>Expert Advisors, most often
+// because the allow-list change does not take effect for an
+// already-attached EA (and in many MT5 builds, not even for a
+// re-attached one) -- a FULL terminal restart is frequently required.
+// Printed once per HttpPost/HttpGet call (first attempt only, not on
+// every retry) so the Experts log states the fix and the exact
+// terminal instance in one place, rather than just the bare error code.
+void PrintWebRequestWhitelistGuidance(const string method, const string endpoint, int lastErr)
+  {
+   Print("TitanProtocolEA: ", method, " ", endpoint, " WebRequest failed, GetLastError=", lastErr,
+         " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
+   if(lastErr == 4014)
+     {
+      Print("TitanProtocolEA: if you have ALREADY added ", BackendUrl, " to that list and this "
+            "still fails, a re-attach is often not enough -- fully close and reopen MT5, then "
+            "reattach the EA. Confirm you are editing the allow-list in THIS terminal instance: "
+            "TERMINAL_DATA_PATH=", TerminalInfoString(TERMINAL_DATA_PATH));
+     }
+  }
+
 //+------------------------------------------------------------------+
 //| Bounded-retry HTTP helpers                                          |
 //+------------------------------------------------------------------+
@@ -590,8 +620,7 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
       // status <= 0: WebRequest itself failed (network/DNS/not-allowed) -- retry.
-      Print("TitanProtocolEA: POST ", endpoint, " WebRequest failed, GetLastError=", lastErr,
-            " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
+      PrintWebRequestWhitelistGuidance("POST", endpoint, lastErr);
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
      }
@@ -630,8 +659,7 @@ string HttpGet(const string endpoint, int &statusOut)
                CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
-      Print("TitanProtocolEA: GET ", endpoint, " WebRequest failed, GetLastError=", lastErr,
-            " (4014 = URL not in Tools>Options>Expert Advisors whitelist)");
+      PrintWebRequestWhitelistGuidance("GET", endpoint, lastErr);
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
      }

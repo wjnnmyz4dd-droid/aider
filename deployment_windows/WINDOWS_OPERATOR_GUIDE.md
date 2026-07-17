@@ -90,15 +90,20 @@ This is the master installer. It runs, in order:
    present, validates configuration, creates and verifies
    `logs\`/`state\`/`data\` are writable, compiles everything, and runs
    an import smoke test against all 8 live packages.
-5. **Copy + personalize MT5 EA files** — auto-detects your MT5 data
-   folder and copies `TitanProtocolEA.mq5`/`.set` into it, with the
+5. **Copy + personalize MT5 EA files** — resolves the data folder of
+   whichever MT5 terminal is **currently running** (via `mt5_terminal.py`
+   cross-referencing each data folder's `origin.txt` against the running
+   `terminal64.exe` process — not merely "a folder that looks like MT5
+   data"), and copies `TitanProtocolEA.mq5`/`.set` into it, with the
    `.set` file's `ApiKey`/`MagicNumber`/`BackendUrl`/`AllowedSymbolsCsv`
-   already filled in from your generated config — no manual typing
-   needed when you load it in MT5 later. If MT5 hasn't been opened yet
-   (no data folder to find), or more than one MT5 installation exists,
-   this step is skipped with instructions to run
-   `python install_mt5_files.py` yourself afterward — installation
-   still completes; this alone isn't a blocker.
+   already filled in from your generated config. If MT5 isn't running yet
+   (no terminal process to resolve), this step is skipped with
+   instructions to run `python install_mt5_files.py` yourself afterward
+   — installation still completes; this alone isn't a blocker. If MT5
+   **is** running, this step then requires you to confirm the Bridge
+   address is allow-listed in that exact terminal (see the whitelist
+   note below) before it completes — pass `--whitelist-confirmed` once
+   you have, or `--skip-whitelist-check` to bypass this gate entirely.
 6. **Verify Bridge** — actually constructs the real `BridgeEngine` and
    binds it on your configured transport (socket by default; ADR-034),
    confirms it's reachable over a real connection, then shuts it down.
@@ -156,6 +161,23 @@ every step's real outcome, and prints next steps.
    also the address an EA that auto-falls-back to HTTP needs
    allow-listed (see `docs/adr/ADR-034-mt5-bridge-transport-hardening.md`
    Amendment 3).
+
+   **If `GetLastError=4014` persists even after adding the address**:
+   the single most common cause is that the change does not take effect
+   for an already-attached EA, and in many MT5 builds not even for a
+   re-attached one — **fully close and reopen MT5** (not just re-attach
+   the EA), then reattach. Also confirm you edited the allow-list in the
+   *same* terminal instance `install_mt5_files.py` installed into — its
+   own output (and the EA's own `OnInit()` log line,
+   `TERMINAL_DATA_PATH=...`) states the exact data folder. MT5 stores
+   this allow-list in an undocumented, binary `Config\experts.ini` with
+   no supported way for any script to read or write it directly — this
+   is a genuine platform limitation, not something `install.py` failed
+   to automate. Run `python verify_mt5_instance.py` afterward for a
+   real, evidence-based check of everything that CAN be verified
+   (correct running instance, correct data folder, correct Experts
+   folder, Bridge reachability, and — the actual proof the allow-list is
+   working — a real recorded EA heartbeat).
 
 ### 6. Verify it's working
 

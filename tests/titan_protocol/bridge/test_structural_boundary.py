@@ -137,6 +137,16 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "DISASTER_RECOVERY.md", "KNOWLEDGE_DEPLOYMENT_GUIDE.md",
             "LIVE_DEPLOYMENT_GUIDE.md", "OPERATOR_CHECKLIST.md",
             "RESEARCH_DESK_GUIDE.md", "START_PHANTOM.md", "VPS_SETUP_GUIDE.md",
+            # Deployment-bug fix (GetLastError=4014 persisting despite the
+            # allow-list having been edited): mt5_terminal.py (new --
+            # origin.txt-based running-instance/data-folder detection),
+            # verify_mt5_instance.py (new -- the 6-point validation
+            # script), and their test coverage. install.py/
+            # install_mt5_files.py's own changes for this phase are
+            # already covered by the broader prefixes above.
+            "deployment_windows/mt5_terminal.py",
+            "deployment_windows/verify_mt5_instance.py",
+            "tests/deployment_windows/test_mt5_terminal.py",
         )
 
         def is_allowed(path: str) -> bool:

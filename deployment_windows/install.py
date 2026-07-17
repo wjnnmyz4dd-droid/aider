@@ -159,7 +159,7 @@ def step_run_deploy() -> StepReport:
     return StepReport("Run deploy.py (venv, dependencies, folders, compile, import smoke test)", _FAILED, "deploy.py reported a failure -- see output above")
 
 
-def step_install_mt5_files(settings) -> StepReport:
+def step_install_mt5_files(settings, whitelist_confirmed: bool = False) -> StepReport:
     secret_path = generated_secret_path(_CONFIG_PATH)
     api_key = secret_path.read_text(encoding="utf-8").strip() if secret_path.exists() else ""
     personalize = {
@@ -173,15 +173,36 @@ def step_install_mt5_files(settings) -> StepReport:
         "SocketHost": settings.bridge_host,
         "SocketPort": str(settings.bridge_config.socket_port),
     }
-    exit_code = install_mt5_module.run(explicit_mt5_dir="", non_interactive=True, personalize=personalize)
+    bridge_address = (
+        f"{settings.bridge_host}:{settings.bridge_config.socket_port}"
+        if settings.bridge_config.transport == "socket"
+        else f"http://{settings.bridge_host}:{settings.bridge_port}"
+    )
+    exit_code = install_mt5_module.run(
+        explicit_mt5_dir="", non_interactive=True, personalize=personalize,
+        bridge_address=bridge_address, whitelist_confirmed=whitelist_confirmed,
+    )
     if exit_code == 0:
-        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the auto-detected MT5 data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl/SocketHost/SocketPort")
+        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the correct, currently-running MT5 terminal's data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl/SocketHost/SocketPort, and whitelist confirmed by operator for that exact terminal instance")
     if exit_code == 3:
         return StepReport(
             "Copy + personalize MT5 EA files", _SKIPPED,
-            "MT5 data folder could not be resolved automatically (none found, or more "
-            "than one installed) -- open MT5 at least once, then run "
+            "MT5 data folder could not be resolved automatically (no running terminal detected, "
+            "none found on disk, or more than one installed) -- open MT5 at least once, then run "
             "`python install_mt5_files.py` yourself (see output above for details).",
+        )
+    if exit_code == 4:
+        return StepReport(
+            "Copy + personalize MT5 EA files", _FAILED,
+            "MT5 EA files were copied into the resolved terminal, but the WebRequest/Socket "
+            "allow-list was NOT confirmed for that terminal (deployment-bug fix, item 5 -- this "
+            "installer refuses to silently continue past an unconfirmed allow-list, since MT5 "
+            "stores it in an undocumented, binary experts.ini this installer cannot read or write "
+            "itself). Re-run install.py with --whitelist-confirmed once you have added the "
+            "address printed above to Tools>Options>Expert Advisors in that exact terminal AND "
+            "fully restarted it, or --skip-whitelist-check to proceed without this attestation "
+            "(not recommended -- see verify_mt5_instance.py for a real, live end-to-end check "
+            "you can run afterward instead).",
         )
     return StepReport("Copy + personalize MT5 EA files", _FAILED, f"install_mt5_files.py reported exit code {exit_code} -- see output above")
 
@@ -507,6 +528,17 @@ def _write_report(steps: list, overall_ok: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Titan Protocol master installer")
+    parser.add_argument(
+        "--whitelist-confirmed", action="store_true",
+        help="confirm you have added the Bridge address to Tools>Options>Expert Advisors in the "
+             "resolved MT5 terminal AND fully restarted it (deployment-bug fix, item 5) -- without "
+             "this, installation stops with a clear error rather than silently continuing",
+    )
+    parser.add_argument(
+        "--skip-whitelist-check", action="store_true",
+        help="bypass the whitelist-confirmation gate entirely (e.g. for a dry run with no real MT5 "
+             "terminal) -- logged loudly, not a silent bypass",
+    )
     args = parser.parse_args()
 
     print("=" * 72)
@@ -546,9 +578,20 @@ def main() -> int:
         _write_report(steps, overall_ok=False)
         return 1
 
-    # MT5 file install is non-blocking by design -- SKIPPED/FAILED here
-    # still leaves Bridge/Runtime/Reliability verification meaningful.
-    run_step(step_install_mt5_files(settings))
+    # MT5 file install *not finding a terminal at all* is non-blocking
+    # by design (SKIPPED here still leaves Bridge/Runtime/Reliability
+    # verification meaningful) -- but a real terminal WAS found, files
+    # WERE copied, and the operator has NOT confirmed the allow-list is
+    # this deployment-bug fix's new blocking case (item 5): installation
+    # stops with a clear error rather than silently continuing, unless
+    # --skip-whitelist-check was explicitly passed.
+    whitelist_confirmed = args.whitelist_confirmed or args.skip_whitelist_check
+    if args.skip_whitelist_check:
+        print("--skip-whitelist-check given: bypassing the allow-list confirmation gate. "
+              "GetLastError=4014 remains possible until you actually confirm it by hand.")
+    if run_step(step_install_mt5_files(settings, whitelist_confirmed=whitelist_confirmed)):
+        _write_report(steps, overall_ok=False)
+        return 1
 
     if run_step(step_verify_bridge(settings)):
         _write_report(steps, overall_ok=False)
