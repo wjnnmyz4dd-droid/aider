@@ -225,6 +225,15 @@ class BridgeEngine:
     def is_connection_healthy(self) -> bool:
         return self._health.is_ready()
 
+    def command_resolved(self, correlation_id: str) -> bool:
+        """Read-only passthrough to CommandQueue.is_executed() -- lets a
+        caller (Runtime's InFlightCommandRegistry) ask whether a
+        correlation_id it submitted has reached a terminal state,
+        without reaching into this engine's private `_queue`. Adds no
+        new decision logic here: the answer is exactly whatever
+        CommandQueue already tracks."""
+        return self._queue.is_executed(correlation_id)
+
     @property
     def latest_account_state(self) -> Optional[AccountState]:
         return self._latest_account_state

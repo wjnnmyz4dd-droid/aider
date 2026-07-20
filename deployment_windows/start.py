@@ -140,6 +140,7 @@ from titan_protocol.reliability.engine import ReliabilityEngine
 from titan_protocol.risk_engine.engine import RiskEngine
 from titan_protocol.risk_engine.models import Direction, OpenPosition, PortfolioState
 from titan_protocol.runtime.engine import RuntimeOrchestrator
+from titan_protocol.runtime.in_flight_commands import InFlightCommandRegistry
 from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
@@ -152,6 +153,15 @@ _RESTARTABLE_ENGINES = ("evidence_engine", "market_intelligence", "strategy_engi
 
 # Amendment 1 (ADR-023) -- live-cycle loop constants.
 _LIVE_CYCLE_INTERVAL_SECONDS = 15.0
+# In-flight command guard TTL -- how long RuntimeOrchestrator waits for a
+# submitted command's ExecutionReport before allowing a new submission
+# for the same pair regardless (bounds a lost/never-arriving report, same
+# reasoning as CommandQueue's own correlation_ttl_seconds, just scoped to
+# this decision-time gate rather than the relay's own memory). 20x the
+# live-cycle interval -- long enough to absorb normal execution latency
+# and a few missed heartbeat cycles, short enough to recover within
+# minutes rather than hours if a report is genuinely lost.
+_IN_FLIGHT_COMMAND_TTL_SECONDS = _LIVE_CYCLE_INTERVAL_SECONDS * 20
 # Runtime takes exactly one bar sequence per pair per cycle (Evidence
 # Engine's own single-timeframe design) -- M15 is this deployment's
 # primary timeframe, matching every trading profile's own granularity.
@@ -659,6 +669,21 @@ def _live_cycle_loop(
             },
         )
 
+        # Reconcile the in-flight command registry against the Bridge's
+        # own record of which correlation_ids have reached a terminal
+        # state (BridgeEngine.command_resolved() -> CommandQueue.is_executed()),
+        # dropping resolved or expired entries before this cycle's
+        # per-pair gate runs (RuntimeOrchestrator.run_cycle_for_pair()'s
+        # in_flight_commands.has_unresolved() check).
+        resolved_count = orchestrator.in_flight_commands.reconcile(now, bridge_engine.command_resolved)
+        logger.info(
+            "in_flight_registry_reconciled",
+            extra={
+                "in_flight_count": orchestrator.in_flight_commands.in_flight_count(),
+                "resolved_or_expired_this_cycle": resolved_count,
+            },
+        )
+
         for pair in profile.allowed_pairs:
             if news_engine is not None and not news_trusted:
                 skipped[pair] = "market_intelligence_not_ready"
@@ -833,10 +858,12 @@ def run_foreground(config_path: Path) -> int:
         return bridge_engine.submit_command(command, now)
 
     runtime_metrics = RuntimeMetrics()
+    in_flight_commands = InFlightCommandRegistry(ttl_seconds=_IN_FLIGHT_COMMAND_TTL_SECONDS)
     orchestrator = RuntimeOrchestrator(
         settings.runtime_config, evidence_engine, market_intelligence_engine,
         strategy_engine, risk_engine, compliance_engine, bridge_submit,
         metrics=runtime_metrics, timeframe=_PRIMARY_TIMEFRAME.name,
+        in_flight_commands=in_flight_commands,
     )
     logger.info("RuntimeOrchestrator constructed")
 

@@ -14,6 +14,7 @@ execution."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -32,6 +33,7 @@ from titan_protocol.strategy_engine.models import TradeIntent
 
 from .bridge_handoff import build_trade_command
 from .config import RUNTIME_VERSION, RuntimeConfig
+from .in_flight_commands import InFlightCommandRegistry
 from .logging_sink import log_runtime_audit_record
 from .metrics import RuntimeMetrics
 from .models import SCHEMA_VERSION, CycleOutcome, CycleReport, CycleStage, RuntimeAuditRecord, StageTiming, TradingProfile
@@ -65,6 +67,7 @@ def _engine_versions() -> Tuple[Tuple[str, str], ...]:
 
 
 _ENGINE_VERSIONS = _engine_versions()
+_logger = logging.getLogger("titan_protocol.runtime.engine")
 
 
 class RuntimeOrchestrator:
@@ -79,6 +82,7 @@ class RuntimeOrchestrator:
         bridge_submit: Optional[BridgeSubmit] = None,
         metrics: Optional[RuntimeMetrics] = None,
         timeframe: str = "",
+        in_flight_commands: Optional[InFlightCommandRegistry] = None,
     ) -> None:
         self.config = config
         self.evidence_engine = evidence_engine
@@ -93,6 +97,15 @@ class RuntimeOrchestrator:
         # market_data_ingestion.Timeframe enum -- Runtime does not import
         # that pipeline-stage package for a label alone.
         self.timeframe = timeframe
+        # Pair-level in-flight command guard (fixes: this orchestrator
+        # previously had no memory of a command it already submitted for
+        # a pair, so it would submit a fresh one every cycle with a new
+        # correlation_id for as long as compliance kept approving --
+        # see titan_protocol/runtime/in_flight_commands.py). Optional and
+        # defaulting to None so every existing caller/test that
+        # constructs this class without it is unaffected (old behavior:
+        # no gate at all).
+        self.in_flight_commands = in_flight_commands
 
     def run_cycle_for_pair(
         self,
@@ -248,11 +261,35 @@ class RuntimeOrchestrator:
             stage_start = time.monotonic()
             bridge_error: Optional[ErrorCode] = None
             command = None
-            if self.bridge_submit is not None and compliance.ready_for_bridge:
+            in_flight_blocked = (
+                self.in_flight_commands is not None and self.in_flight_commands.has_unresolved(pair, now)
+            )
+            if in_flight_blocked:
+                _logger.info(
+                    "in_flight_command_pending",
+                    extra={
+                        "pair": pair,
+                        "correlation_id": self.in_flight_commands.correlation_id_for(pair),
+                        "in_flight_count": self.in_flight_commands.in_flight_count(),
+                    },
+                )
+            elif self.bridge_submit is not None and compliance.ready_for_bridge:
                 command = build_trade_command(pair, strategy, risk, compliance, cycle_id, now, self.config)
                 bridge_error = self.bridge_submit(command, now)
+                if bridge_error is None and self.in_flight_commands is not None:
+                    self.in_flight_commands.record_submission(pair, command.correlation_id, now)
             stage_timings.append(StageTiming(CycleStage.BRIDGE, (time.monotonic() - stage_start) * 1000.0))
             bridge_correlation_id = command.correlation_id if command is not None else None
+
+            if in_flight_blocked:
+                return _record(
+                    CycleOutcome.IN_FLIGHT_COMMAND_PENDING, CycleStage.BRIDGE, evidence_id=evidence_id,
+                    selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
+                    risk_approved=True, compliance_decision=compliance.decision,
+                    reasons=("an unresolved command already exists for this pair",),
+                    evidence=evidence, market_intelligence=market_intelligence, risk=risk, compliance=compliance,
+                    bridge_correlation_id=self.in_flight_commands.correlation_id_for(pair),
+                )
 
             if bridge_error is not None:
                 return _record(

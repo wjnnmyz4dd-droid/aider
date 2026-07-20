@@ -109,10 +109,22 @@ documented rather than silently assumed correct:
   for this change (would touch `titan_protocol/bridge/`, deliberately not
   modified here).
 
-A separate, related gap -- `RuntimeOrchestrator` has no pair-level
-in-flight-command guard covering the window between command delivery and
-the next valid position report -- is **not** addressed by this change and
-remains open.
+## 4. Pair-level in-flight command guard — CLOSED
+
+A separate, related gap recorded above -- `RuntimeOrchestrator` had no
+pair-level in-flight-command guard covering the window between command
+delivery and the next valid position report, so it would submit a fresh
+`TradeCommand` (with a new `correlation_id`, since it's
+`f"{cycle_id}:{pair}"`) every cycle for as long as `compliance.
+ready_for_bridge` stayed true -- is now closed by
+`titan_protocol/runtime/in_flight_commands.py`'s `InFlightCommandRegistry`,
+wired into `RuntimeOrchestrator` (optional constructor parameter,
+`start.py`-constructed with a 300s TTL) and reconciled every live-cycle
+tick against `BridgeEngine.command_resolved()`. See the in-flight
+registry design note in the engineering log for the full root-cause
+trace and architecture comparison. Purely in-memory (a process restart
+loses in-flight tracking) -- no regression versus before, since
+`CommandQueue` itself is also in-memory-only.
 
 ## Everything else in this release is fully implemented
 

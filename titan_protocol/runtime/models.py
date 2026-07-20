@@ -111,6 +111,12 @@ class CycleOutcome(Enum):
     COMPLIANCE_REJECTED = "COMPLIANCE_REJECTED"
     BRIDGE_ERROR = "BRIDGE_ERROR"
     FAILED = "FAILED"
+    # In-flight command guard: compliance approved this pair, but a
+    # previously-submitted command for the same pair has not yet reached
+    # a terminal state or expired (InFlightCommandRegistry). Distinct
+    # from BRIDGE_ERROR (submission was attempted and rejected) -- here,
+    # submission is never attempted at all.
+    IN_FLIGHT_COMMAND_PENDING = "IN_FLIGHT_COMMAND_PENDING"
 
 
 @dataclass(frozen=True)

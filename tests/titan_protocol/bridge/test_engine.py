@@ -88,6 +88,34 @@ class TestHandlePositionsAndOrders(unittest.TestCase):
         self.assertEqual(metrics.pending_order_update_count, 1)
 
 
+class TestCommandResolved(unittest.TestCase):
+    """command_resolved() -- the one additive passthrough BridgeEngine
+    gained so Runtime's InFlightCommandRegistry can ask whether a
+    correlation_id it submitted has reached a terminal state, without
+    reaching into this engine's private CommandQueue directly."""
+
+    def test_unknown_correlation_id_is_not_resolved(self):
+        engine, _, _, _ = make_engine()
+        self.assertFalse(engine.command_resolved("never-submitted"))
+
+    def test_submitted_but_not_reported_is_not_resolved(self):
+        engine, queue, _, _ = make_engine()
+        queue.enqueue(make_command(correlation_id="corr-1"), is_ready=True)
+        self.assertFalse(engine.command_resolved("corr-1"))
+
+    def test_execution_report_marks_it_resolved(self):
+        engine, queue, _, _ = make_engine()
+        queue.enqueue(make_command(correlation_id="corr-1"), is_ready=True)
+        report = ExecutionReport(
+            schema_version=SCHEMA_VERSION, correlation_id="corr-1", magic_number=20260709,
+            success=True, broker_ticket="T1", filled_price=1.10, filled_volume=0.1,
+            error_code=None, reported_at=T0,
+        )
+        recorded = engine.handle_execution_report(report)
+        self.assertTrue(recorded)
+        self.assertTrue(engine.command_resolved("corr-1"))
+
+
 class TestSubmitAndPollCommands(unittest.TestCase):
     def test_submit_rejected_when_not_ready(self):
         engine, _, _, metrics = make_engine()
