@@ -111,7 +111,7 @@ def _handle_positions(engine: BridgeEngine, config: BridgeConfig, body: dict, no
         )
         for raw in body.get("positions", [])
     )
-    engine.handle_positions(positions)
+    engine.handle_positions(positions, now)
     return 200, {"status": "ok", "count": len(positions)}
 
 

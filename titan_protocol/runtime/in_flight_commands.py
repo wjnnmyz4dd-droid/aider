@@ -20,6 +20,26 @@ dependency on `titan_protocol.bridge` at all; it is handed a plain
 `is_resolved(correlation_id) -> bool` callable by its caller (see
 `reconcile()`), matching the same narrow-callable pattern
 `RuntimeOrchestrator.bridge_submit` already uses.
+
+Post-resolution position confirmation: an `ExecutionReport` can arrive
+(marking a command resolved) before the *next* `/bridge/positions`
+snapshot has caught up to reflect the position it just opened -- these
+are two independently-timed EA-reported events, not one atomic update.
+Dropping a pair's in-flight entry the instant its command resolves would
+therefore leave a real window where `PortfolioState` still shows the old
+(pre-execution) position count, and a second command for the same pair
+could slip through before the position is actually visible. This
+registry closes that window itself: `reconcile()` moves a resolved pair
+into a second, "awaiting position confirmation" state instead of
+clearing it outright, and only `confirm_position_report()` -- given the
+timestamp of the Bridge's most recent positions snapshot -- can release
+it, once that snapshot is provably no older than the resolution itself.
+This never infers position truth from the `ExecutionReport` (that
+remains solely `BridgeEngine.latest_positions`'s job); it only delays
+when a resolved pair is allowed to accept a new submission. TTL-expired
+entries (no `ExecutionReport` ever arrived) skip this extra wait -- by
+the time TTL has elapsed there is no fresher signal to wait for, and
+piling more delay onto an already-lost report would just compound it.
 """
 
 from __future__ import annotations
@@ -46,31 +66,43 @@ class InFlightCommandRegistry:
         self._ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._by_pair: Dict[str, _InFlightEntry] = {}
+        # Pair -> the moment reconcile() observed that pair's command
+        # resolve via a real ExecutionReport (never set on TTL expiry --
+        # see reconcile()). has_unresolved() keeps blocking a pair listed
+        # here until confirm_position_report() releases it.
+        self._awaiting_position_confirmation: Dict[str, datetime] = {}
 
     def has_unresolved(self, pair: str, now: datetime) -> bool:
         """True if `pair` has a command outstanding that has neither
-        resolved nor expired. Never mutates state -- expiry is only
-        ever applied by `reconcile()`, so a caller that checks this
-        without ever calling `reconcile()` still gets a correct answer
-        (the TTL check is evaluated fresh here too), but the entry
-        itself is only cleaned up by `reconcile()`."""
+        resolved nor expired, OR has resolved but is still awaiting a
+        post-resolution positions snapshot (see class docstring). Never
+        mutates state -- expiry is only ever applied by `reconcile()`, so
+        a caller that checks this without ever calling `reconcile()`
+        still gets a correct answer for the TTL case (evaluated fresh
+        here too), but entries are only cleaned up by `reconcile()`/
+        `confirm_position_report()`."""
         with self._lock:
             entry = self._by_pair.get(pair)
-            if entry is None:
-                return False
-            return (now - entry.submitted_at).total_seconds() <= self._ttl_seconds
+            if entry is not None and (now - entry.submitted_at).total_seconds() <= self._ttl_seconds:
+                return True
+            return pair in self._awaiting_position_confirmation
 
     def record_submission(self, pair: str, correlation_id: str, now: datetime) -> None:
         with self._lock:
             self._by_pair[pair] = _InFlightEntry(correlation_id=correlation_id, submitted_at=now)
+            self._awaiting_position_confirmation.pop(pair, None)
 
     def reconcile(self, now: datetime, is_resolved: Callable[[str], bool]) -> int:
         """Drops every tracked entry that has either resolved (per
         `is_resolved(correlation_id)`, a caller-supplied query -- this
         module never assumes how resolution is determined) or expired
-        past `ttl_seconds`. Returns the number of entries dropped this
-        call, for logging. Call once per live cycle, before checking
-        `has_unresolved()` for that cycle's pairs."""
+        past `ttl_seconds`. A resolved (not expired) pair moves into
+        `_awaiting_position_confirmation` rather than being fully
+        cleared -- `has_unresolved()` keeps blocking it until
+        `confirm_position_report()` releases it. Returns the number of
+        entries dropped this call, for logging. Call once per live
+        cycle, before checking `has_unresolved()` for that cycle's
+        pairs."""
         with self._lock:
             to_drop = []
             for pair, entry in self._by_pair.items():
@@ -79,9 +111,30 @@ class InFlightCommandRegistry:
                     continue
                 if is_resolved(entry.correlation_id):
                     to_drop.append(pair)
+                    self._awaiting_position_confirmation[pair] = now
             for pair in to_drop:
                 del self._by_pair[pair]
             return len(to_drop)
+
+    def confirm_position_report(self, positions_snapshot_at: Optional[datetime]) -> int:
+        """Call once per live cycle with `BridgeEngine.
+        last_positions_received_at`. Releases every pair in
+        `_awaiting_position_confirmation` whose resolution happened at or
+        before that snapshot -- proof `PortfolioState` this cycle
+        reflects the post-execution reality, not a stale pre-execution
+        one. A `None` snapshot (Bridge has never received a positions
+        report at all) confirms nothing -- fail-closed. Returns the
+        number of pairs newly released, for logging."""
+        if positions_snapshot_at is None:
+            return 0
+        with self._lock:
+            confirmed = [
+                pair for pair, resolved_at in self._awaiting_position_confirmation.items()
+                if resolved_at <= positions_snapshot_at
+            ]
+            for pair in confirmed:
+                del self._awaiting_position_confirmation[pair]
+            return len(confirmed)
 
     def correlation_id_for(self, pair: str) -> Optional[str]:
         with self._lock:
@@ -91,6 +144,14 @@ class InFlightCommandRegistry:
     def in_flight_count(self) -> int:
         with self._lock:
             return len(self._by_pair)
+
+    def awaiting_position_confirmation_count(self) -> int:
+        with self._lock:
+            return len(self._awaiting_position_confirmation)
+
+    def is_awaiting_position_confirmation(self, pair: str) -> bool:
+        with self._lock:
+            return pair in self._awaiting_position_confirmation
 
 
 __all__ = ["InFlightCommandRegistry"]

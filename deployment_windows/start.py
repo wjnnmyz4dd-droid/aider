@@ -658,13 +658,24 @@ def _live_cycle_loop(
             position_source_state = "invalid"
         else:
             position_source_state = "live"
-        latest_position_report_at = max((p.received_at for p in raw_positions), default=None)
+        # BridgeEngine.last_positions_received_at is set unconditionally by
+        # handle_positions(), including on an empty (all-closed) snapshot --
+        # unlike deriving a timestamp from the position reports themselves
+        # (max(p.received_at ...)), which has nothing to derive from when
+        # the list is empty. Used both for observability here and as the
+        # authoritative "was this snapshot taken after resolution" check in
+        # confirm_position_report() below.
+        latest_positions_snapshot_at = bridge_engine.last_positions_received_at
+        position_report_age_seconds = (
+            (now - latest_positions_snapshot_at).total_seconds() if latest_positions_snapshot_at else None
+        )
         logger.info(
             "portfolio_state_source",
             extra={
                 "bridge_position_count": len(raw_positions),
                 "mapped_position_count": len(open_positions),
-                "latest_position_report_at": latest_position_report_at.isoformat() if latest_position_report_at else None,
+                "latest_position_report_at": latest_positions_snapshot_at.isoformat() if latest_positions_snapshot_at else None,
+                "position_report_age_seconds": position_report_age_seconds,
                 "position_source_state": position_source_state,
             },
         )
@@ -672,15 +683,24 @@ def _live_cycle_loop(
         # Reconcile the in-flight command registry against the Bridge's
         # own record of which correlation_ids have reached a terminal
         # state (BridgeEngine.command_resolved() -> CommandQueue.is_executed()),
-        # dropping resolved or expired entries before this cycle's
-        # per-pair gate runs (RuntimeOrchestrator.run_cycle_for_pair()'s
-        # in_flight_commands.has_unresolved() check).
+        # dropping resolved-or-expired entries before this cycle's per-pair
+        # gate runs (RuntimeOrchestrator.run_cycle_for_pair()'s
+        # in_flight_commands.has_unresolved() check). A pair resolved via a
+        # real ExecutionReport (not a TTL expiry) moves into
+        # "awaiting position confirmation" rather than being fully cleared
+        # -- confirm_position_report() below is the only thing that can
+        # release it, closing the window where an ExecutionReport arrives
+        # before the position it opened is visible in the next
+        # /bridge/positions snapshot.
         resolved_count = orchestrator.in_flight_commands.reconcile(now, bridge_engine.command_resolved)
+        confirmed_count = orchestrator.in_flight_commands.confirm_position_report(latest_positions_snapshot_at)
         logger.info(
             "in_flight_registry_reconciled",
             extra={
                 "in_flight_count": orchestrator.in_flight_commands.in_flight_count(),
                 "resolved_or_expired_this_cycle": resolved_count,
+                "awaiting_position_confirmation_count": orchestrator.in_flight_commands.awaiting_position_confirmation_count(),
+                "confirmed_this_cycle": confirmed_count,
             },
         )
 

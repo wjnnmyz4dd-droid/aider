@@ -76,6 +76,8 @@
     "_maps_to": "titan_protocol.compliance_engine.config.ComplianceEngineConfig / ComplianceRuleProfile (by name -- must be a name registered in ComplianceEngineConfig.rule_profiles)",
     "_note": "\"example_generic_profile\" is the shipped illustrative default, not a real prop-firm's actual rules -- replace with your firm's real profile before going live.",
     "rule_profile_name": "example_generic_profile",
+    "_max_positions_per_pair_note": "Production invariant: Titan must never have more than one open position per pair. Defaults to 1 when absent -- raise only deliberately (e.g. an intentional scaling/pyramiding strategy), never as a workaround for a duplicate-command symptom. Must be an integer >= 1; startup fails closed otherwise.",
+    "max_positions_per_pair": 1,
     "_daily_reset_hour_utc_note": "The broker/prop-firm's authoritative trading-day boundary, as an hour-of-day in UTC (0-23). Persisted compliance state (daily starting balance, compliance lock) only resets when this boundary is crossed -- never merely because Runtime/Python/MT5/the VPS restarted. Not DST-aware -- update this value if your broker's own UTC offset changes with DST. See KNOWN_GAPS.md.",
     "daily_reset_hour_utc": 0
   },

@@ -70,9 +70,16 @@ class TestHandlePositionsAndOrders(unittest.TestCase):
                 take_profit=1.12, unrealized_pnl=5.0, magic_number=20260709, received_at=T0,
             ),
         )
-        engine.handle_positions(positions)
+        engine.handle_positions(positions, T0)
         self.assertEqual(engine.latest_positions[0].position_id, "p1")
         self.assertEqual(metrics.position_update_count, 1)
+        self.assertEqual(engine.last_positions_received_at, T0)
+
+    def test_last_positions_received_at_set_even_when_empty(self):
+        engine, _, _, _ = make_engine()
+        self.assertIsNone(engine.last_positions_received_at)
+        engine.handle_positions((), T0)
+        self.assertEqual(engine.last_positions_received_at, T0)
 
     def test_pending_orders_stored(self):
         engine, _, _, metrics = make_engine()

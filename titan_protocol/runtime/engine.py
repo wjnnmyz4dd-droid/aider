@@ -264,6 +264,9 @@ class RuntimeOrchestrator:
             in_flight_blocked = (
                 self.in_flight_commands is not None and self.in_flight_commands.has_unresolved(pair, now)
             )
+            awaiting_position_confirmation = (
+                self.in_flight_commands is not None and self.in_flight_commands.is_awaiting_position_confirmation(pair)
+            )
             if in_flight_blocked:
                 _logger.info(
                     "in_flight_command_pending",
@@ -271,6 +274,7 @@ class RuntimeOrchestrator:
                         "pair": pair,
                         "correlation_id": self.in_flight_commands.correlation_id_for(pair),
                         "in_flight_count": self.in_flight_commands.in_flight_count(),
+                        "awaiting_position_confirmation": awaiting_position_confirmation,
                     },
                 )
             elif self.bridge_submit is not None and compliance.ready_for_bridge:
@@ -282,11 +286,16 @@ class RuntimeOrchestrator:
             bridge_correlation_id = command.correlation_id if command is not None else None
 
             if in_flight_blocked:
+                reason = (
+                    "a command for this pair resolved but a fresh post-execution position report "
+                    "has not yet been observed" if awaiting_position_confirmation
+                    else "an unresolved command already exists for this pair"
+                )
                 return _record(
                     CycleOutcome.IN_FLIGHT_COMMAND_PENDING, CycleStage.BRIDGE, evidence_id=evidence_id,
                     selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
                     risk_approved=True, compliance_decision=compliance.decision,
-                    reasons=("an unresolved command already exists for this pair",),
+                    reasons=(reason,),
                     evidence=evidence, market_intelligence=market_intelligence, risk=risk, compliance=compliance,
                     bridge_correlation_id=self.in_flight_commands.correlation_id_for(pair),
                 )

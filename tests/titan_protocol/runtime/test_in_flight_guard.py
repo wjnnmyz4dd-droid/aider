@@ -97,6 +97,7 @@ class TestInFlightGuardPreventsDuplicateSubmission(unittest.TestCase):
         self.assertEqual(first.outcome, CycleOutcome.SUBMITTED)
 
         registry.reconcile(T0, is_resolved=lambda cid: True)
+        registry.confirm_position_report(T0 + timedelta(seconds=1))  # post-execution snapshot observed
         third = _run(orchestrator, T0 + timedelta(seconds=15), "cycle-3")
 
         self.assertEqual(third.outcome, CycleOutcome.SUBMITTED)
@@ -122,6 +123,26 @@ class TestInFlightGuardPreventsDuplicateSubmission(unittest.TestCase):
         registry.record_submission("EURUSD", "corr-1", T0)
         self.assertTrue(registry.has_unresolved("EURUSD", T0))
         self.assertFalse(registry.has_unresolved("GBPUSD", T0))
+
+    def test_resolved_command_does_not_reopen_pair_before_position_report_confirms(self):
+        """The traced ExecutionReport-vs-PositionReport race: reconcile()
+        observes the command resolved, but no positions snapshot dated at
+        or after that resolution has been confirmed yet -- the pair must
+        stay blocked (IN_FLIGHT_COMMAND_PENDING), not silently reopen."""
+        submit = make_stub_bridge_submit()
+        registry = InFlightCommandRegistry(ttl_seconds=300.0)
+        orchestrator = _build_orchestrator(submit, registry)
+
+        first = _run(orchestrator, T0, "cycle-1")
+        self.assertEqual(first.outcome, CycleOutcome.SUBMITTED)
+
+        registry.reconcile(T0, is_resolved=lambda cid: True)
+        # No confirm_position_report() call -- the "just resolved, but
+        # position not yet visible" window.
+        third = _run(orchestrator, T0 + timedelta(seconds=15), "cycle-3")
+
+        self.assertEqual(third.outcome, CycleOutcome.IN_FLIGHT_COMMAND_PENDING)
+        self.assertEqual(len(submit.calls), 1, "no second submission until a fresh position report confirms")
 
 
 if __name__ == "__main__":

@@ -97,19 +97,20 @@ documented rather than silently assumed correct:
 - **`OpenPosition.opened_at` uses the position's last `received_at`**
   (report time), not true open time -- drifts up to one report cycle
   (~5s). Not consumed by `check_position_limits()`.
-- **"Positively reported zero positions" vs. "never reported" is
+- **"Positively reported zero positions" vs. "never reported" was
   structurally ambiguous** from `BridgeEngine.latest_positions` alone (both
-  produce an empty tuple). Resolved via `BridgeEngine.is_connection_healthy`
-  (heartbeat freshness) as a proxy: healthy heartbeat -> trust
-  `latest_positions` as-is (including empty); no recent heartbeat -> every
-  pair is skipped this cycle (`no_recent_position_report`, fail-closed).
-  This proxy cannot detect `/bridge/positions` specifically failing while
-  heartbeat keeps succeeding. Closing this precisely would need a
-  dedicated `last_positions_received_at` on `BridgeEngine` -- out of scope
-  for this change (would touch `titan_protocol/bridge/`, deliberately not
-  modified here).
+  produce an empty tuple) -- **CLOSED**: `BridgeEngine.last_positions_received_at`
+  (set unconditionally by `handle_positions()`, including on an empty
+  snapshot) now gives a real, always-populated timestamp independent of
+  `latest_positions` itself. `is_connection_healthy` (heartbeat freshness)
+  remains the gate for whether to trust `latest_positions` for *this
+  cycle's* trading decisions at all (no recent heartbeat -> every pair is
+  skipped, `no_recent_position_report`, fail-closed) -- `
+  last_positions_received_at` is used specifically to confirm a
+  *just-resolved* command's pair before allowing a new submission (see
+  section 4).
 
-## 4. Pair-level in-flight command guard — CLOSED
+## 4. Pair-level in-flight command guard — CLOSED, including the resolution-vs-position race
 
 A separate, related gap recorded above -- `RuntimeOrchestrator` had no
 pair-level in-flight-command guard covering the window between command
@@ -125,6 +126,63 @@ registry design note in the engineering log for the full root-cause
 trace and architecture comparison. Purely in-memory (a process restart
 loses in-flight tracking) -- no regression versus before, since
 `CommandQueue` itself is also in-memory-only.
+
+**A regression traced after this closed:** an `ExecutionReport` can
+arrive (resolving a command) before the *next* `/bridge/positions`
+snapshot catches up to reflect the position it just opened -- these are
+two independently-timed EA-reported events, not one atomic update.
+Dropping a pair's in-flight entry the instant its command resolved left
+a real window where a second command could be submitted while
+`PortfolioState` still reflected the pre-execution count. **CLOSED**:
+`InFlightCommandRegistry` now moves a resolved (not TTL-expired) pair
+into a second, "awaiting position confirmation" state; only
+`confirm_position_report(BridgeEngine.last_positions_received_at)` --
+called every live cycle -- can release it, once that snapshot is
+provably no older than the resolution itself. TTL-expired entries skip
+this extra wait (no `ExecutionReport` ever arrived, so there is nothing
+fresher to wait for). This never infers position truth from the
+`ExecutionReport` itself -- that remains solely `BridgeEngine.
+latest_positions`'s job.
+
+## 5. `compliance.max_positions_per_pair` defaulted to 2, not 1 — CLOSED
+
+A second, independent regression found after section 4's fix shipped:
+`ComplianceRuleProfile.max_positions_per_pair` (the field
+`check_position_limits()` gates on) defaulted to **2**, not 1, in every
+production code path -- the dataclass default and `config_loader.py`'s
+unmodified `ComplianceEngineConfig()` both used it, and the JSON config
+had no override path for this field at all. With exactly one open
+position on a pair, `positions_for_pair(1) >= max_positions_per_pair(2)`
+was false, so compliance approved a second entry -- correctly, per how
+it was configured, but not per Titan's intended "never more than one
+open position per pair" invariant. The in-flight guard (section 4) was
+never the defect here; it worked exactly as designed for a genuinely new,
+compliance-approved signal.
+
+**CLOSED:**
+- `ComplianceRuleProfile.max_positions_per_pair` default corrected to `1`
+  (`titan_protocol/compliance_engine/models.py`).
+- Now configurable via `compliance.max_positions_per_pair` in
+  `titan_protocol_config.json` (`deployment_windows/config_loader.py`),
+  defaulting to `1` when absent, and validated at startup: must be an
+  integer >= 1, or startup fails closed with a `ConfigError` before any
+  engine or thread starts.
+- Dedicated logging: `compliance_engine.logging_sink.
+  log_position_limit_check()` fires every cycle with `pair`,
+  `positions_for_pair`, `max_positions_per_pair`, and whether it
+  rejected; `log_compliance_snapshot()` now also includes the
+  compliance decision's `reason`; the live-cycle loop's
+  `portfolio_state_source` log now includes `position_report_age_seconds`.
+
+Widening this value (e.g. `2`, for a deliberate scaling/pyramiding
+strategy) remains fully supported -- it is a configuration choice, not a
+hard-coded constant, and is proven by dedicated tests both at 1 and at 2.
+`titan_protocol/risk_engine/config.py`'s own, independently-configured
+`max_positions_per_pair` (used by `risk_engine/safety_limits.py` for its
+own, separate portfolio-heat-driven gate) was deliberately left
+untouched -- it is a different engine's different limit, not implicated
+in this trace, and compliance's own gate is sufficient on its own to
+enforce the invariant regardless of what value Risk Engine's copy holds.
 
 ## Everything else in this release is fully implemented
 

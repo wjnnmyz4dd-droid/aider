@@ -115,6 +115,24 @@ confirms it holds up against the real restart types in section 3.)
 | 7.3 | Disable both providers; confirm the live-cycle loop skips **every** pair with reason `market_intelligence_not_ready` (fail closed, never stale/fabricated events) | PENDING REAL MT5 |
 | 7.4 | Restore at least one provider; confirm the live-cycle loop resumes trading pairs on its own without a restart | PENDING REAL MT5 |
 
+## 8. One-open-position-per-pair invariant (traced duplicate-command regression)
+
+(Confirms the production invariant KNOWN_GAPS.md sections 4-5 describe:
+Titan must never have more than one open position per pair, and must
+never submit a second command while one is open -- both the compliance
+position-limit gate and the in-flight command guard's post-resolution
+position-confirmation window.)
+
+| # | Item | Status |
+|---|------|--------|
+| 8.1 | With `compliance.max_positions_per_pair` at its default (1, absent from config), a qualifying signal submits exactly one command for a pair | PENDING REAL MT5 |
+| 8.2 | While that command's position is open, a second qualifying signal for the *same* pair is rejected by compliance (`MAX_POSITIONS_PER_PAIR_EXCEEDED`) -- confirm via `RuntimeAuditRecord`/logs, never a guess | PENDING REAL MT5 |
+| 8.3 | Confirm `bridge_submit` is never called for the rejected signal in 8.2 (no second order reaches MT5) | PENDING REAL MT5 |
+| 8.4 | Set `compliance.max_positions_per_pair` to `2`, restart, and confirm a *second* position for the same pair is now allowed, and a *third* is rejected | PENDING REAL MT5 |
+| 8.5 | Set `compliance.max_positions_per_pair` to `0` in the config file and confirm `start.py` refuses to start (`ConfigError`, fails closed, prints the reason) rather than silently falling back to a permissive default | PENDING REAL MT5 |
+| 8.6 | Watch the logs across one full submit-to-execution cycle and confirm the `in_flight_registry_reconciled` / `in_flight_position_confirmation` / `portfolio_state_source` (with `position_report_age_seconds`) / `position_limit_check` lines all appear and their fields make sense relative to each other (in-flight count decrements only after both the ExecutionReport *and* a fresh position snapshot are observed, not the ExecutionReport alone) | PENDING REAL MT5 |
+| 8.7 | If achievable in the test environment, deliberately widen the gap between `HeartbeatIntervalSeconds` (EA-side positions cadence) and the Python live-cycle interval to stress the ExecutionReport-vs-PositionReport window, and confirm no duplicate command is submitted even under that stress | PENDING REAL MT5 |
+
 ---
 
 ## Failures found

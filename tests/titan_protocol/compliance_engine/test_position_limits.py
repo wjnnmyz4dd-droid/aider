@@ -65,5 +65,43 @@ class TestPositionLimits(unittest.TestCase):
         self.assertEqual(violation, ComplianceRuleId.MAX_SIMULTANEOUS_RISK_EXCEEDED)
 
 
+class TestMaxPositionsPerPairInvariant(unittest.TestCase):
+    """The production invariant: one open position per pair blocks a new
+    entry by default (max_positions_per_pair=1, the dataclass default
+    since the traced defect this closes), but an operator can explicitly
+    widen it -- proving the limit is genuinely enforced by configuration,
+    not hard-coded to exactly one position."""
+
+    def test_zero_existing_positions_allows_submission(self):
+        profile = ComplianceRuleProfile()  # default max_positions_per_pair=1
+        portfolio = make_portfolio_state([])
+        account = make_account_state()
+        violation, _ = check_position_limits("EURUSD", 1.0, portfolio, account, profile)
+        self.assertIsNone(violation)
+
+    def test_one_existing_position_rejects_another_when_limit_is_one(self):
+        profile = ComplianceRuleProfile()  # default max_positions_per_pair=1
+        portfolio = make_portfolio_state([make_open_position(pair="EURUSD")])
+        account = make_account_state()
+        violation, _ = check_position_limits("EURUSD", 1.0, portfolio, account, profile)
+        self.assertEqual(violation, ComplianceRuleId.MAX_POSITIONS_PER_PAIR_EXCEEDED)
+
+    def test_configured_limit_of_two_still_allows_a_second_position(self):
+        profile = ComplianceRuleProfile(max_positions_per_pair=2)
+        portfolio = make_portfolio_state([make_open_position(pair="EURUSD")])
+        account = make_account_state()
+        violation, _ = check_position_limits("EURUSD", 1.0, portfolio, account, profile)
+        self.assertIsNone(violation)
+
+    def test_two_existing_positions_reject_another_when_configured_limit_is_two(self):
+        profile = ComplianceRuleProfile(max_positions_per_pair=2)
+        portfolio = make_portfolio_state([
+            make_open_position(pair="EURUSD"), make_open_position(pair="EURUSD"),
+        ])
+        account = make_account_state()
+        violation, _ = check_position_limits("EURUSD", 1.0, portfolio, account, profile)
+        self.assertEqual(violation, ComplianceRuleId.MAX_POSITIONS_PER_PAIR_EXCEEDED)
+
+
 if __name__ == "__main__":
     unittest.main()

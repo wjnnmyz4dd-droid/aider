@@ -387,12 +387,30 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     )
 
     compliance_section = _section(data, "compliance")
-    compliance_config = ComplianceEngineConfig()
     compliance_rule_profile_name = _get_str(compliance_section, "rule_profile_name", "example_generic_profile")
+    # Production invariant: at most one open position per pair. Configurable
+    # (never hard-coded past this point) so an operator can deliberately
+    # widen it, but the field must be an integer >= 1 -- anything else fails
+    # closed at startup rather than silently falling back to a permissive
+    # default.
+    max_positions_per_pair = _get_int(compliance_section, "max_positions_per_pair", 1)
+    if max_positions_per_pair < 1:
+        raise ConfigError(
+            f"compliance.max_positions_per_pair must be an integer >= 1, got {max_positions_per_pair}"
+        )
+    _base_compliance_config = ComplianceEngineConfig()
     try:
-        compliance_config.profile_for(compliance_rule_profile_name)
+        _base_rule_profile = _base_compliance_config.profile_for(compliance_rule_profile_name)
     except ValueError as exc:
         raise ConfigError(f"compliance.rule_profile_name: {exc}") from exc
+    compliance_config = dataclasses.replace(
+        _base_compliance_config,
+        rule_profiles=tuple(
+            dataclasses.replace(p, max_positions_per_pair=max_positions_per_pair)
+            if p.name == compliance_rule_profile_name else p
+            for p in _base_compliance_config.rule_profiles
+        ),
+    )
     compliance_daily_reset_hour_utc = _get_int(compliance_section, "daily_reset_hour_utc", 0)
     if not (0 <= compliance_daily_reset_hour_utc <= 23):
         raise ConfigError(

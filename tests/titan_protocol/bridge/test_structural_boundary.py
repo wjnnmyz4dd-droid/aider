@@ -165,6 +165,16 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # start.py, already covered by the broader prefix above; this
             # adds only the new test file).
             "tests/deployment_windows/test_start_portfolio_state.py",
+            # max_positions_per_pair=1 production-invariant fix: made the
+            # compliance position-limit configurable from the JSON config
+            # (deployment_windows/config_loader.py, already covered by the
+            # broader prefix above) plus its own test file and a small,
+            # additive extension to the shared config-loader test fixture
+            # (a new compliance_overrides parameter, not a behavior change
+            # for any existing caller).
+            "tests/deployment_windows/test_config_loader.py",
+            "tests/deployment_windows/_fixtures.py",
+            "deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md",
         )
 
         def is_allowed(path: str) -> bool:

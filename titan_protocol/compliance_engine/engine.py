@@ -31,7 +31,7 @@ from .consecutive_loss import consecutive_loss_pause_triggered
 from .daily_loss import evaluate_daily_loss_protection
 from .drawdown import evaluate_drawdown_protection
 from .explainability import build_compliance_snapshot
-from .logging_sink import log_compliance_snapshot
+from .logging_sink import log_compliance_snapshot, log_position_limit_check
 from .market_conditions import check_max_spread, check_market_safety, check_news_blackout, check_peg_policy, check_session_restriction
 from .metrics import ComplianceEngineMetrics
 from .models import AccountState, ComplianceDecision, ComplianceRuleId, ComplianceSnapshot, LockRecommendation
@@ -130,6 +130,8 @@ class ComplianceEngine:
             return self._reject(pair, now, original_size_r, ComplianceRuleId.CONSECUTIVE_LOSS_PAUSE, "Consecutive loss threshold reached -- entries paused.", account_state, profile)
 
         position_violation, _exposure = check_position_limits(pair, original_size_r, portfolio_state, account_state, profile)
+        positions_for_pair = sum(1 for p in portfolio_state.open_positions if p.pair == pair)
+        log_position_limit_check(pair, positions_for_pair, profile.max_positions_per_pair, position_violation)
         if position_violation is not None:
             return self._reject(pair, now, original_size_r, position_violation, f"{position_violation.value}.", account_state, profile)
 

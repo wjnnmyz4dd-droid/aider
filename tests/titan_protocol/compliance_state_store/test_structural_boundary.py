@@ -113,6 +113,14 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         "titan_protocol/runtime/engine.py",
         "titan_protocol/runtime/models.py",
         "titan_protocol/runtime/in_flight_commands.py",
+        # max_positions_per_pair=1 production-invariant fix (also later,
+        # separately-authorized): default corrected from 2 to 1, made
+        # configurable, and given dedicated position-limit-check logging.
+        # Additive/config-only in both files -- no compliance_state_store
+        # behavior is touched.
+        "titan_protocol/compliance_engine/models.py",
+        "titan_protocol/compliance_engine/engine.py",
+        "titan_protocol/compliance_engine/logging_sink.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_change(self):

@@ -90,7 +90,11 @@ class ComplianceRuleProfile:
     profit_target_pct: Optional[float] = 10.0  # informational only, never blocks a trade
     min_trading_days: Optional[int] = 4  # informational only
     max_open_positions: int = 10
-    max_positions_per_pair: int = 2
+    #: Production invariant: at most one open position per pair. Widen
+    #: only via an explicit, deliberate `compliance.max_positions_per_pair`
+    #: config override (deployment_windows/config_loader.py) -- never by
+    #: editing this default, which every profile inherits unless overridden.
+    max_positions_per_pair: int = 1
     max_currency_exposure_r: float = 4.0
     max_symbol_exposure_r: float = 2.0
     max_pending_orders: int = 5

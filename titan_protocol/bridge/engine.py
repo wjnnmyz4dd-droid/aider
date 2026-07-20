@@ -72,6 +72,13 @@ class BridgeEngine:
         self._market_data_engine = market_data_engine
         self._latest_account_state: Optional[AccountState] = None
         self._latest_positions: Dict[str, PositionReport] = {}
+        # Set unconditionally by handle_positions() below, including when
+        # the reported list is empty (an all-closed snapshot) -- unlike
+        # PositionReport.received_at, which simply doesn't exist when
+        # there are zero positions to attach it to. Lets a caller (
+        # InFlightCommandRegistry.confirm_position_report()) know a fresh
+        # snapshot was taken, even one confirming zero positions.
+        self._last_positions_received_at: Optional[datetime] = None
         self._latest_pending_orders: Dict[str, PendingOrderReport] = {}
         # Phase 1.6: bounded, deterministic FIFO caps (oldest dropped
         # first once full) -- these two audit-only logs grew unbounded
@@ -95,8 +102,9 @@ class BridgeEngine:
         if self.metrics is not None:
             self.metrics.record_account_update()
 
-    def handle_positions(self, positions: Sequence[PositionReport]) -> None:
+    def handle_positions(self, positions: Sequence[PositionReport], now: datetime) -> None:
         self._latest_positions = {p.position_id: p for p in positions}
+        self._last_positions_received_at = now
         log_positions(len(positions), self.config.magic_number)
         if self.metrics is not None:
             self.metrics.record_position_update()
@@ -241,6 +249,17 @@ class BridgeEngine:
     @property
     def latest_positions(self) -> Tuple[PositionReport, ...]:
         return tuple(self._latest_positions.values())
+
+    @property
+    def last_positions_received_at(self) -> Optional[datetime]:
+        """When the most recent `/bridge/positions` snapshot was received
+        -- set even when that snapshot reported zero positions, unlike
+        deriving a timestamp from `latest_positions` itself (which has
+        nothing to derive from when the list is empty). Used to confirm a
+        just-resolved command's pair has a post-execution position
+        snapshot before allowing a new submission (see
+        InFlightCommandRegistry.confirm_position_report())."""
+        return self._last_positions_received_at
 
     @property
     def latest_pending_orders(self) -> Tuple[PendingOrderReport, ...]:
