@@ -84,7 +84,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 _HERE = Path(__file__).resolve().parent
 
@@ -113,6 +113,7 @@ from titan_protocol.bridge.command_queue import CommandQueue
 from titan_protocol.bridge.connection_health import ConnectionHealth
 from titan_protocol.bridge.engine import BridgeEngine
 from titan_protocol.bridge.metrics import BridgeMetrics
+from titan_protocol.bridge.models import PositionDirection, PositionReport
 from titan_protocol.bridge.server import serve as bridge_serve
 from titan_protocol.bridge.socket_transport import serve_socket as bridge_serve_socket
 from titan_protocol.compliance_engine.engine import ComplianceEngine
@@ -137,7 +138,7 @@ from titan_protocol.news_ingestion.providers.forex_factory import ForexFactoryPr
 from titan_protocol.news_ingestion.providers.trading_economics import TradingEconomicsProvider
 from titan_protocol.reliability.engine import ReliabilityEngine
 from titan_protocol.risk_engine.engine import RiskEngine
-from titan_protocol.risk_engine.models import PortfolioState
+from titan_protocol.risk_engine.models import Direction, OpenPosition, PortfolioState
 from titan_protocol.runtime.engine import RuntimeOrchestrator
 from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.validation import validate_profile
@@ -481,6 +482,71 @@ def _build_compliance_account_state(
     return account_state, persisted_state
 
 
+_POSITION_DIRECTION_TO_RISK_DIRECTION = {
+    PositionDirection.BUY: Direction.LONG,
+    PositionDirection.SELL: Direction.SHORT,
+}
+
+
+def _map_bridge_positions_to_open_positions(
+    positions: Sequence[PositionReport],
+) -> Tuple[OpenPosition, ...]:
+    """Adapter: BridgeEngine.latest_positions (EA-reported PositionReport,
+    the Bridge transport shape) -> risk_engine.models.OpenPosition (the
+    portfolio-state shape check_position_limits()/compute_exposure_summary()/
+    check_safety_limits()/compute_correlation_status() all consume). Never
+    passes a bridge model into the risk engine directly.
+
+    KNOWN GAP (see deployment_windows/KNOWN_GAPS.md): OpenPosition.size_r is
+    risk allocated to the position *in R* -- a risk-normalized unit.
+    Deriving it from PositionReport's volume/open_price/stop_loss would
+    require the account's risk-per-R at the time the position was opened,
+    which this wire message does not carry and no existing module in this
+    repo computes from raw volume alone. Fabricating a number here would
+    inject an unverified value into real capital-preservation gates
+    (compute_exposure_summary/check_safety_limits/compute_correlation_status)
+    -- worse than the previous gap (an always-empty PortfolioState), not
+    better. size_r is therefore fixed at 0.0: every mapped position still
+    *exists* for count-based gating (check_position_limits() reads only
+    `pair`) -- the defect this function closes -- while exposure/
+    correlation/safety-limit math remains exactly as blind to already-open
+    risk as it was before this change (no regression, not yet a full fix).
+
+    opened_at is similarly not carried by PositionReport (only
+    received_at -- when this position was last *reported*, not when it was
+    opened). Using received_at is a documented approximation.
+
+    Malformed records (missing symbol, unrecognized direction) are skipped
+    individually and logged -- never silently dropped without a trace,
+    never allowed to crash the whole batch."""
+    logger = logging.getLogger("titan_protocol.deploy.live_cycle")
+    mapped = []
+    for position in positions:
+        if not position.symbol:
+            logger.warning(
+                "skipping malformed position report -- missing symbol: position_id=%s",
+                position.position_id,
+            )
+            continue
+        direction = _POSITION_DIRECTION_TO_RISK_DIRECTION.get(position.direction)
+        if direction is None:
+            logger.warning(
+                "skipping malformed position report -- unrecognized direction: "
+                "position_id=%s symbol=%s direction=%r",
+                position.position_id, position.symbol, position.direction,
+            )
+            continue
+        mapped.append(
+            OpenPosition(
+                pair=position.symbol,
+                direction=direction,
+                size_r=0.0,  # KNOWN GAP -- see function docstring
+                opened_at=position.received_at,  # approximation -- see function docstring
+            )
+        )
+    return tuple(mapped)
+
+
 def _live_cycle_loop(
     orchestrator: RuntimeOrchestrator,
     market_data_engine: MarketDataIngestionEngine,
@@ -510,10 +576,14 @@ def _live_cycle_loop(
     passed to every ready pair; Market Intelligence Engine's own
     unmodified per-pair currency filtering (ADR-025 Hard Rule 2) narrows
     it down, exactly as `evaluate_batch()` already assumes.
-    `market_safety_inputs`/`portfolio_state`/`trade_history` use the
-    safe, honest defaults every existing test fixture already uses for
-    "no special condition" (live portfolio/account auto-conversion
-    remains a separate, undeclared scope -- see KNOWN_GAPS.md).
+    `market_safety_inputs`/`trade_history` use the safe, honest defaults
+    every existing test fixture already uses for "no special condition".
+    `portfolio_state` is built from `bridge_engine.latest_positions` via
+    `_map_bridge_positions_to_open_positions()` (fixes: this was previously
+    always `PortfolioState()`, empty, so `check_position_limits()` could
+    never see an already-open position -- see KNOWN_GAPS.md for the
+    residual `size_r`/`opened_at`/staleness approximations this adapter
+    still carries).
 
     Final Release Hardening adds restart-safe day-state: `persisted_state`
     is loaded/bootstrapped once (on the first cycle a real balance is
@@ -557,12 +627,47 @@ def _live_cycle_loop(
             )
             account_state = None
 
+        # Map real EA-reported positions into PortfolioState -- previously
+        # this was PortfolioState() (always empty, no arguments), so
+        # check_position_limits() could never see an already-open position
+        # and reject a duplicate entry for the same pair. is_connection_healthy
+        # (heartbeat-timeout-based) is the only freshness signal BridgeEngine
+        # currently exposes; positions are reported in the same OnTimer batch
+        # as heartbeat, so a healthy heartbeat is treated as grounds to trust
+        # latest_positions as current -- including trusting an empty result
+        # as "confirmed zero positions", not "never reported". This is a
+        # proxy, not a proof -- see KNOWN_GAPS.md for the residual ambiguity
+        # if /bridge/positions specifically fails while heartbeat keeps
+        # succeeding.
+        positions_are_live = bridge_engine.is_connection_healthy
+        raw_positions: Tuple[PositionReport, ...] = bridge_engine.latest_positions if positions_are_live else ()
+        open_positions = _map_bridge_positions_to_open_positions(raw_positions) if positions_are_live else ()
+        if not positions_are_live:
+            position_source_state = "absent"
+        elif len(open_positions) != len(raw_positions):
+            position_source_state = "invalid"
+        else:
+            position_source_state = "live"
+        latest_position_report_at = max((p.received_at for p in raw_positions), default=None)
+        logger.info(
+            "portfolio_state_source",
+            extra={
+                "bridge_position_count": len(raw_positions),
+                "mapped_position_count": len(open_positions),
+                "latest_position_report_at": latest_position_report_at.isoformat() if latest_position_report_at else None,
+                "position_source_state": position_source_state,
+            },
+        )
+
         for pair in profile.allowed_pairs:
             if news_engine is not None and not news_trusted:
                 skipped[pair] = "market_intelligence_not_ready"
                 continue
             if account_state is None:
                 skipped[pair] = "no_account_state_reported_yet"
+                continue
+            if not positions_are_live:
+                skipped[pair] = "no_recent_position_report"
                 continue
             if not market_data_engine.is_ready(pair, _PRIMARY_TIMEFRAME, now):
                 skipped[pair] = "market_data_not_ready"
@@ -575,7 +680,7 @@ def _live_cycle_loop(
             bars = market_data_engine.get_bars(pair, _PRIMARY_TIMEFRAME)
             inputs[pair] = (
                 bars, news_events, current_spread, average_spread, MarketSafetyInputs(),
-                PortfolioState(), None, account_state,
+                PortfolioState(open_positions=open_positions), None, account_state,
             )
 
         if inputs:

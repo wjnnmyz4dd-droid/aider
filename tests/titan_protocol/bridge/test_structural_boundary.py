@@ -158,6 +158,13 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # diagnose_communication.py classifier + its test coverage.
             "deployment_windows/diagnose_communication.py",
             "tests/deployment_windows/test_diagnose_communication.py",
+            # Portfolio-state adapter fix: PortfolioState() was always
+            # empty in the live-cycle loop, so check_position_limits()
+            # could never see an already-open position -- fixed by mapping
+            # BridgeEngine.latest_positions into it (deployment_windows/
+            # start.py, already covered by the broader prefix above; this
+            # adds only the new test file).
+            "tests/deployment_windows/test_start_portfolio_state.py",
         )
 
         def is_allowed(path: str) -> bool:

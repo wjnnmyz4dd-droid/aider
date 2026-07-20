@@ -64,6 +64,56 @@ configured, a Trading Economics outage fails closed immediately (no
 functioning backup), which is the same safe behavior as before this
 phase, not a regression.
 
+## 3. Live-cycle `PortfolioState` position adapter — CLOSED (count-based gating), residual approximations remain
+
+`deployment_windows/start.py`'s live-cycle loop previously constructed
+`PortfolioState()` with no arguments on every cycle, so
+`portfolio_state.open_positions` was permanently empty regardless of what
+the EA actually had open. `check_position_limits()` could therefore never
+reject a duplicate entry for an already-open pair, and
+`RuntimeOrchestrator` (which generates a fresh `TradeCommand`/
+`correlation_id` every cycle whenever `compliance.ready_for_bridge` is
+true, with no in-flight-command check of its own) would keep submitting
+new commands for the same signal indefinitely.
+
+Fixed: `_map_bridge_positions_to_open_positions()` now maps
+`BridgeEngine.latest_positions` (real, EA-reported `PositionReport`s) into
+`risk_engine.models.OpenPosition`, wired into the `PortfolioState` built
+each cycle. This closes the specific defect (`check_position_limits()`
+can now see and reject an already-open pair). Three approximations remain,
+documented rather than silently assumed correct:
+
+- **`OpenPosition.size_r` is fixed at `0.0`.** It represents risk
+  allocated to the position *in R*, which cannot be derived from
+  `PositionReport`'s volume/open_price/stop_loss without also knowing the
+  account's risk-per-R at the time the position was opened -- the EA does
+  not report this, and no existing module in this repo computes it from
+  raw volume alone. Fabricating a value would inject an unverified number
+  into `compute_exposure_summary()`/`check_safety_limits()`/
+  `compute_correlation_status()` -- real capital-preservation gates --
+  which would be worse than the previous gap, not better. Those three
+  functions therefore remain blind to already-open positions' risk
+  contribution; only count-based gating is fixed.
+- **`OpenPosition.opened_at` uses the position's last `received_at`**
+  (report time), not true open time -- drifts up to one report cycle
+  (~5s). Not consumed by `check_position_limits()`.
+- **"Positively reported zero positions" vs. "never reported" is
+  structurally ambiguous** from `BridgeEngine.latest_positions` alone (both
+  produce an empty tuple). Resolved via `BridgeEngine.is_connection_healthy`
+  (heartbeat freshness) as a proxy: healthy heartbeat -> trust
+  `latest_positions` as-is (including empty); no recent heartbeat -> every
+  pair is skipped this cycle (`no_recent_position_report`, fail-closed).
+  This proxy cannot detect `/bridge/positions` specifically failing while
+  heartbeat keeps succeeding. Closing this precisely would need a
+  dedicated `last_positions_received_at` on `BridgeEngine` -- out of scope
+  for this change (would touch `titan_protocol/bridge/`, deliberately not
+  modified here).
+
+A separate, related gap -- `RuntimeOrchestrator` has no pair-level
+in-flight-command guard covering the window between command delivery and
+the next valid position report -- is **not** addressed by this change and
+remains open.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access
