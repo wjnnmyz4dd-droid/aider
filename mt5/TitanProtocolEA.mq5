@@ -20,8 +20,9 @@
 //| above onto a persistent native MQL5 TCP socket (SocketCreate/     |
 //| SocketConnect family) instead of WebRequest()/HTTP -- the same    |
 //| message bodies, the same routes, the same fail-closed semantics,  |
-//| just a different substrate underneath. Transport=Http (default)  |
-//| is entirely unchanged and remains the rollback path.              |
+//| just a different substrate underneath. Transport=Http (Amendment |
+//| 4 default) is entirely unchanged and remains fully supported;     |
+//| Transport=Socket is a fully-supported explicit opt-in.             |
 //|                                                                    |
 //| Original implementation. No source code from any reference        |
 //| repository was copied -- see docs/research/ for the architectural |
@@ -55,7 +56,7 @@ enum ENUM_TRANSPORT_MODE
    TRANSPORT_SOCKET   // native MQL5 TCP socket -- ADR-034
   };
 
-input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_SOCKET;    // ADR-034 transport substrate (Amendment 2 default; Http = rollback path)
+input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_HTTP;      // ADR-034 transport substrate (Amendment 4 default; Socket = explicit opt-in)
 input string SocketHost                     = "127.0.0.1";         // Bridge socket host (Transport=Socket only)
 input int    SocketPort                     = 8788;                // Bridge socket port -- must match BridgeConfig.socket_port
 input int    SocketConnectTimeoutMs         = 5000;                // SocketConnect() timeout
@@ -85,12 +86,14 @@ int      g_reconnectAttempt     = 0;
 
 // ADR-034 Amendment 3 -- the `Transport` input is read-only at runtime
 // (MQL5 inputs cannot be reassigned), so an automatic fallback needs its
-// own runtime-mutable variable. Starts equal to `Transport`; once
-// SocketFailoverAfterAttempts consecutive reconnect attempts fail, this
-// (and only this) flips to TRANSPORT_HTTP for the remainder of the run.
-// Every BridgeRequest()/BridgePollCommands() call consults this, never
-// the raw `Transport` input directly.
-ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_SOCKET;
+// own runtime-mutable variable. Starts equal to `Transport` (set for
+// real in OnInit() -- this initializer only needs to be a valid enum
+// value before OnInit() runs); once SocketFailoverAfterAttempts
+// consecutive reconnect attempts fail, this (and only this) flips to
+// TRANSPORT_HTTP for the remainder of the run. Every
+// BridgeRequest()/BridgePollCommands() call consults this, never the
+// raw `Transport` input directly.
+ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_HTTP;
 bool                g_hasFallenBackToHttp = false;
 
 // Amendment 1 (ADR-023) -- market-data reporting state.
@@ -585,6 +588,50 @@ void PrintWebRequestWhitelistGuidance(const string method, const string endpoint
      }
   }
 
+// Runtime Audit Phase 4 -- WebRequest() returning a positive value is
+// NOT proof of a real HTTP response: this Bridge only ever returns
+// 100-599 (in practice 200/400/401/404/500 -- server.py's own response
+// table), so a positive value outside that range (e.g. 1001) is a
+// WinINet/transport-layer pseudo-status, never a genuine reply. Treating
+// it as "HTTP <n>, rejected" (the pre-existing bug) mislabels a
+// transport failure as a Bridge decision, and skips this exact
+// TITAN_DIAG marker -- the one diagnose_communication.py depends on to
+// tell "blocked before the Bridge" apart from "the Bridge responded".
+// Deliberately emits NO_RESPONSE, not BLOCKED: unlike the status<=0 case
+// above (WebRequest() itself refused outright, near-instantly, usually
+// GetLastError=4014), a positive pseudo-status can follow several
+// seconds of elapsed time -- consistent with a request that may have
+// left the process, with no way for this evidence alone to prove
+// whether the Bridge ever received it. Never call this "HTTP <n>" or
+// "rejected" in any printed line -- that wording is reserved for a
+// genuine, in-range status from the Bridge itself.
+void PrintHttpTransportPseudoStatusFailure(const string method, const string endpoint,
+                                            int webRequestReturn, int lastErr, uint elapsedMs)
+  {
+   Print("TITAN_DIAG NO_RESPONSE transport=HTTP method=", method, " endpoint=", endpoint,
+         " pseudoStatus=", webRequestReturn, " lastError=", lastErr, " elapsedMs=", elapsedMs,
+         " time=", TimeToIsoString(TimeCurrent()));
+   Print("TitanProtocolEA: ", method, " ", endpoint, " -- transport failure: WebRequest() returned ",
+         webRequestReturn, ", which is not a valid HTTP status (100-599). GetLastError=", lastErr,
+         ", elapsed=", elapsedMs, "ms. Treating this as a transport-layer failure, not a response "
+         "from the Bridge.");
+   if(lastErr == 4014)
+     {
+      Print("TitanProtocolEA: if you have ALREADY added ", BackendUrl, " to Tools>Options>Expert "
+            "Advisors and this still fails, a re-attach is often not enough -- fully close and "
+            "reopen MT5, then reattach the EA. Confirm you are editing the allow-list in THIS "
+            "terminal instance: TERMINAL_DATA_PATH=", TerminalInfoString(TERMINAL_DATA_PATH));
+     }
+  }
+
+// Runtime Audit Phase 4 -- the single, shared definition of "this is a
+// real HTTP response" (100-599 inclusive), so HttpPost/HttpGet can never
+// drift from each other on where the boundary sits.
+bool IsValidHttpStatus(int status)
+  {
+   return(status >= 100 && status < 600);
+  }
+
 //+------------------------------------------------------------------+
 //| Bounded-retry HTTP helpers                                          |
 //+------------------------------------------------------------------+
@@ -603,12 +650,13 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
    for(int attempt = 0; attempt < MaxRetries; attempt++)
      {
       ResetLastError();
-      uint startTick = DiagnosticMode ? GetTickCount() : 0;
+      uint startTick = GetTickCount();
       int status = WebRequest("POST", fullUrl, headers, 5000, postData, result, resultHeaders);
       int lastErr = GetLastError();
+      uint elapsedMs = GetTickCount() - startTick;
       if(DiagnosticMode)
          LogHttpDiagnostics("POST", fullUrl, ArraySize(postData), headers, StringLen(ApiKey) > 0,
-                             status, lastErr, GetTickCount() - startTick, resultHeaders,
+                             status, lastErr, elapsedMs, resultHeaders,
                              CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
       if(status >= 200 && status < 300)
         {
@@ -616,7 +664,7 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
          g_lastSuccessfulContact = TimeCurrent();
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
-      if(status > 0)
+      if(IsValidHttpStatus(status))
         {
          // A real HTTP response, just not success -- do not treat as a
          // dead link, but do not retry a validation rejection either.
@@ -625,8 +673,17 @@ string HttpPost(const string endpoint, const string jsonBody, int &statusOut)
                CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
-      // status <= 0: WebRequest itself failed (network/DNS/not-allowed) -- retry.
-      PrintWebRequestWhitelistGuidance("POST", endpoint, lastErr);
+      if(status <= 0)
+        {
+         // WebRequest itself failed outright (network/DNS/not-allowed) -- retry.
+         PrintWebRequestWhitelistGuidance("POST", endpoint, lastErr);
+        }
+      else
+        {
+         // Positive but outside 100-599: a WinINet/transport-layer
+         // pseudo-status (e.g. 1001), never a genuine HTTP response.
+         PrintHttpTransportPseudoStatusFailure("POST", endpoint, status, lastErr, elapsedMs);
+        }
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
      }
@@ -645,12 +702,13 @@ string HttpGet(const string endpoint, int &statusOut)
    for(int attempt = 0; attempt < MaxRetries; attempt++)
      {
       ResetLastError();
-      uint startTick = DiagnosticMode ? GetTickCount() : 0;
+      uint startTick = GetTickCount();
       int status = WebRequest("GET", fullUrl, headers, 5000, postData, result, resultHeaders);
       int lastErr = GetLastError();
+      uint elapsedMs = GetTickCount() - startTick;
       if(DiagnosticMode)
          LogHttpDiagnostics("GET", fullUrl, ArraySize(postData), headers, StringLen(ApiKey) > 0,
-                             status, lastErr, GetTickCount() - startTick, resultHeaders,
+                             status, lastErr, elapsedMs, resultHeaders,
                              CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
       if(status >= 200 && status < 300)
         {
@@ -658,14 +716,21 @@ string HttpGet(const string endpoint, int &statusOut)
          g_lastSuccessfulContact = TimeCurrent();
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
-      if(status > 0)
+      if(IsValidHttpStatus(status))
         {
          statusOut = status;
          Print("TitanProtocolEA: GET ", endpoint, " rejected, HTTP ", status, ": ",
                CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
          return(CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8));
         }
-      PrintWebRequestWhitelistGuidance("GET", endpoint, lastErr);
+      if(status <= 0)
+        {
+         PrintWebRequestWhitelistGuidance("GET", endpoint, lastErr);
+        }
+      else
+        {
+         PrintHttpTransportPseudoStatusFailure("GET", endpoint, status, lastErr, elapsedMs);
+        }
       if(attempt + 1 < MaxRetries)
          Sleep(RetryDelayMs);
      }

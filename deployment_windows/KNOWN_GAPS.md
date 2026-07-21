@@ -214,6 +214,52 @@ update_decisions()` instead of being discarded). Every field is read
 from an object this process already holds a reference to -- no new
 computation, only surfacing what already existed.
 
+## 7. Transport default flip (socket → http) + EA HTTP-status classification fix — CLOSED
+
+A live deployment's MT5 Experts log showed every `/bridge/heartbeat`,
+`/bridge/account`, `/bridge/positions` request failing identically:
+`WebRequest()` returning `1001`, `GetLastError()` `5203`, ~7000ms
+elapsed, logged by the EA as `"rejected, HTTP 1001"`. A forensic trace
+(read-only, no code changed until this fix) found two real, separate
+defects:
+
+**Defect A — invalid HTTP-status classification.** `HttpPost()`/
+`HttpGet()` (`mt5/TitanProtocolEA.mq5`) treated any `WebRequest()`
+return `> 0` as "a real HTTP response, just not success." `1001` is
+outside the valid HTTP status range (100-599) and is not something this
+Bridge could ever have sent (`server.py` only ever returns
+200/400/401/404/500). This misclassification also skipped
+`PrintWebRequestWhitelistGuidance()` (only called from the `status <= 0`
+branch), so the `TITAN_DIAG BLOCKED` marker `diagnose_communication.py`
+depends on for confidently telling "blocked before the Bridge" apart
+from "the Bridge responded" was never emitted for this exact signature.
+
+**CLOSED:** `HttpPost()`/`HttpGet()` now classify strictly: 100-599 is a
+genuine HTTP response (unchanged), `<= 0` is a `WebRequest()`-layer
+failure (unchanged, still `TITAN_DIAG BLOCKED`), and a positive value
+outside 100-599 is now its own explicit, honestly-labeled
+`PrintHttpTransportPseudoStatusFailure()` branch, emitting `TITAN_DIAG
+NO_RESPONSE` (never worded "HTTP `<n>`" or "rejected"/"Bridge rejected").
+`deployment_windows/diagnose_communication.py` now recognizes this exact
+marker (`pseudoStatus=` field) and classifies it directly and
+confidently as state 2, instead of falling through to its previously
+uncertain default branch.
+
+**Defect B (as a precaution, not proven by the trace alone) — shipped
+transport default.** `BridgeConfig.transport` and the EA's `Transport`
+input both defaulted to `"socket"` (ADR-034 Amendment 2). The forensic
+trace could not rule out a socket-primary deployment's HTTP-fallback-
+listener bind failing silently (logged only as a warning) as a
+contributing factor.
+
+**CLOSED (ADR-034 Amendment 4):** both defaults revert to `"http"`.
+`"socket"` remains fully supported as an explicit opt-in
+(`bridge.transport: "socket"` / `Transport=Socket`) — no code path,
+message schema, or validation rule changes, only which value ships as
+the out-of-the-box default. See
+`docs/adr/ADR-034-mt5-bridge-transport-hardening.md` Amendment 4 for the
+full rationale.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access

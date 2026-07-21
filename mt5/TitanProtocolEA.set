@@ -5,17 +5,18 @@
 ; scores, or sizes trades. Replace ApiKey before attaching to any
 ; account; an empty key causes OnInit() to fail deliberately.
 ;
-; ADR-034 Amendment 2: the EA's own compiled default for Transport is
-; TRANSPORT_SOCKET (native MQL5 socket, not WebRequest()/HTTP) -- there
-; is deliberately no Transport= line below, since this file's own
+; ADR-034 Amendment 4: the EA's own compiled default for Transport is
+; TRANSPORT_HTTP (WebRequest(), not native MQL5 socket) -- there is
+; deliberately no Transport= line below, since this file's own
 ; personalization logic (install_mt5_files.py) cannot safely confirm
 ; MQL5's .set serialization format for a custom enum input without
 ; risking a silently-wrong value. Omitting it means MT5 applies the
-; compiled default (Socket) whenever this file is loaded. To roll back
-; to HTTP, set Transport=Http explicitly in the EA's Inputs tab in MT5.
-; SocketHost/SocketPort below are plain string/int inputs -- safe to
-; personalize directly, and are filled in by install.py to match the
-; live Bridge configuration's host/socket_port.
+; compiled default (Http) whenever this file is loaded. To opt into the
+; native socket transport, set Transport=Socket explicitly in the EA's
+; Inputs tab in MT5. SocketHost/SocketPort below are plain string/int
+; inputs -- safe to personalize directly, and are filled in by
+; install.py to match the live Bridge configuration's host/socket_port,
+; ready for use the moment Transport=Socket is selected.
 
 BackendUrl=http://127.0.0.1:8787
 ApiKey=

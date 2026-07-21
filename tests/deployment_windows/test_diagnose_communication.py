@@ -331,5 +331,77 @@ class TestEndToEndSocket(SocketTransportTestCase):
         self.assertEqual(c.auth_passed, dc._NO)
 
 
+class TestHttpTransportPseudoStatusClassification(unittest.TestCase):
+    """Runtime Audit Phase 4 -- the EA's `TITAN_DIAG NO_RESPONSE
+    transport=HTTP ... pseudoStatus=<n> ...` marker (emitted by
+    `PrintHttpTransportPseudoStatusFailure()` for a `WebRequest()` return
+    value outside the valid 100-599 HTTP range, e.g. the field-observed
+    `1001`/`GetLastError=5203` signature) must be parsed correctly and
+    classified directly and confidently as state 2 -- not left
+    "unmatched" the way a generic Socket-transport NO_RESPONSE is."""
+
+    def _attempt(self, ts):
+        return dc.EaEvent(kind="ATTEMPT", route="heartbeat", transport="HTTP", timestamp=ts,
+                           detail="", source_file="ea.log", source_line="ATTEMPT line")
+
+    def test_pseudo_status_marker_is_parsed_from_a_real_log_line(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "20260721.log"
+            log_path.write_text(
+                "2026.07.21 03:30:14.000  Titan (EURUSD,M15)  TITAN_DIAG NO_RESPONSE transport=HTTP "
+                "method=POST endpoint=/bridge/heartbeat pseudoStatus=1001 lastError=5203 elapsedMs=7015 "
+                "time=2026-07-21T03:30:14+00:00\n",
+                encoding="utf-8",
+            )
+            events = dc._parse_ea_log(log_path)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event.kind, "NO_RESPONSE")
+        self.assertEqual(event.transport, "HTTP")
+        self.assertIn("pseudoStatus=1001", event.detail)
+        self.assertIn("lastError=5203", event.detail)
+
+    def test_is_http_pseudo_status_no_response_true_only_with_the_field(self):
+        ts = datetime(2026, 7, 21, 3, 30, 14, tzinfo=timezone.utc)
+        pseudo = dc.EaEvent(kind="NO_RESPONSE", route="heartbeat", transport="HTTP", timestamp=ts,
+                             detail="pseudoStatus=1001 lastError=5203", source_file="ea.log", source_line="x")
+        generic_socket = dc.EaEvent(kind="NO_RESPONSE", route="heartbeat", transport="Socket", timestamp=ts,
+                                     detail="", source_file="ea.log", source_line="x")
+        generic_http = dc.EaEvent(kind="NO_RESPONSE", route="heartbeat", transport="HTTP", timestamp=ts,
+                                   detail="", source_file="ea.log", source_line="x")
+        self.assertTrue(dc._is_http_pseudo_status_no_response(pseudo))
+        self.assertFalse(dc._is_http_pseudo_status_no_response(generic_socket))
+        self.assertFalse(dc._is_http_pseudo_status_no_response(generic_http))
+
+    def test_1001_5203_signature_classifies_confidently_as_state_2(self):
+        ts = datetime(2026, 7, 21, 3, 30, 14, tzinfo=timezone.utc)
+        attempt = self._attempt(ts)
+        pseudo_status_event = dc.EaEvent(
+            kind="NO_RESPONSE", route="/bridge/heartbeat", transport="HTTP", timestamp=ts,
+            detail="pseudoStatus=1001 lastError=5203 elapsedMs=7015",
+            source_file="ea.log", source_line="TITAN_DIAG NO_RESPONSE ... pseudoStatus=1001 lastError=5203",
+        )
+        c = dc.classify(attempt, [attempt, pseudo_status_event], [], timedelta(seconds=10))
+        self.assertEqual(c.state, "2")
+        self.assertEqual(c.bridge_received, dc._NO)
+        self.assertTrue(any("pseudoStatus=1001" in line or "pseudoStatus" in line for line in c.evidence))
+        self.assertFalse(any(e.startswith("No BLOCKED/NO_RESPONSE marker") for e in c.evidence))
+
+    def test_generic_socket_no_response_is_still_left_unmatched(self):
+        """Guards against the new branch accidentally widening to cover
+        the Socket transport's own, genuinely ambiguous NO_RESPONSE case
+        -- that one has no pseudoStatus field and must remain unmatched."""
+        ts = datetime(2026, 7, 21, 3, 30, 14, tzinfo=timezone.utc)
+        attempt = dc.EaEvent(kind="ATTEMPT", route="heartbeat", transport="Socket", timestamp=ts,
+                              detail="", source_file="ea.log", source_line="ATTEMPT line")
+        no_response = dc.EaEvent(kind="NO_RESPONSE", route="heartbeat", transport="Socket", timestamp=ts,
+                                  detail="", source_file="ea.log", source_line="NO_RESPONSE line")
+        c = dc.classify(attempt, [attempt, no_response], [], timedelta(seconds=10))
+        self.assertEqual(c.state, "unmatched")
+
+
 if __name__ == "__main__":
     unittest.main()

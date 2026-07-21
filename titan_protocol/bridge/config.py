@@ -18,9 +18,10 @@ from .symbol_mapping import SymbolMapping
 BRIDGE_VERSION = "1.0.0-phase1"
 
 #: ADR-034 -- the only two transports this Bridge can serve over. `"http"`
-#: is today's `WebRequest()`-based transport (unchanged); `"socket"` is
-#: the new native-MQL5-socket transport. Exactly one is active per
-#: deployment (Amendment 1) -- `"http"` is also the rollback path.
+#: is the `WebRequest()`-based transport and the shipped default
+#: (Amendment 4); `"socket"` is the native-MQL5-socket transport,
+#: fully supported as an explicit opt-in. Exactly one is active per
+#: deployment (Amendment 1).
 VALID_TRANSPORTS: Tuple[str, ...] = ("http", "socket")
 
 
@@ -68,13 +69,17 @@ class BridgeConfig:
     max_error_history: int = 1000
     max_trade_transaction_history: int = 1000
 
-    # -- ADR-034: native MQL5 socket transport. `transport="socket"` is
-    # the shipped default (Amendment 2) -- it bypasses the WinINet-layer
-    # instability `"http"` is documented to suffer under. `"http"`
-    # remains fully supported as the explicit rollback value; set it and
-    # restart to fall back, never a second concurrently-running
-    # transport (ADR-034 Amendment 1).
-    transport: str = "socket"
+    # -- ADR-034: native MQL5 socket transport. `transport="http"` is the
+    # shipped default (Amendment 4 -- reverted from Amendment 2's
+    # `"socket"` default following a live-deployment forensic
+    # investigation that could not rule out a socket-primary
+    # misconfiguration/fallback-bind gap as the cause of a WebRequest()
+    # transport-layer failure; HTTP is the better-understood, more
+    # broadly compatible substrate to ship by default). `"socket"`
+    # remains fully supported as an explicit opt-in -- set it and
+    # restart to switch, never a second concurrently-running transport
+    # (ADR-034 Amendment 1).
+    transport: str = "http"
     socket_port: int = 8788
     #: Rejected (frame refused, connection closed) before the payload is
     #: ever read -- bounds worst-case per-message memory, independent of

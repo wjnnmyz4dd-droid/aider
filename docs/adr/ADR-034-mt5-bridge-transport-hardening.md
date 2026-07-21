@@ -94,6 +94,63 @@ correct answer to a question this session cannot verify:
    drift check to `SocketHost`/`SocketPort` in addition to
    `MagicNumber`.
 
+**Amendment 4 (2026-07-21 — "Corrective patch based on forensic
+findings"):** a live deployment's MT5 Experts log showed every
+`/bridge/heartbeat`, `/bridge/account`, `/bridge/positions` request
+failing identically: `WebRequest()` returning `1001`, `GetLastError()`
+`5203`, ~7000ms elapsed. A full forensic trace (this session, read-only,
+no code changed until this amendment) found two separate, real defects,
+neither a transport redesign:
+
+1. **The EA's own status classification bucketed a WinINet transport
+   pseudo-status as if it were a genuine HTTP response.**
+   `HttpPost()`/`HttpGet()` treated any `WebRequest()` return `> 0` as
+   "a real HTTP response, just not success," printing `"rejected, HTTP
+   1001"` — but this Bridge only ever returns 100-599 (in practice
+   200/400/401/404/500; `server.py`'s complete response table). A
+   pseudo-status like `1001` is outside that range and is not something
+   the Bridge could have sent. Worse, this misclassification skipped
+   `PrintWebRequestWhitelistGuidance()` entirely (only called from the
+   `status <= 0` branch), so the one `TITAN_DIAG BLOCKED` marker
+   `diagnose_communication.py` depends on to tell "blocked before the
+   Bridge" apart from "the Bridge responded" was never emitted for this
+   exact signature — the diagnostic tool could still reach the right
+   answer only via its conservative unmatched-fallback path, never with
+   confidence. Fixed: `HttpPost()`/`HttpGet()` now classify strictly —
+   100-599 is a genuine HTTP response (unchanged), `<= 0` is a
+   `WebRequest()`-layer failure (unchanged, still `BLOCKED`), and a
+   positive value outside 100-599 is now its own explicit, honestly-
+   labeled transport-layer pseudo-status branch (`TITAN_DIAG
+   NO_RESPONSE`, never worded "HTTP `<n>`" or "rejected" — this
+   codebase's Amendment 3 §3 already anticipated `1001`/`1003` as HTTP's
+   own known intermittent failure mode; this amendment makes the EA's
+   own logging honest about which case it's in, not new behavior).
+   `diagnose_communication.py` is extended with the same 100-599
+   boundary so this signature classifies directly, as state 2, rather
+   than falling through to the tool's uncertain default branch.
+2. **Reverts Amendment 2's shipped default from `"socket"` back to
+   `"http"`** on both `BridgeConfig.transport` and the EA's `Transport`
+   input. The forensic trace could not rule out a socket-primary
+   deployment's HTTP-fallback-listener bind failing silently (logged
+   only as a warning, `start.py`'s dual-listen path) as a contributing
+   factor, and HTTP is the better-understood, more broadly-compatible
+   substrate to ship by default while that path receives further
+   hardening. `"socket"` remains fully supported as an explicit opt-in —
+   no code path, message schema, or validation rule from the base ADR
+   or any prior amendment changes; only which value ships as the
+   out-of-the-box default (the same category of change Amendment 2 made
+   in the other direction). `mt5/TitanProtocolEA.set`'s `Transport` line
+   remains deliberately omitted for the same `.set`-serialization-
+   confidence reason Amendment 2 gave; the compiled default now carries
+   `Http` instead. Amendment 3's dual-listen/auto-fallback safety net is
+   unchanged in behavior — it still binds a second listener whenever
+   `transport == "socket"` is chosen, and is simply inactive (as already
+   documented) when `transport == "http"` is the primary, since HTTP is
+   then already the only transport, not a fallback.
+
+Neither part of this amendment touches a pipeline-stage engine, a
+message schema, a validation rule, or the Bridge's route behavior.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

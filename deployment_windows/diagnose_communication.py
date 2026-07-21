@@ -333,6 +333,16 @@ def _find_nearby_ea_outcome(attempt: EaEvent, ea_events: List[EaEvent], window: 
     return candidates[0][1]
 
 
+def _is_http_pseudo_status_no_response(outcome: EaEvent) -> bool:
+    """True only for the EA's `TITAN_DIAG NO_RESPONSE transport=HTTP ...
+    pseudoStatus=<n> ...` marker -- `HttpPost()`/`HttpGet()`'s own label
+    for a `WebRequest()` return value outside the valid HTTP range
+    (100-599). Never true for the Socket transport's own NO_RESPONSE
+    marker (no `pseudoStatus` field there), which stays genuinely
+    ambiguous (see its own comment in TitanProtocolEA.mq5)."""
+    return outcome.transport == "HTTP" and "pseudoStatus=" in outcome.detail
+
+
 @dataclass
 class Classification:
     attempt: EaEvent
@@ -361,6 +371,28 @@ def classify(attempt: EaEvent, ea_events: List[EaEvent], bridge_events: List[Bri
     outcome = _find_nearby_ea_outcome(attempt, ea_events, window)
     if outcome is not None and outcome.kind == "BLOCKED":
         evidence.append(f"EA log: {outcome.source_file}: {outcome.source_line}")
+        return Classification(
+            attempt=attempt, state="2", mt5_attempted=_YES, bridge_received=_NO,
+            auth_passed=_NA, magic_number_matched=_NA, validation_passed=_NA, response_sent=_NO,
+            evidence=evidence,
+        )
+    if outcome is not None and outcome.kind == "NO_RESPONSE" and _is_http_pseudo_status_no_response(outcome):
+        # Runtime Audit Phase 4 -- a `pseudoStatus=` field on an HTTP
+        # NO_RESPONSE marker is this EA's own honest label for a
+        # WebRequest() return value outside the valid HTTP range (e.g.
+        # 1001): the request never resulted in a real HTTP response from
+        # this Bridge (which only ever returns 100-599), so -- unlike the
+        # generic Socket-side NO_RESPONSE case below, where the frame
+        # demonstrably left the process and genuine ambiguity remains --
+        # this is classified directly and confidently as state 2, not
+        # left unmatched.
+        evidence.append(f"EA log: {outcome.source_file}: {outcome.source_line}")
+        evidence.append(
+            "EA's own NO_RESPONSE marker carries pseudoStatus= -- WebRequest() returned a value "
+            "outside the valid HTTP range (100-599), which this Bridge never produces. This is "
+            "a WinINet/transport-layer failure, not a Bridge response -- classified confidently "
+            "as blocked before the Bridge, not left unmatched."
+        )
         return Classification(
             attempt=attempt, state="2", mt5_attempted=_YES, bridge_received=_NO,
             auth_passed=_NA, magic_number_matched=_NA, validation_passed=_NA, response_sent=_NO,

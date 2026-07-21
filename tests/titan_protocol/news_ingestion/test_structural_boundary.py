@@ -122,6 +122,11 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         "titan_protocol/compliance_engine/models.py",
         "titan_protocol/compliance_engine/engine.py",
         "titan_protocol/compliance_engine/logging_sink.py",
+        # ADR-034 Amendment 4 transport-default flip + status-classification
+        # fix (later, separately-authorized): BridgeConfig.transport's
+        # shipped default reverts from "socket" to "http" -- a config
+        # default only, no news_ingestion behavior touched.
+        "titan_protocol/bridge/config.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_phase(self):

@@ -105,8 +105,9 @@ This is the master installer. It runs, in order:
    note below) before it completes — pass `--whitelist-confirmed` once
    you have, or `--skip-whitelist-check` to bypass this gate entirely.
 6. **Verify Bridge** — actually constructs the real `BridgeEngine` and
-   binds it on your configured transport (socket by default; ADR-034),
-   confirms it's reachable over a real connection, then shuts it down.
+   binds it on your configured transport (HTTP by default; ADR-034
+   Amendment 4), confirms it's reachable over a real connection, then
+   shuts it down.
    When transport is socket, also binds and verifies an automatic HTTP
    fallback listener (ADR-034 Amendment 3) — non-blocking, since the
    primary transport check above already confirms the Bridge itself is
@@ -152,14 +153,15 @@ every step's real outcome, and prints next steps.
    TitanProtocol\` — this loads the personalized `ApiKey`/`MagicNumber`
    `install.py` already filled in. Click **OK**.
 4. Allow-list the Bridge address if you haven't already: MT5 →
-   **Tools → Options → Expert Advisors**. With the default Socket
-   transport (ADR-034), add your configured socket host/port (default
+   **Tools → Options → Expert Advisors**. With the default HTTP
+   transport (ADR-034 Amendment 4), check **"Allow WebRequest for
+   listed URL"** and add `http://127.0.0.1:8787` (or your configured
+   host/port). If you've opted into the native Socket transport
+   instead, add your configured socket host/port (default
    `127.0.0.1:8788`) to the allow-list MT5's `Socket*()` functions
-   consult. If you've rolled back to HTTP transport, check **"Allow
-   WebRequest for listed URL"** instead and add
-   `http://127.0.0.1:8787` (or your configured host/port) — this is
-   also the address an EA that auto-falls-back to HTTP needs
-   allow-listed (see `docs/adr/ADR-034-mt5-bridge-transport-hardening.md`
+   consult — the HTTP entry above is still worth keeping allow-listed
+   too, since it's also the address an EA that auto-falls-back to HTTP
+   needs (see `docs/adr/ADR-034-mt5-bridge-transport-hardening.md`
    Amendment 3).
 
    **If `GetLastError=4014` persists even after adding the address**:

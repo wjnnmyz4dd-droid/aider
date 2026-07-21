@@ -316,11 +316,12 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         explicit_map={str(k).strip().upper(): str(v).strip() for k, v in raw_explicit_map.items()},
     )
 
-    # ADR-034: transport substrate selector -- "socket" (default,
-    # Amendment 2) or "http" (the explicit rollback value). Exactly one
-    # is ever active; see start.py. Falls back to BridgeConfig's own
-    # default rather than a second hardcoded literal here, so this
-    # module can never drift from the dataclass it's populating.
+    # ADR-034: transport substrate selector -- "http" (default,
+    # Amendment 4) or "socket" (a fully-supported explicit opt-in).
+    # Exactly one is ever active; see start.py. Falls back to
+    # BridgeConfig's own default rather than a second hardcoded literal
+    # here, so this module can never drift from the dataclass it's
+    # populating.
     transport = _get_str(bridge_section, "transport", BridgeConfig.transport).strip().lower()
     if transport not in VALID_TRANSPORTS:
         raise ConfigError(

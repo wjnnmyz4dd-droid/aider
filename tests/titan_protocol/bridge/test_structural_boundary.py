@@ -183,6 +183,17 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # no existing signature or behavior changed.
             "tests/deployment_windows/test_run_status.py",
             "tests/deployment_windows/test_health_check_run_status.py",
+            # ADR-034 Amendment 4: transport-default flip (socket -> http)
+            # and the EA's HTTP-status classification boundary fix. Files
+            # already covered above: titan_protocol/ (bridge/config.py),
+            # mt5/ (TitanProtocolEA.mq5/.set), docs/adr/, deployment_windows/
+            # start.py, config_loader.py, install_mt5_files.py,
+            # WINDOWS_OPERATOR_GUIDE.md, config/titan_protocol_config.
+            # example.json, diagnose_communication.py,
+            # tests/deployment_windows/test_diagnose_communication.py.
+            # New test files added by this phase only:
+            "tests/deployment_windows/test_transport_defaults.py",
+            "tests/mt5/test_titan_protocol_ea_transport_classification.py",
         )
 
         def is_allowed(path: str) -> bool:
