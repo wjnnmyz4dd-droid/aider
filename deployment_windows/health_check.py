@@ -75,6 +75,54 @@ def _report(checks) -> None:
         print(f"[{status}] {name}{': ' + detail if detail else ''}")
 
 
+def _format_age(seconds: Optional[float]) -> str:
+    return "never" if seconds is None else f"{seconds:.1f}s ago"
+
+
+def _print_run_status_panel(run_status: Optional[dict]) -> None:
+    """Item 10: a single, concise block answering "why is Titan trading
+    or not" without cross-referencing bridge_reachable/mt5_connected/
+    live_cycle/market_data/etc separately, or grepping the log file.
+    Purely informational -- reads state/health.json's own `run_status`
+    key verbatim, never re-derives or gates on it."""
+    print()
+    print("=" * 72)
+    print("RUN STATUS")
+    print("=" * 72)
+    if not run_status:
+        print("  NOT AVAILABLE -- no health.json, or this process predates this diagnostic.")
+        print("=" * 72)
+        return
+
+    print(f"  Communication mode        : {run_status.get('communication_mode')}")
+    print(f"  HTTP fallback             : {'enabled' if run_status.get('http_fallback_enabled') else 'disabled'}")
+    print(f"  Bridge connection status  : {run_status.get('bridge_connection_status')}")
+    print(f"  Runtime status            : {run_status.get('runtime_status')}")
+    print(f"  Last heartbeat age        : {_format_age(run_status.get('last_heartbeat_age_seconds'))}")
+    print(f"  Last position report age  : {_format_age(run_status.get('last_position_report_age_seconds'))}")
+    print(f"  In-flight command count   : {run_status.get('in_flight_command_count')}")
+    print(f"  Open positions per pair   : {run_status.get('open_positions_per_pair') or {}}")
+    print(f"  Configured max/pair       : {run_status.get('configured_max_positions_per_pair')}")
+    compliance_state = run_status.get("compliance_state")
+    block_reason = run_status.get("compliance_block_reason")
+    print(f"  Compliance state          : {compliance_state}{f' ({block_reason})' if compliance_state == 'BLOCKED' and block_reason else ''}")
+    print(f"  Last submitted correlation_id: {run_status.get('last_submitted_correlation_id')}")
+    pairs = run_status.get("pairs") or {}
+    if pairs:
+        print("  Per-pair cycle outcome:")
+        for pair, status in sorted(pairs.items()):
+            reason = status.get("reason")
+            correlation_id = status.get("correlation_id")
+            print(
+                f"    {pair}: {status.get('outcome')}"
+                f"{' -- ' + reason if reason else ''}"
+                f"{' (correlation_id=' + correlation_id + ')' if correlation_id else ''}"
+            )
+    else:
+        print("  Per-pair cycle outcome    : no pairs evaluated yet")
+    print("=" * 72)
+
+
 def _describe_api_key_source(settings, config_path: Path) -> str:
     """Replicates config_loader.py's own 3-tier `_resolve_secret` priority
     order (env var -> generated secret file -> inline value) read-only,
@@ -364,6 +412,7 @@ def run(config_path: Path) -> int:
 
     all_core_ok = all(ok for name, ok, _ in checks if name not in informational_only)
     _report(checks)
+    _print_run_status_panel(payload.get("run_status"))
 
     if not all_core_ok:
         return 2

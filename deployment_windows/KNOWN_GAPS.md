@@ -184,6 +184,36 @@ untouched -- it is a different engine's different limit, not implicated
 in this trace, and compliance's own gate is sufficient on its own to
 enforce the invariant regardless of what value Risk Engine's copy holds.
 
+## 6. Run Status diagnostics — CLOSED
+
+No "Run tab" or dashboard exists anywhere in this deployment layer (this
+is a Python trading engine with no browser surface) -- the closest
+equivalent, `state/health.json` + `health_check.py`, previously scattered
+the facts an operator needs to answer "why is Titan trading or not"
+across several separate fields (`bridge_reachable`, `mt5_connected`,
+`live_cycle`, `market_data`, `news`) or, for per-cycle decision
+reasoning, nowhere at all -- `RuntimeOrchestrator.run_cycle()`'s return
+value (`CycleReport`/`RuntimeAuditRecord`, carrying each pair's
+`outcome`/`reasons`/`compliance_decision`/`bridge_correlation_id`) was
+computed every cycle inside `_live_cycle_loop()` and immediately
+discarded (`orchestrator.run_cycle(...)` with no assignment).
+
+**CLOSED:** `state/health.json` gained a single `run_status` block, and
+`health_check.py` gained a RUN STATUS panel printed at the end of its
+output, covering: communication mode (HTTP/socket), HTTP fallback
+enabled/disabled, Bridge connection status, overall runtime status, last
+heartbeat age, last PositionReport age (via `BridgeEngine.
+last_positions_received_at`, closing the same "empty snapshot has no
+timestamp" gap section 3 already fixed), in-flight command count, open
+positions per pair, the configured `max_positions_per_pair`, compliance
+state (READY/BLOCKED) and block reason, the last submitted
+`correlation_id`, and a per-pair cycle-outcome breakdown (merging
+pre-engine skip reasons with `run_cycle()`'s own per-pair
+`RuntimeAuditRecord`, now captured via `_LiveCycleStatus.
+update_decisions()` instead of being discarded). Every field is read
+from an object this process already holds a reference to -- no new
+computation, only surfacing what already existed.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access

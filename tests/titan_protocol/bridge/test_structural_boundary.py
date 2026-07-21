@@ -175,6 +175,14 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "tests/deployment_windows/test_config_loader.py",
             "tests/deployment_windows/_fixtures.py",
             "deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md",
+            # Run Status diagnostics (item 10): a single, health.json-backed
+            # view (start.py's _LiveCycleStatus + _write_health_snapshot's
+            # new run_status block, health_check.py's RUN STATUS panel) so
+            # an operator can determine why Titan is or is not trading from
+            # one place. Additive only -- new optional parameters/fields,
+            # no existing signature or behavior changed.
+            "tests/deployment_windows/test_run_status.py",
+            "tests/deployment_windows/test_health_check_run_status.py",
         )
 
         def is_allowed(path: str) -> bool:

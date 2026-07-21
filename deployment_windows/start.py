@@ -142,6 +142,7 @@ from titan_protocol.risk_engine.models import Direction, OpenPosition, Portfolio
 from titan_protocol.runtime.engine import RuntimeOrchestrator
 from titan_protocol.runtime.in_flight_commands import InFlightCommandRegistry
 from titan_protocol.runtime.metrics import RuntimeMetrics
+from titan_protocol.runtime.models import CycleOutcome
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
 from titan_protocol.strategy_engine.engine import StrategyEngine
@@ -189,6 +190,16 @@ class _LiveCycleStatus:
         self.last_cycle_id: Optional[str] = None
         self.evaluated_pairs: Tuple[str, ...] = ()
         self.skipped_pairs: Dict[str, str] = {}
+        # Run Status diagnostics (item 10): compliance-lock state and a
+        # per-pair decision summary (outcome/reason/correlation_id/
+        # compliance_decision), merging pre-engine skip reasons with
+        # run_cycle()'s own per-pair RuntimeAuditRecord -- both are
+        # computed every cycle in _live_cycle_loop and would otherwise be
+        # visible only in scattered log lines. Observability only.
+        self.compliance_lock_active: bool = False
+        self.compliance_lock_reason: Optional[str] = None
+        self.pair_status: Dict[str, dict] = {}
+        self.last_submitted_correlation_id: Optional[str] = None
 
     def update(self, now: datetime, cycle_id: str, evaluated_pairs, skipped_pairs: Dict[str, str]) -> None:
         with self._lock:
@@ -198,6 +209,17 @@ class _LiveCycleStatus:
             self.evaluated_pairs = tuple(evaluated_pairs)
             self.skipped_pairs = dict(skipped_pairs)
 
+    def update_decisions(
+        self, compliance_lock_active: bool, compliance_lock_reason: Optional[str],
+        pair_status: Dict[str, dict], last_submitted_correlation_id: Optional[str],
+    ) -> None:
+        with self._lock:
+            self.compliance_lock_active = compliance_lock_active
+            self.compliance_lock_reason = compliance_lock_reason
+            self.pair_status = dict(pair_status)
+            if last_submitted_correlation_id is not None:
+                self.last_submitted_correlation_id = last_submitted_correlation_id
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -206,6 +228,10 @@ class _LiveCycleStatus:
                 "last_cycle_id": self.last_cycle_id,
                 "evaluated_pairs": list(self.evaluated_pairs),
                 "skipped_pairs": dict(self.skipped_pairs),
+                "compliance_lock_active": self.compliance_lock_active,
+                "compliance_lock_reason": self.compliance_lock_reason,
+                "pair_status": dict(self.pair_status),
+                "last_submitted_correlation_id": self.last_submitted_correlation_id,
             }
 
 
@@ -384,10 +410,42 @@ def _write_health_snapshot(
     news_metrics: Optional[NewsIngestionMetrics] = None,
     bridge_transport: Optional[str] = None,
     bridge_metrics: Optional[BridgeMetrics] = None,
+    connection_health: Optional[ConnectionHealth] = None,
+    in_flight_commands: Optional[InFlightCommandRegistry] = None,
+    http_fallback_active: bool = False,
+    configured_max_positions_per_pair: Optional[int] = None,
 ) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
     live_cycle = _live_cycle_status.snapshot()
+    last_heartbeat_at = connection_health.last_heartbeat_at if connection_health is not None else None
+    latest_positions_snapshot_at = bridge_engine.last_positions_received_at
+    # Run Status diagnostics (item 10): every field an operator needs to
+    # answer "why is Titan trading or not" from this one block, without
+    # cross-referencing bridge_reachable/mt5_connected/live_cycle/etc
+    # separately or grepping the log file. Every value here is read from
+    # an object this process already holds a reference to -- no new
+    # computation, only surfacing what already exists.
+    open_positions_per_pair: Dict[str, int] = {}
+    for position in bridge_engine.latest_positions:
+        open_positions_per_pair[position.symbol] = open_positions_per_pair.get(position.symbol, 0) + 1
+    run_status = {
+        "communication_mode": bridge_transport,
+        "http_fallback_enabled": http_fallback_active,
+        "bridge_connection_status": "connected" if bridge_engine.is_connection_healthy else "disconnected",
+        "runtime_status": snapshot.degradation_level.value,
+        "last_heartbeat_age_seconds": (now - last_heartbeat_at).total_seconds() if last_heartbeat_at else None,
+        "last_position_report_age_seconds": (
+            (now - latest_positions_snapshot_at).total_seconds() if latest_positions_snapshot_at else None
+        ),
+        "in_flight_command_count": in_flight_commands.in_flight_count() if in_flight_commands is not None else None,
+        "open_positions_per_pair": open_positions_per_pair,
+        "configured_max_positions_per_pair": configured_max_positions_per_pair,
+        "compliance_state": "BLOCKED" if live_cycle["compliance_lock_active"] else "READY",
+        "compliance_block_reason": live_cycle["compliance_lock_reason"],
+        "last_submitted_correlation_id": live_cycle["last_submitted_correlation_id"],
+        "pairs": live_cycle["pair_status"],
+    }
     payload = {
         "generated_at": now.isoformat(),
         "degradation_level": snapshot.degradation_level.value,
@@ -419,6 +477,7 @@ def _write_health_snapshot(
             bridge_metrics.socket_health_snapshot()
             if bridge_metrics is not None and bridge_transport == "socket" else None
         ),
+        "run_status": run_status,
     }
     (state_dir / "health.json").write_text(json.dumps(payload, indent=2))
 
@@ -432,6 +491,10 @@ def _heartbeat_loop(
     news_metrics: Optional[NewsIngestionMetrics] = None,
     bridge_transport: Optional[str] = None,
     bridge_metrics: Optional[BridgeMetrics] = None,
+    connection_health: Optional[ConnectionHealth] = None,
+    in_flight_commands: Optional[InFlightCommandRegistry] = None,
+    http_fallback_active: bool = False,
+    configured_max_positions_per_pair: Optional[int] = None,
 ) -> None:
     logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
@@ -457,6 +520,9 @@ def _heartbeat_loop(
                 state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth,
                 market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_metrics,
                 bridge_transport=bridge_transport, bridge_metrics=bridge_metrics,
+                connection_health=connection_health, in_flight_commands=in_flight_commands,
+                http_fallback_active=http_fallback_active,
+                configured_max_positions_per_pair=configured_max_positions_per_pair,
             )
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
@@ -637,6 +703,16 @@ def _live_cycle_loop(
             )
             account_state = None
 
+        # Run Status diagnostics (item 10): compliance-lock state is
+        # already computed above (persisted_compliance_state), just not
+        # previously retained anywhere health.json could read from.
+        compliance_lock_active = (
+            persisted_compliance_state.compliance_lock.active if persisted_compliance_state is not None else False
+        )
+        compliance_lock_reason = (
+            persisted_compliance_state.compliance_lock.reason if persisted_compliance_state is not None else None
+        )
+
         # Map real EA-reported positions into PortfolioState -- previously
         # this was PortfolioState() (always empty, no arguments), so
         # check_position_limits() could never see an already-open position
@@ -728,13 +804,34 @@ def _live_cycle_loop(
                 PortfolioState(open_positions=open_positions), None, account_state,
             )
 
+        # Run Status diagnostics (item 10): seed the per-pair view from
+        # this tick's pre-engine skip reasons, then overwrite with
+        # run_cycle()'s own per-pair RuntimeAuditRecord for every pair
+        # that actually reached the engines -- previously this record was
+        # computed every cycle and immediately discarded (the call below
+        # was `orchestrator.run_cycle(...)` with no assignment).
+        pair_status: Dict[str, dict] = {
+            pair: {"outcome": reason, "reason": reason, "correlation_id": None, "compliance_decision": None}
+            for pair, reason in skipped.items()
+        }
+        last_submitted_correlation_id: Optional[str] = None
         if inputs:
             try:
-                orchestrator.run_cycle(tuple(inputs.keys()), profile, inputs, now, cycle_id)
+                cycle_report = orchestrator.run_cycle(tuple(inputs.keys()), profile, inputs, now, cycle_id)
+                for record in cycle_report.records:
+                    pair_status[record.pair] = {
+                        "outcome": record.outcome.value,
+                        "reason": record.reasons[0] if record.reasons else None,
+                        "correlation_id": record.bridge_correlation_id,
+                        "compliance_decision": record.compliance_decision.value if record.compliance_decision is not None else None,
+                    }
+                    if record.outcome is CycleOutcome.SUBMITTED and record.bridge_correlation_id is not None:
+                        last_submitted_correlation_id = record.bridge_correlation_id
             except Exception:  # noqa: BLE001 -- the live-cycle loop must never crash the process
                 logger.exception("live cycle %s failed", cycle_id)
 
         _live_cycle_status.update(now, cycle_id, inputs.keys(), skipped)
+        _live_cycle_status.update_decisions(compliance_lock_active, compliance_lock_reason, pair_status, last_submitted_correlation_id)
         _shutdown_event.wait(_LIVE_CYCLE_INTERVAL_SECONDS)
 
 
@@ -867,6 +964,12 @@ def run_foreground(config_path: Path) -> int:
     strategy_engine = StrategyEngine(strategy_config)
     risk_engine = RiskEngine(settings.risk_config)
     compliance_engine = ComplianceEngine(settings.compliance_config)
+    # Run Status diagnostics (item 10): the position-limit invariant an
+    # operator needs alongside "how many positions are actually open" --
+    # resolved once here rather than re-looked-up on every health snapshot.
+    configured_max_positions_per_pair = settings.compliance_config.profile_for(
+        settings.compliance_rule_profile_name
+    ).max_positions_per_pair
     compliance_state_store = ComplianceStateStore(
         ComplianceStateStoreConfig(
             state_file=settings.state_dir / "compliance_state.json",
@@ -892,7 +995,12 @@ def run_foreground(config_path: Path) -> int:
         target=_heartbeat_loop,
         args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, active_bridge_port,
               market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_ingestion_metrics),
-        kwargs={"bridge_transport": settings.bridge_config.transport, "bridge_metrics": bridge_metrics},
+        kwargs={
+            "bridge_transport": settings.bridge_config.transport, "bridge_metrics": bridge_metrics,
+            "connection_health": connection_health, "in_flight_commands": in_flight_commands,
+            "http_fallback_active": http_fallback_active,
+            "configured_max_positions_per_pair": configured_max_positions_per_pair,
+        },
         name="titan_protocol-reliability-heartbeat", daemon=True,
     )
     heartbeat_thread.start()
