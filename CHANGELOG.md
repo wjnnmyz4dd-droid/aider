@@ -15,6 +15,55 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-21 (Position-confirmation timeout + restart-safe in-flight persistence — ADR-034 Amendments 8/9)
+
+### Added
+- `RuntimeConfig.position_confirmation_timeout_seconds` (default 120.0,
+  configurable via `runtime.position_confirmation_timeout_seconds` in
+  the JSON config) — bounds how long `InFlightCommandRegistry` lets a
+  resolved (executed/rejected) pair wait for a confirming
+  `/bridge/positions` snapshot before releasing it fail-safe.
+- `InFlightCommandRegistry.expire_stale_position_confirmations()` and
+  `.position_confirmation_timeout_count()` — releases a pair once it
+  exceeds the new timeout, logs a clear warning, and exposes a
+  cumulative counter through `run_status`/`health_check.py` alongside
+  the existing `awaiting_position_confirmation_count()`.
+- `titan_protocol/runtime/in_flight_store.py` (`InFlightCommandStore`/
+  `InFlightStoreConfig`) — restart-safe persistence of
+  `InFlightCommandRegistry`'s minimal pair-level state (correlation_id,
+  pair, state, original timestamp only), using the same atomic-write
+  technique as `titan_protocol.compliance_state_store`. Loaded and
+  restored once at Bridge startup (`InFlightCommandRegistry.restore()`)
+  before the first live cycle, and saved once per cycle after that
+  cycle's reconciliation, so an abandoned/resolved-and-confirmed pair
+  can never be persisted, let alone restored.
+- `tests/titan_protocol/runtime/test_in_flight_store.py`,
+  `tests/titan_protocol/runtime/test_bridge_restart_integration.py`, and
+  an expanded `tests/titan_protocol/runtime/test_in_flight_commands.py`
+  (new `TestExpireStalePositionConfirmations` and
+  `TestSnapshotForPersistenceAndRestore` classes) — round-trip,
+  corruption, and simulated-restart coverage for both hardening items.
+
+### Changed
+- `deployment_windows/config_loader.py`/
+  `deployment_windows/config/titan_protocol_config.example.json` — the
+  new `position_confirmation_timeout_seconds` field wired through the
+  existing config-loading pattern.
+- `deployment_windows/start.py` — constructs and threads
+  `InFlightCommandStore` through `_live_cycle_loop()` (same pattern as
+  the existing `compliance_state_store` parameter); the per-cycle
+  reconcile block now also calls `expire_stale_position_confirmations()`
+  and persists the reconciled snapshot.
+
+### Documented (no code change)
+- `docs/adr/ADR-034-mt5-bridge-transport-hardening.md` — Amendments 8
+  and 9, including the accepted limitation that a restored entry can
+  only ever be released by its own TTL/timeout, never by a late-arriving
+  `ExecutionReport` for a correlation_id the restarted `CommandQueue` no
+  longer remembers (deliberate, given `ComplianceEngine`'s independent
+  `max_positions_per_pair` check already covers the actual
+  duplicate-position outcome once positions reporting resumes).
+
 ## 2026-07-08 (Hybrid MT5 MQL5 EA Bridge — ADR-023)
 
 ### Added

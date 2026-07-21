@@ -123,9 +123,7 @@ wired into `RuntimeOrchestrator` (optional constructor parameter,
 `start.py`-constructed with a 300s TTL) and reconciled every live-cycle
 tick against `BridgeEngine.command_resolved()`. See the in-flight
 registry design note in the engineering log for the full root-cause
-trace and architecture comparison. Purely in-memory (a process restart
-loses in-flight tracking) -- no regression versus before, since
-`CommandQueue` itself is also in-memory-only.
+trace and architecture comparison.
 
 **A regression traced after this closed:** an `ExecutionReport` can
 arrive (resolving a command) before the *next* `/bridge/positions`
@@ -143,6 +141,49 @@ this extra wait (no `ExecutionReport` ever arrived, so there is nothing
 fresher to wait for). This never infers position truth from the
 `ExecutionReport` itself -- that remains solely `BridgeEngine.
 latest_positions`'s job.
+
+**A production-readiness review found two further gaps in this same
+mechanism, both now CLOSED (ADR-034 Amendments 8/9):**
+
+1. **The "awaiting position confirmation" wait had no upper bound** -- if
+   `/bridge/positions` reporting permanently stopped after a command
+   resolved, the pair would stay blocked forever even though the
+   underlying command was long since terminal. **CLOSED**:
+   `InFlightCommandRegistry.expire_stale_position_confirmations()`
+   releases the pair fail-safe once it has waited longer than the new,
+   configurable `RuntimeConfig.position_confirmation_timeout_seconds`
+   (default 120s), logging a clear warning and incrementing a cumulative
+   counter (`position_confirmation_timeout_count()`, surfaced in
+   `run_status`/`health_check.py`). `ComplianceEngine`'s own
+   `max_positions_per_pair` check (fed by real `/bridge/positions`
+   reports, independent of this registry) remains the actual
+   duplicate-position guard once reporting resumes -- this timeout only
+   prevents an unrecoverable deadlock in the registry itself.
+2. **`CommandQueue`/`InFlightCommandRegistry` were purely in-memory** -- a
+   Bridge process restart between "command delivered" and "reconciled"
+   forgot the command existed until the next positions snapshot arrived,
+   risking a duplicate submission for a pair whose prior command might
+   still resolve into a real position. **CLOSED**: a new, lightweight
+   `titan_protocol/runtime/in_flight_store.py` (same atomic-write
+   technique as `compliance_state_store`) persists only the four minimal
+   fields needed to recover the pair-level block -- correlation_id,
+   pair, state, and its original timestamp, deliberately never the full
+   `TradeCommand` -- and reloads them on startup, using their original
+   timestamps so TTL/timeout windows keep counting from when they
+   actually happened rather than resetting on every restart. **Accepted
+   limitation, by design:** a command genuinely delivered before a
+   restart whose `ExecutionReport` only arrives afterward cannot be
+   recorded (the restarted `CommandQueue` never enqueued it, so
+   `handle_execution_report()` correctly returns `False` for it) -- the
+   pair stays protected by its own restart-surviving TTL until that
+   elapses. Persisting the full `TradeCommand` to close this residual
+   window was deliberately rejected as disproportionate, given
+   `ComplianceEngine`'s independent live position-limit check already
+   covers the actual duplicate-position outcome once positions reporting
+   resumes post-restart. Corruption of the persisted file is handled
+   fail-safe (an empty restore, never a crash), not fail-closed, since
+   refusing to start the Bridge over a best-effort optimization file
+   would itself be a worse capital-preservation outcome.
 
 ## 5. `compliance.max_positions_per_pair` defaulted to 2, not 1 — CLOSED
 

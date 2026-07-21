@@ -133,6 +133,12 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         # mutual-exclusion _abandoned_ids bookkeeping -- additive only, no
         # news_ingestion behavior touched.
         "titan_protocol/bridge/command_queue.py",
+        # ADR-034 Amendment 8/9 (later, separately-authorized): a bounded
+        # timeout for the position-confirmation wait, plus restart-safe
+        # persistence of InFlightCommandRegistry's minimal pair-level
+        # state -- additive only, no news_ingestion behavior touched.
+        "titan_protocol/runtime/config.py",
+        "titan_protocol/runtime/in_flight_store.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_phase(self):

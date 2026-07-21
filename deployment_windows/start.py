@@ -142,6 +142,7 @@ from titan_protocol.risk_engine.engine import RiskEngine
 from titan_protocol.risk_engine.models import Direction, OpenPosition, PortfolioState
 from titan_protocol.runtime.engine import RuntimeOrchestrator
 from titan_protocol.runtime.in_flight_commands import InFlightCommandRegistry
+from titan_protocol.runtime.in_flight_store import InFlightCommandStore, InFlightStoreConfig
 from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.models import CycleOutcome
 from titan_protocol.runtime.validation import validate_profile
@@ -456,6 +457,12 @@ def _write_health_snapshot(
             (now - latest_positions_snapshot_at).total_seconds() if latest_positions_snapshot_at else None
         ),
         "in_flight_command_count": in_flight_commands.in_flight_count() if in_flight_commands is not None else None,
+        "awaiting_position_confirmation_count": (
+            in_flight_commands.awaiting_position_confirmation_count() if in_flight_commands is not None else None
+        ),
+        "position_confirmation_timeout_count": (
+            in_flight_commands.position_confirmation_timeout_count() if in_flight_commands is not None else None
+        ),
         "open_positions_per_pair": open_positions_per_pair,
         "configured_max_positions_per_pair": configured_max_positions_per_pair,
         "account_report_age_seconds": account_report_age_seconds,
@@ -661,6 +668,7 @@ def _live_cycle_loop(
     bridge_engine: BridgeEngine,
     profile,
     compliance_state_store: ComplianceStateStore,
+    in_flight_store: InFlightCommandStore,
     news_engine: Optional[NewsIngestionEngine] = None,
 ) -> None:
     """Amendment 1 (ADR-023) + Phase 3E (ADR-033 Part 2) + Final Release
@@ -805,6 +813,29 @@ def _live_cycle_loop(
             lambda correlation_id: bridge_engine.command_abandoned(correlation_id, now),
         )
         confirmed_count = orchestrator.in_flight_commands.confirm_position_report(latest_positions_snapshot_at)
+        # Bounded position-confirmation wait (ADR-034 Amendment 8):
+        # releases fail-safe any pair still awaiting a confirming
+        # /bridge/positions snapshot longer than
+        # position_confirmation_timeout_seconds -- see
+        # InFlightCommandRegistry's own docstring for why this cannot
+        # weaken capital preservation (Compliance's live position-limit
+        # check remains the actual duplicate-position guard).
+        timed_out_confirmations = orchestrator.in_flight_commands.expire_stale_position_confirmations(now)
+        for _pair, _correlation_id, _waited_seconds in timed_out_confirmations:
+            logger.warning(
+                "position_confirmation_timeout_released",
+                extra={
+                    "pair": _pair, "correlation_id": _correlation_id, "waited_seconds": _waited_seconds,
+                    "position_confirmation_timeout_seconds": settings.runtime_config.position_confirmation_timeout_seconds,
+                    "reason": (
+                        "no /bridge/positions snapshot confirmed this pair's resolution within the "
+                        "configured timeout -- releasing the pair fail-safe rather than blocking it "
+                        "indefinitely; the underlying command already reached a terminal "
+                        "execution/rejection state, only confirming the resulting position count was "
+                        "outstanding"
+                    ),
+                },
+            )
         logger.info(
             "in_flight_registry_reconciled",
             extra={
@@ -812,8 +843,16 @@ def _live_cycle_loop(
                 "resolved_or_expired_this_cycle": resolved_count,
                 "awaiting_position_confirmation_count": orchestrator.in_flight_commands.awaiting_position_confirmation_count(),
                 "confirmed_this_cycle": confirmed_count,
+                "position_confirmation_timeout_count": orchestrator.in_flight_commands.position_confirmation_timeout_count(),
+                "timed_out_this_cycle": len(timed_out_confirmations),
             },
         )
+        # Persist the now-fully-reconciled snapshot for restart-safety
+        # (ADR-034 Amendment 9) -- always the full current set, never an
+        # incremental patch, so a pair reconcile()/expire_stale_
+        # position_confirmations() already dropped this cycle can never
+        # be written to disk, let alone restored after a future restart.
+        in_flight_store.save(orchestrator.in_flight_commands.snapshot_for_persistence())
 
         for pair in profile.allowed_pairs:
             if news_engine is not None and not news_trusted:
@@ -1017,7 +1056,28 @@ def run_foreground(config_path: Path) -> int:
         return bridge_engine.submit_command(command, now)
 
     runtime_metrics = RuntimeMetrics()
-    in_flight_commands = InFlightCommandRegistry(ttl_seconds=_IN_FLIGHT_COMMAND_TTL_SECONDS)
+    in_flight_commands = InFlightCommandRegistry(
+        ttl_seconds=_IN_FLIGHT_COMMAND_TTL_SECONDS,
+        position_confirmation_timeout_seconds=settings.runtime_config.position_confirmation_timeout_seconds,
+    )
+    # Restart-safe in-flight persistence (ADR-034 Amendment 9): reload
+    # whatever was still unresolved at the last clean or unclean shutdown
+    # before the first live cycle runs, so a pair genuinely mid-flight at
+    # restart time stays blocked (preventing a duplicate submission)
+    # instead of this registry starting with no memory of it, as it did
+    # before this hardening. See InFlightCommandStore's own docstring for
+    # why a missing/corrupted state file fails safe (proceeds with zero
+    # restored entries) rather than refusing to start the Bridge.
+    in_flight_store = InFlightCommandStore(
+        InFlightStoreConfig(state_file=settings.state_dir / "in_flight_commands.json")
+    )
+    _startup_now = datetime.now(timezone.utc)
+    _restored_entries = in_flight_store.load()
+    _restored_count = in_flight_commands.restore(_restored_entries, _startup_now)
+    logger.info(
+        "in_flight_state_restored",
+        extra={"persisted_entry_count": len(_restored_entries), "restored_count": _restored_count},
+    )
     orchestrator = RuntimeOrchestrator(
         settings.runtime_config, evidence_engine, market_intelligence_engine,
         strategy_engine, risk_engine, compliance_engine, bridge_submit,
@@ -1048,7 +1108,7 @@ def run_foreground(config_path: Path) -> int:
     # down, never bypassed.
     live_cycle_thread = threading.Thread(
         target=_live_cycle_loop,
-        args=(orchestrator, market_data_engine, bridge_engine, profile, compliance_state_store, news_engine),
+        args=(orchestrator, market_data_engine, bridge_engine, profile, compliance_state_store, in_flight_store, news_engine),
         name="titan_protocol-live-cycle", daemon=True,
     )
     live_cycle_thread.start()

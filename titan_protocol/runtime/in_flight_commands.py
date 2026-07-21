@@ -86,6 +86,43 @@ when a resolved pair is allowed to accept a new submission. TTL-expired
 entries (no `ExecutionReport` ever arrived) skip this extra wait -- by
 the time TTL has elapsed there is no fresher signal to wait for, and
 piling more delay onto an already-lost report would just compound it.
+
+Bounded position-confirmation wait (production-readiness hardening):
+the wait described above had no upper bound -- if `/bridge/positions`
+reporting permanently stopped after a command resolved, the pair would
+stay blocked forever even though the underlying command is long since
+terminal (execution/rejection already happened; only confirming the
+resulting position count is outstanding). `expire_stale_position_
+confirmations()` closes this the same way TTL already closes the
+undelivered-command case: once a pair has been waiting longer than
+`position_confirmation_timeout_seconds`, it is released outright --
+fail-safe, not fail-open, since nothing here ever decides a trade or
+fabricates a position count. Releasing the pair only permits a *future*
+cycle to submit a fresh command if every other gate (Strategy, Risk,
+Compliance) still approves one; it does not itself submit, execute, or
+assume anything succeeded. Capital preservation is maintained because
+Compliance's own live position-limit check (`max_positions_per_pair`,
+fed by the Bridge's actual `/bridge/positions` reports, entirely
+independent of this registry) still refuses a second position for a
+pair whose prior one is genuinely still open, once positions reporting
+resumes -- this timeout only prevents *this registry* from becoming a
+permanent, unrecoverable deadlock when telemetry alone has stalled.
+
+Restart-safe persistence (production-readiness hardening):
+`snapshot_for_persistence()`/`restore()` let a caller (see
+`titan_protocol.runtime.in_flight_store`) save and reload only the four
+fields needed to recover a pair-level block across a Bridge process
+restart -- correlation_id, pair, state, and the entry's *original*
+timestamp. Restoring never touches `CommandQueue` (which has no
+memory of a pre-restart `TradeCommand` either) and never itself submits
+anything; it only re-establishes `has_unresolved()`/
+`is_awaiting_position_confirmation()` returning `True` for whatever was
+still open at shutdown, using each entry's original timestamp so its
+existing TTL/timeout window keeps counting from when it actually
+happened rather than resetting on every restart. An entry already past
+its own TTL/timeout as of the restore time is not restored at all --
+restoring an already-expired block just to immediately re-expire it
+would serve no purpose.
 """
 
 from __future__ import annotations
@@ -93,7 +130,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -102,21 +139,58 @@ class _InFlightEntry:
     submitted_at: datetime
 
 
+@dataclass(frozen=True)
+class _AwaitingConfirmationEntry:
+    correlation_id: str
+    resolved_at: datetime
+
+
+@dataclass(frozen=True)
+class InFlightSnapshotEntry:
+    """The minimal, restart-persistable shape of one tracked entry --
+    exactly the four fields `titan_protocol.runtime.in_flight_store`
+    persists. `state` is `"in_flight"` (still in `_by_pair`) or
+    `"awaiting_position_confirmation"`; `timestamp` is that entry's
+    original `submitted_at`/`resolved_at`, never a restore-time value."""
+
+    pair: str
+    correlation_id: str
+    state: str
+    timestamp: datetime
+
+
+#: Default position-confirmation timeout: comfortably many multiples of
+#: the EA's own telemetry cadence (positions are reported alongside
+#: every heartbeat, default 5s -- see mt5/TitanProtocolEA.mq5's
+#: HeartbeatIntervalSeconds), so a normal, momentary delay never trips
+#: it, while still bounding the wait to a couple of minutes instead of
+#: forever if reporting has genuinely, permanently stopped.
+_DEFAULT_POSITION_CONFIRMATION_TIMEOUT_SECONDS = 120.0
+
+
 class InFlightCommandRegistry:
     """Thread safety: reached from the live-cycle loop only in this
     codebase's current wiring (one thread), but guarded by a lock
     regardless -- cheap, and removes any future assumption that this
     can only ever be called single-threaded."""
 
-    def __init__(self, ttl_seconds: float) -> None:
+    def __init__(
+        self,
+        ttl_seconds: float,
+        position_confirmation_timeout_seconds: float = _DEFAULT_POSITION_CONFIRMATION_TIMEOUT_SECONDS,
+    ) -> None:
         self._ttl_seconds = ttl_seconds
+        self._position_confirmation_timeout_seconds = position_confirmation_timeout_seconds
         self._lock = threading.Lock()
         self._by_pair: Dict[str, _InFlightEntry] = {}
         # Pair -> the moment reconcile() observed that pair's command
         # resolve via a real ExecutionReport (never set on TTL expiry --
         # see reconcile()). has_unresolved() keeps blocking a pair listed
-        # here until confirm_position_report() releases it.
-        self._awaiting_position_confirmation: Dict[str, datetime] = {}
+        # here until confirm_position_report() releases it, or until
+        # expire_stale_position_confirmations() releases it fail-safe
+        # after position_confirmation_timeout_seconds.
+        self._awaiting_position_confirmation: Dict[str, _AwaitingConfirmationEntry] = {}
+        self._position_confirmation_timeout_count = 0
 
     def has_unresolved(self, pair: str, now: datetime) -> bool:
         """True if `pair` has a command outstanding that has neither
@@ -165,7 +239,9 @@ class InFlightCommandRegistry:
             for pair, entry in self._by_pair.items():
                 if is_resolved(entry.correlation_id):
                     to_drop.append(pair)
-                    self._awaiting_position_confirmation[pair] = now
+                    self._awaiting_position_confirmation[pair] = _AwaitingConfirmationEntry(
+                        correlation_id=entry.correlation_id, resolved_at=now,
+                    )
                     continue
                 if is_abandoned is not None and is_abandoned(entry.correlation_id):
                     to_drop.append(pair)
@@ -189,12 +265,49 @@ class InFlightCommandRegistry:
             return 0
         with self._lock:
             confirmed = [
-                pair for pair, resolved_at in self._awaiting_position_confirmation.items()
-                if resolved_at <= positions_snapshot_at
+                pair for pair, awaiting in self._awaiting_position_confirmation.items()
+                if awaiting.resolved_at <= positions_snapshot_at
             ]
             for pair in confirmed:
                 del self._awaiting_position_confirmation[pair]
             return len(confirmed)
+
+    def expire_stale_position_confirmations(self, now: datetime) -> Tuple[Tuple[str, str, float], ...]:
+        """Call once per live cycle, alongside `confirm_position_report()`
+        (order between the two does not matter -- they touch disjoint
+        pairs on any given call). Fail-safe release: a pair still in
+        `_awaiting_position_confirmation` longer than
+        `position_confirmation_timeout_seconds` is released outright, so
+        a permanent stall in `/bridge/positions` reporting can never
+        block a pair forever (see class docstring for why this preserves
+        capital preservation rather than weakening it). Returns one
+        `(pair, correlation_id, waited_seconds)` tuple per pair released
+        this call -- deliberately returned, not logged here, so the
+        caller (which already owns the logger) can log/alert with full
+        context; this module stays free of logging concerns, matching
+        every other method here. Also increments the cumulative
+        `position_confirmation_timeout_count()` counter by the number
+        released."""
+        with self._lock:
+            timeout = self._position_confirmation_timeout_seconds
+            released = []
+            for pair, awaiting in list(self._awaiting_position_confirmation.items()):
+                waited_seconds = (now - awaiting.resolved_at).total_seconds()
+                if waited_seconds > timeout:
+                    released.append((pair, awaiting.correlation_id, waited_seconds))
+                    del self._awaiting_position_confirmation[pair]
+            if released:
+                self._position_confirmation_timeout_count += len(released)
+            return tuple(released)
+
+    def position_confirmation_timeout_count(self) -> int:
+        """Cumulative count of pairs ever released by
+        `expire_stale_position_confirmations()` -- never decreases,
+        exposed for diagnostics/health reporting alongside
+        `awaiting_position_confirmation_count()`'s current (instantaneous)
+        count."""
+        with self._lock:
+            return self._position_confirmation_timeout_count
 
     def correlation_id_for(self, pair: str) -> Optional[str]:
         with self._lock:
@@ -213,5 +326,75 @@ class InFlightCommandRegistry:
         with self._lock:
             return pair in self._awaiting_position_confirmation
 
+    # -- Restart-safe persistence (production-readiness hardening) -------
 
-__all__ = ["InFlightCommandRegistry"]
+    def snapshot_for_persistence(self) -> Tuple[InFlightSnapshotEntry, ...]:
+        """Everything a caller (`titan_protocol.runtime.in_flight_store`)
+        needs to persist to survive a Bridge restart -- exactly the four
+        minimal fields, nothing more (in particular, never the original
+        `TradeCommand`; `CommandQueue` is not persisted, so a restored
+        entry can only ever be released by its own TTL/timeout, never by
+        a late-arriving `ExecutionReport` for a correlation_id
+        `CommandQueue` no longer has any memory of -- see module
+        docstring). An abandoned or plain-expired pair is already removed
+        from `_by_pair` by `reconcile()` before this is ever called
+        (once per cycle, after reconcile()), so it is structurally
+        impossible for this snapshot to ever include one -- persistence
+        cannot resurrect what reconcile() has already dropped."""
+        with self._lock:
+            in_flight_entries = tuple(
+                InFlightSnapshotEntry(pair=pair, correlation_id=entry.correlation_id, state="in_flight", timestamp=entry.submitted_at)
+                for pair, entry in self._by_pair.items()
+            )
+            awaiting_entries = tuple(
+                InFlightSnapshotEntry(pair=pair, correlation_id=awaiting.correlation_id, state="awaiting_position_confirmation", timestamp=awaiting.resolved_at)
+                for pair, awaiting in self._awaiting_position_confirmation.items()
+            )
+            return in_flight_entries + awaiting_entries
+
+    def restore(self, entries: "Tuple[InFlightSnapshotEntry, ...]", now: datetime) -> int:
+        """Reinserts entries recovered from disk after a Bridge restart,
+        using each entry's ORIGINAL `timestamp` (never `now`) so its
+        existing TTL/timeout window keeps counting from when it actually
+        happened rather than resetting on every restart. Call once, at
+        startup, before the first live cycle -- an entry for a pair
+        already tracked in memory is skipped (in-memory state always
+        wins; this only ever matters if `restore()` is called more than
+        once, which normal startup never does). An entry already past
+        its own TTL/timeout as of `now` is skipped entirely rather than
+        restored just to be immediately re-expired next cycle. Returns
+        the number of entries actually restored, for logging. Never
+        submits, executes, or resolves anything itself -- restoring only
+        re-establishes `has_unresolved()`/`is_awaiting_position_confirmation()`
+        returning `True` for whatever was still open at shutdown, which
+        is what actually prevents a duplicate submission; the ordinary
+        `reconcile()`/`confirm_position_report()`/
+        `expire_stale_position_confirmations()` cycle machinery (entirely
+        unmodified) takes over from there exactly as it would for an
+        entry created without a restart."""
+        with self._lock:
+            restored = 0
+            for entry in entries:
+                if entry.pair in self._by_pair or entry.pair in self._awaiting_position_confirmation:
+                    continue
+                age_seconds = (now - entry.timestamp).total_seconds()
+                if entry.state == "in_flight":
+                    if age_seconds > self._ttl_seconds:
+                        continue
+                    self._by_pair[entry.pair] = _InFlightEntry(correlation_id=entry.correlation_id, submitted_at=entry.timestamp)
+                    restored += 1
+                elif entry.state == "awaiting_position_confirmation":
+                    if age_seconds > self._position_confirmation_timeout_seconds:
+                        continue
+                    self._awaiting_position_confirmation[entry.pair] = _AwaitingConfirmationEntry(
+                        correlation_id=entry.correlation_id, resolved_at=entry.timestamp,
+                    )
+                    restored += 1
+                # An unrecognized `state` value (e.g. a future schema this
+                # version predates) is skipped, not raised -- fail-safe,
+                # consistent with every other corruption-handling choice
+                # in this hardening pass.
+            return restored
+
+
+__all__ = ["InFlightCommandRegistry", "InFlightSnapshotEntry"]

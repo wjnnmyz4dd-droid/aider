@@ -367,6 +367,132 @@ transport=` tally all agree on Socket, with no fallback event —
 No transport redesign, no Bridge route behavior change, no pipeline-stage
 engine touched.
 
+**Amendment 8 (2026-07-21 — "Bounded timeout for the position-confirmation
+wait"):** a live-deployment production-readiness review identified that
+`InFlightCommandRegistry`'s post-resolution position-confirmation wait
+(added to close the ExecutionReport-vs-PositionReport race, see this
+ADR's own command-lifecycle hardening) had no upper bound — if
+`/bridge/positions` reporting permanently stopped after a command
+resolved, the pair would stay blocked forever even though the underlying
+command is long since terminal (execution/rejection already happened;
+only confirming the resulting position count was outstanding).
+
+Fixed with a new, configurable `position_confirmation_timeout_seconds`
+(`RuntimeConfig`, default 120.0 seconds — comfortably many multiples of
+the EA's own telemetry cadence, `HeartbeatIntervalSeconds=5` by default,
+so a normal momentary delay never trips it): once a pair has waited
+longer than this bound, `InFlightCommandRegistry.
+expire_stale_position_confirmations()` releases it outright, logs a
+`logger.warning("position_confirmation_timeout_released", ...)` citing
+the pair, correlation_id, and exact wait duration, and increments a
+cumulative `position_confirmation_timeout_count()` counter surfaced in
+`run_status`/`health_check.py` alongside the existing (instantaneous)
+`awaiting_position_confirmation_count()`.
+
+**Why this preserves, rather than weakens, capital preservation:**
+releasing the pair only permits a *future* cycle to submit a fresh
+command if every other gate (Strategy, Risk, Compliance) still approves
+one — it does not itself submit, execute, or assume anything succeeded.
+`ComplianceEngine`'s own `check_position_limits()` reads
+`portfolio_state.positions_for_pair` from the Bridge's actual, live
+`/bridge/positions` reports — entirely independent of this registry —
+and still refuses a second position for a pair whose prior one is
+genuinely still open, once positions reporting resumes at all. This
+timeout only prevents *this registry* from becoming an unrecoverable,
+permanent deadlock when telemetry alone has stalled; it never fabricates
+a position count or bypasses the real guard against a duplicate
+position.
+
+Additive only: `InFlightCommandRegistry.__init__` gains one new parameter
+with a default (`position_confirmation_timeout_seconds`), so every
+existing caller is unaffected unless it opts into a different value via
+`RuntimeConfig`/the JSON config's `runtime.position_confirmation_timeout_seconds`
+key. `reconcile()`/`confirm_position_report()`'s existing signatures,
+return values, and tested behavior are unchanged.
+
+No transport change, no Bridge route behavior change, no pipeline-stage
+engine touched.
+
+**Amendment 9 (2026-07-21 — "Restart-safe persistence for unresolved
+in-flight commands"):** the same review identified that `CommandQueue`
+and `InFlightCommandRegistry` are entirely in-memory — a Bridge process
+restart between "command delivered" and "reconciled" forgets the command
+existed until the next positions snapshot arrives, risking a duplicate
+submission for a pair whose prior command might still resolve into a
+real position at the broker.
+
+Fixed with a new, lightweight `titan_protocol.runtime.in_flight_store`
+module (`InFlightCommandStore`/`InFlightStoreConfig`), reusing the same
+atomic-write technique already proven by
+`titan_protocol.compliance_state_store.store.ComplianceStateStore`
+(temp file + `fsync` + `os.replace`, `.bak` rotation before every
+overwrite):
+
+- Persists only the four minimal fields
+  `InFlightCommandRegistry.snapshot_for_persistence()` exposes —
+  correlation_id, pair, state (`"in_flight"` or
+  `"awaiting_position_confirmation"`), and the entry's *original*
+  timestamp — deliberately never the original `TradeCommand`.
+  `CommandQueue` itself remains unpersisted; a restored entry can
+  therefore only ever be released by its own TTL/timeout, never by a
+  late-arriving `ExecutionReport` for a correlation_id the fresh
+  `CommandQueue` has no memory of. This is a scope limit chosen to keep
+  persistence lightweight (no database, no second source of truth for
+  command content), not an oversight — see the accepted, documented
+  limitation below.
+- On Bridge startup, `InFlightCommandRegistry.restore(entries, now)`
+  reinserts each entry using its *original* timestamp (never restart
+  time), so its existing TTL/position-confirmation-timeout window keeps
+  counting from when it actually happened rather than resetting on every
+  restart. An entry already past its own TTL/timeout as of restart time
+  is skipped entirely. Restoring never submits, executes, or resolves
+  anything itself — it only re-establishes `has_unresolved()`/
+  `is_awaiting_position_confirmation()` returning `True` for whatever was
+  still open at shutdown, which is what prevents the duplicate
+  submission; the ordinary `reconcile()`/`confirm_position_report()`/
+  `expire_stale_position_confirmations()` cycle machinery (entirely
+  unmodified by this amendment) takes over from there.
+- The full current snapshot is saved once per live cycle, always
+  overwriting rather than patching, immediately after that cycle's
+  `reconcile()`/`confirm_position_report()`/
+  `expire_stale_position_confirmations()` calls — a pair any of those
+  already dropped this cycle (resolved-and-confirmed, abandoned, or
+  timed out) is structurally absent from the very next save, so
+  persistence can never resurrect an abandoned or already-terminal
+  command.
+- Corruption is handled fail-safe, not fail-closed, unlike
+  `ComplianceStateStore`: a missing, corrupted, or schema-mismatched
+  state file (and an equally unusable `.bak`) makes `load()` return an
+  empty tuple rather than raising. Losing this best-effort bookkeeping
+  for one restart only returns that restart to today's pre-hardening
+  behavior for whatever was mid-flight at the crash instant — never a
+  refusal to start the Bridge — and `ComplianceEngine`'s own independent
+  live position-limit check (unaffected by this file's state) remains
+  the actual duplicate-position guard regardless.
+
+**Accepted, documented limitation:** a command genuinely delivered before
+a restart, whose `ExecutionReport` only arrives after the restart, cannot
+be recorded by the restarted `CommandQueue` (which never enqueued it) —
+`handle_execution_report()` correctly returns `False` for it, exactly as
+it would for any unknown correlation_id. The pair stays protected by its
+own (restart-surviving) TTL until that elapses, rather than by ever
+truly resolving the stale command. Persisting the full `TradeCommand` to
+close this residual gap was deliberately rejected as disproportionate to
+the risk it would close, given `ComplianceEngine`'s independent guard
+already covers the actual duplicate-position outcome once
+`/bridge/positions` reporting resumes post-restart.
+
+Additive only: `deployment_windows/start.py` gains one new constructed
+object (`InFlightCommandStore`) and threads it through
+`_live_cycle_loop()`'s existing parameter list (the same pattern
+`compliance_state_store` already uses); no existing function signature's
+*behavior* changes for a caller that does not construct/pass this new
+argument (every call site in this codebase does, since restart-safety is
+enabled unconditionally, matching this amendment's charter mandate).
+
+No transport change, no Bridge route behavior change, no pipeline-stage
+engine touched.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

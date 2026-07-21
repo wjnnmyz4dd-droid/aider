@@ -359,6 +359,10 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         runtime_timeout_ms=_get_float(runtime_section, "runtime_timeout_ms", 250.0),
         snapshot_timeout_ms=_get_float(runtime_section, "snapshot_timeout_ms", 50.0),
         bridge_timeout_ms=_get_float(runtime_section, "bridge_timeout_ms", 100.0),
+        position_confirmation_timeout_seconds=_get_float(
+            runtime_section, "position_confirmation_timeout_seconds",
+            RuntimeConfig.position_confirmation_timeout_seconds,
+        ),
     )
     if bridge_config.magic_number != runtime_config.magic_number:
         raise ConfigError(

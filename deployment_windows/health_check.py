@@ -101,6 +101,8 @@ def _print_run_status_panel(run_status: Optional[dict]) -> None:
     print(f"  Last heartbeat age        : {_format_age(run_status.get('last_heartbeat_age_seconds'))}")
     print(f"  Last position report age  : {_format_age(run_status.get('last_position_report_age_seconds'))}")
     print(f"  In-flight command count   : {run_status.get('in_flight_command_count')}")
+    print(f"  Awaiting position confirm : {run_status.get('awaiting_position_confirmation_count')}")
+    print(f"  Position confirm timeouts : {run_status.get('position_confirmation_timeout_count')} (cumulative)")
     print(f"  Open positions per pair   : {run_status.get('open_positions_per_pair') or {}}")
     print(f"  Configured max/pair       : {run_status.get('configured_max_positions_per_pair')}")
     account_state_fresh = run_status.get("account_state_fresh")

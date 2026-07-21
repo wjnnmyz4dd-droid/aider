@@ -46,7 +46,8 @@
     "engine_timeout_ms": 100.0,
     "runtime_timeout_ms": 250.0,
     "snapshot_timeout_ms": 50.0,
-    "bridge_timeout_ms": 100.0
+    "bridge_timeout_ms": 100.0,
+    "position_confirmation_timeout_seconds": 120.0
   },
 
   "trading_profile": {

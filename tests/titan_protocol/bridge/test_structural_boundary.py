@@ -230,6 +230,12 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
         def is_allowed(path: str) -> bool:
             if path.startswith(allowed_prefixes):
                 return True
+            if path == "CHANGELOG.md":
+                # ADR-034 Amendments 8/9 (position-confirmation timeout +
+                # restart-safe in-flight persistence): a dated changelog
+                # entry alongside the already-allowed docs/adr/ and
+                # titan_protocol/ changes -- no unrelated content.
+                return True
             return "/" not in path and path.startswith("PHANTOM_") and path.endswith(".md")
 
         unexpected = [line[3:] for line in result.stdout.splitlines() if not is_allowed(line[3:])]

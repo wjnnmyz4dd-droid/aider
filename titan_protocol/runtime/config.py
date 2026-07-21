@@ -22,5 +22,12 @@ class RuntimeConfig:
     snapshot_timeout_ms: float = 50.0
     bridge_timeout_ms: float = 100.0
 
+    # Production-readiness hardening (ADR-034 Amendment 8): the maximum
+    # time InFlightCommandRegistry lets a resolved (executed/rejected)
+    # pair wait for a confirming /bridge/positions snapshot before
+    # releasing it fail-safe. See in_flight_commands.py's own docstring
+    # for the full capital-preservation rationale.
+    position_confirmation_timeout_seconds: float = 120.0
+
 
 __all__ = ["RUNTIME_VERSION", "RuntimeConfig"]
