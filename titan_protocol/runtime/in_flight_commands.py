@@ -21,6 +21,29 @@ dependency on `titan_protocol.bridge` at all; it is handed a plain
 `reconcile()`), matching the same narrow-callable pattern
 `RuntimeOrchestrator.bridge_submit` already uses.
 
+Undelivered-command abandonment (fix for "the runtime never exits the
+failure loop"): `CommandQueue.poll()` silently drops a pending command
+once it is older than `BridgeConfig.command_ttl_seconds` -- the EA
+simply never receives it, with no signal back to Runtime that this
+happened. Before this fix, `has_unresolved()` had no way to tell "the EA
+is still working on this" apart from "this command was never delivered
+at all and is already gone from the queue" -- both looked identical (an
+entry present in `_by_pair`, not yet resolved), so a pair stayed blocked
+for the full `ttl_seconds` (this registry's own, much longer bound, meant
+for "delivered but the result never arrived") even though the underlying
+command had already vanished from `CommandQueue` after `command_ttl_seconds`.
+Under a persistently flaky poll transport this reproduces indefinitely:
+submit, silently expire undelivered, wait out most of `ttl_seconds` doing
+nothing, resubmit, repeat -- Compliance keeps approving entries that never
+reach the market. `reconcile()` now accepts an optional `is_delivered`
+callable (`BridgeEngine.command_delivered`, mirroring `command_resolved`)
+and, when supplied alongside `undelivered_grace_seconds` (constructor
+parameter), drops an entry as abandoned once it is older than that grace
+period and was never delivered -- freeing the pair for a fresh submission
+far sooner than the full `ttl_seconds`, instead of blindly waiting it out.
+Both new parameters default to `None`/disabled, so any existing caller
+that does not opt in keeps exactly its prior behavior.
+
 Post-resolution position confirmation: an `ExecutionReport` can arrive
 (marking a command resolved) before the *next* `/bridge/positions`
 snapshot has caught up to reflect the position it just opened -- these
@@ -62,8 +85,14 @@ class InFlightCommandRegistry:
     regardless -- cheap, and removes any future assumption that this
     can only ever be called single-threaded."""
 
-    def __init__(self, ttl_seconds: float) -> None:
+    def __init__(self, ttl_seconds: float, undelivered_grace_seconds: Optional[float] = None) -> None:
         self._ttl_seconds = ttl_seconds
+        # None (default) preserves prior behavior exactly -- only
+        # ttl_seconds bounds how long an entry may sit unresolved,
+        # regardless of delivery status. Set to (roughly)
+        # BridgeConfig.command_ttl_seconds to close the undelivered-
+        # abandonment gap described in this module's docstring.
+        self._undelivered_grace_seconds = undelivered_grace_seconds
         self._lock = threading.Lock()
         self._by_pair: Dict[str, _InFlightEntry] = {}
         # Pair -> the moment reconcile() observed that pair's command
@@ -92,26 +121,45 @@ class InFlightCommandRegistry:
             self._by_pair[pair] = _InFlightEntry(correlation_id=correlation_id, submitted_at=now)
             self._awaiting_position_confirmation.pop(pair, None)
 
-    def reconcile(self, now: datetime, is_resolved: Callable[[str], bool]) -> int:
+    def reconcile(
+        self,
+        now: datetime,
+        is_resolved: Callable[[str], bool],
+        is_delivered: Optional[Callable[[str], bool]] = None,
+    ) -> int:
         """Drops every tracked entry that has either resolved (per
         `is_resolved(correlation_id)`, a caller-supplied query -- this
-        module never assumes how resolution is determined) or expired
-        past `ttl_seconds`. A resolved (not expired) pair moves into
-        `_awaiting_position_confirmation` rather than being fully
-        cleared -- `has_unresolved()` keeps blocking it until
-        `confirm_position_report()` releases it. Returns the number of
-        entries dropped this call, for logging. Call once per live
-        cycle, before checking `has_unresolved()` for that cycle's
+        module never assumes how resolution is determined), been
+        abandoned (never delivered, per `is_delivered`, and older than
+        `undelivered_grace_seconds` -- only checked when both that
+        constructor parameter and `is_delivered` are supplied), or
+        expired past `ttl_seconds`. A resolved (not expired, not
+        abandoned) pair moves into `_awaiting_position_confirmation`
+        rather than being fully cleared -- `has_unresolved()` keeps
+        blocking it until `confirm_position_report()` releases it. An
+        abandoned or plain-expired entry is dropped outright: nothing
+        executed, so there is no position report to await. Returns the
+        number of entries dropped this call, for logging. Call once per
+        live cycle, before checking `has_unresolved()` for that cycle's
         pairs."""
         with self._lock:
             to_drop = []
             for pair, entry in self._by_pair.items():
-                if (now - entry.submitted_at).total_seconds() > self._ttl_seconds:
-                    to_drop.append(pair)
-                    continue
+                age = (now - entry.submitted_at).total_seconds()
                 if is_resolved(entry.correlation_id):
                     to_drop.append(pair)
                     self._awaiting_position_confirmation[pair] = now
+                    continue
+                if (
+                    self._undelivered_grace_seconds is not None
+                    and is_delivered is not None
+                    and age > self._undelivered_grace_seconds
+                    and not is_delivered(entry.correlation_id)
+                ):
+                    to_drop.append(pair)
+                    continue
+                if age > self._ttl_seconds:
+                    to_drop.append(pair)
             for pair in to_drop:
                 del self._by_pair[pair]
             return len(to_drop)

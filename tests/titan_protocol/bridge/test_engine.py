@@ -123,6 +123,31 @@ class TestCommandResolved(unittest.TestCase):
         self.assertTrue(engine.command_resolved("corr-1"))
 
 
+class TestCommandDelivered(unittest.TestCase):
+    """command_delivered() -- mirrors command_resolved()'s own additive
+    passthrough pattern. Lets Runtime's InFlightCommandRegistry tell "the
+    EA actually polled and received this command" apart from "still
+    sitting in CommandQueue, never yet delivered" -- the distinction the
+    undelivered-command abandonment fix needs (see
+    titan_protocol/runtime/in_flight_commands.py)."""
+
+    def test_unknown_correlation_id_is_not_delivered(self):
+        engine, _, _, _ = make_engine()
+        self.assertFalse(engine.command_delivered("never-submitted"))
+
+    def test_enqueued_but_not_yet_polled_is_not_delivered(self):
+        engine, queue, _, _ = make_engine()
+        queue.enqueue(make_command(correlation_id="corr-1"), is_ready=True)
+        self.assertFalse(engine.command_delivered("corr-1"))
+
+    def test_polled_command_is_delivered(self):
+        engine, queue, _, _ = make_engine()
+        queue.enqueue(make_command(correlation_id="corr-1"), is_ready=True)
+        delivered = engine.poll_commands(T0)
+        self.assertEqual(len(delivered), 1)
+        self.assertTrue(engine.command_delivered("corr-1"))
+
+
 class TestSubmitAndPollCommands(unittest.TestCase):
     def test_submit_rejected_when_not_ready(self):
         engine, _, _, metrics = make_engine()

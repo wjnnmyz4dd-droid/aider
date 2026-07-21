@@ -329,6 +329,81 @@ state before the trading day's balance has moved, or manually correct
 `state/compliance_state.json`'s `daily_starting_balance` once if it
 bootstrapped from a stale snapshot.
 
+## 10. HTTP poll had no backoff + undelivered commands blocked a pair for 20x longer than necessary — CLOSED
+
+A live deployment reported the section 7 fixes working as designed
+(transport pseudo-status failures correctly classified and logged) but
+the underlying WebRequest() instability continuing, visible as
+continuous per-second `TITAN_DIAG ATTEMPT`/failure lines in the Experts
+log ("looping"), and separately asked whether this explains why Titan
+wasn't trading. Two distinct, real defects were found, both fixed
+(ADR-034 Amendment 5):
+
+**Defect A — no backoff between polling cycles.** `HttpGet()`'s
+`MaxRetries`/`RetryDelayMs` bounds retries *within* one
+`/bridge/commands/poll` call, but `OnTimer()` (`mt5/TitanProtocolEA.mq5`)
+called `PollAndExecuteCommands()` again every single tick (once per
+second) regardless of the previous cycle's outcome, unlike
+`EnsureSocketConnected()`'s own reconnect backoff for the Socket
+transport. A persistently failing poll therefore retried at full
+intensity forever — the actual mechanism behind the log spam.
+
+**CLOSED:** `PollAndExecuteCommands()` now gates itself behind an
+exponential backoff (`PollBackoffBaseDelayMs` × 2^attempt, capped at
+`PollBackoffMaxDelayMs` — 500ms/1s/2s/4s/8s/15s, mirroring
+`EnsureSocketConnected()`'s own technique), reset on the next successful
+poll, HTTP-only (Socket's own backoff is untouched). A skipped tick
+returns before even printing the `TITAN_DIAG ATTEMPT` line — the actual
+elimination of per-tick spam.
+
+**Defect B (the "why doesn't Titan ever trade" answer) — undelivered
+commands were held in-flight 20x longer than necessary.** A
+`TradeCommand` Compliance approves is enqueued into `CommandQueue`
+independently of whether the EA ever successfully polls it.
+`CommandQueue.poll()` silently drops a pending command once it exceeds
+`BridgeConfig.command_ttl_seconds` (15s default) — the EA simply never
+receives it, with no signal back to Runtime. `InFlightCommandRegistry.
+has_unresolved()` had no way to distinguish "the EA is still working on
+this" from "this command already vanished, undelivered, minutes ago" —
+both looked identical (an entry present, not yet resolved) — so the pair
+stayed blocked for the full in-flight `ttl_seconds` (300s,
+`_IN_FLIGHT_COMMAND_TTL_SECONDS`) regardless. Under a persistently flaky
+poll transport this reproduces indefinitely: submit, silently expire
+undelivered within 15s, wait out most of a 5-minute window doing
+nothing, resubmit, repeat — Compliance keeps approving entries that
+never reach the market, with no error anywhere in the loop.
+
+**CLOSED:** `BridgeEngine.command_delivered()` (new, mirrors
+`command_resolved()`) exposes `CommandQueue.is_delivered()`.
+`InFlightCommandRegistry` gained an optional `undelivered_grace_seconds`
+constructor parameter and an optional `is_delivered` parameter on
+`reconcile()` (both default to prior behavior when omitted, so no
+existing caller is affected) — an entry that was never delivered and is
+older than that grace period (wired to `BridgeConfig.command_ttl_seconds`
+in `start.py`) is now dropped as abandoned immediately, freeing the pair
+in ~15s instead of ~300s. A resolved entry (a real `ExecutionReport`
+arrived) always takes priority — only a genuinely undelivered, expired
+command is treated as abandoned.
+
+**Also added:** `deployment_windows/verify_transport_configuration.py` —
+answers "are the EA and Bridge actually running the same transport" from
+real evidence only (never assumed): Bridge's configured
+`bridge.transport`, the EA's own OnInit-resolved `Transport=` value, the
+Bridge's actual bound listener(s), a per-request tally of the EA's own
+`TITAN_DIAG ATTEMPT transport=` lines, and whether the EA's automatic
+Socket→HTTP fallback (Amendment 3) fired — reusing
+`diagnose_communication.py`'s own log-location/parsing helpers.
+
+**Still open, not eliminated by this fix (never in scope for it):** the
+underlying native `WebRequest()`/WinINet pseudo-status instability
+(`1001`/`1003`, `GetLastError=5203`) itself — this fix stops it from
+producing runaway log spam and from silently starving trade entries for
+minutes at a time, but does not make the platform-level WinINet layer
+itself reliable. The Socket transport (ADR-034's own answer to this
+exact instability class) remains the recommended mitigation; use
+`verify_transport_configuration.py` to confirm both the EA and Bridge
+are genuinely running it before concluding it "didn't help."
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access

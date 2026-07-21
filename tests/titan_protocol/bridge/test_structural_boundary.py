@@ -206,6 +206,25 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # needed a received_at field); the rest are new test files.
             "tests/deployment_windows/test_compliance_state_persistence.py",
             "tests/titan_protocol/runtime/test_account_state_staleness_integration.py",
+            # ADR-034 Amendment 5 (HTTP poll-level exponential backoff) +
+            # the undelivered-command-abandonment runtime-state-machine
+            # fix: mt5/TitanProtocolEA.mq5 (already covered by "mt5/"),
+            # titan_protocol/runtime/in_flight_commands.py and
+            # titan_protocol/bridge/engine.py (already covered by
+            # "titan_protocol/"), deployment_windows/start.py (already
+            # covered above), docs/adr/ (already covered above). New test
+            # files this phase adds: the one under tests/mt5/ (not
+            # covered by any broader prefix -- individual EA test files
+            # are enumerated here, same as the transport-classification
+            # one above); the runtime integration test is already covered
+            # by the broad "tests/titan_protocol/" prefix.
+            "tests/mt5/test_titan_protocol_ea_poll_backoff.py",
+            # Part 2 of the same corrective patch: a new, additive
+            # transport-configuration verification script (reuses
+            # diagnose_communication.py's own log-location/parsing
+            # helpers rather than duplicating them) plus its test file.
+            "deployment_windows/verify_transport_configuration.py",
+            "tests/deployment_windows/test_verify_transport_configuration.py",
         )
 
         def is_allowed(path: str) -> bool:

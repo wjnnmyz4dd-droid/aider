@@ -800,7 +800,9 @@ def _live_cycle_loop(
         # release it, closing the window where an ExecutionReport arrives
         # before the position it opened is visible in the next
         # /bridge/positions snapshot.
-        resolved_count = orchestrator.in_flight_commands.reconcile(now, bridge_engine.command_resolved)
+        resolved_count = orchestrator.in_flight_commands.reconcile(
+            now, bridge_engine.command_resolved, bridge_engine.command_delivered,
+        )
         confirmed_count = orchestrator.in_flight_commands.confirm_position_report(latest_positions_snapshot_at)
         logger.info(
             "in_flight_registry_reconciled",
@@ -1014,7 +1016,15 @@ def run_foreground(config_path: Path) -> int:
         return bridge_engine.submit_command(command, now)
 
     runtime_metrics = RuntimeMetrics()
-    in_flight_commands = InFlightCommandRegistry(ttl_seconds=_IN_FLIGHT_COMMAND_TTL_SECONDS)
+    # Undelivered-command abandonment fix: a command that silently expires
+    # in CommandQueue before the EA ever polls it (older than
+    # settings.bridge_config.command_ttl_seconds) must not keep blocking
+    # this pair for the full, much longer ttl_seconds above -- see
+    # in_flight_commands.py's module docstring.
+    in_flight_commands = InFlightCommandRegistry(
+        ttl_seconds=_IN_FLIGHT_COMMAND_TTL_SECONDS,
+        undelivered_grace_seconds=settings.bridge_config.command_ttl_seconds,
+    )
     orchestrator = RuntimeOrchestrator(
         settings.runtime_config, evidence_engine, market_intelligence_engine,
         strategy_engine, risk_engine, compliance_engine, bridge_submit,

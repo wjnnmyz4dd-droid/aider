@@ -242,6 +242,17 @@ class BridgeEngine:
         CommandQueue already tracks."""
         return self._queue.is_executed(correlation_id)
 
+    def command_delivered(self, correlation_id: str) -> bool:
+        """Read-only passthrough to CommandQueue.is_delivered() -- mirrors
+        `command_resolved()`'s own pattern. Lets Runtime's
+        InFlightCommandRegistry tell "the EA has actually polled and
+        received this command" apart from "still sitting in the queue,
+        never yet delivered" -- the distinction the undelivered-command
+        abandonment fix (see in_flight_commands.py) needs to stop
+        blocking a pair for the full in-flight TTL after a command
+        silently expired in CommandQueue without ever reaching the EA."""
+        return self._queue.is_delivered(correlation_id)
+
     @property
     def latest_account_state(self) -> Optional[AccountState]:
         return self._latest_account_state

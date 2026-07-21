@@ -48,6 +48,8 @@ input int    RetryDelayMs             = 250;                       // Delay betw
 input int    MaxRequoteRetries        = 2;                         // Bounded trade-level retry count on requote/price-changed only
 input int    RequoteRetryDelayMs      = 100;                       // Delay between bounded requote retries
 input bool   DiagnosticMode           = false;                     // Transport-only HTTP diagnostics -- no behavior change when false
+input int    PollBackoffBaseDelayMs   = 500;                       // ADR-034 Amendment 5: first HTTP poll cooldown delay after a failure
+input int    PollBackoffMaxDelayMs    = 15000;                      // ADR-034 Amendment 5: HTTP poll cooldown ceiling
 
 //--- ADR-034: transport substrate selection -----------------------------
 enum ENUM_TRANSPORT_MODE
@@ -99,6 +101,17 @@ bool                g_hasFallenBackToHttp = false;
 // Amendment 1 (ADR-023) -- market-data reporting state.
 datetime g_lastBarOpenTime = 0;
 long     g_barSequence     = 0;
+
+// ADR-034 Amendment 5 -- HTTP poll-level exponential backoff state.
+// Mirrors EnsureSocketConnected()'s own reconnect backoff, applied to
+// /bridge/commands/poll instead of connection attempts: without this, a
+// persistently failing poll retried at full intensity every OnTimer tick
+// (once per second) forever -- the continuous per-second Experts-log
+// spam a live deployment reported. Never consulted on the Socket
+// transport, whose own reconnect backoff already governs retry pacing.
+int      g_consecutivePollFailures = 0;
+datetime g_lastPollAttemptAt       = 0;
+datetime g_lastSuccessfulPollAt    = 0;
 
 // Final Release Hardening -- server-side emergency-stop sync. Learned
 // only from /bridge/commands/poll's own `emergency_stop` field, never
@@ -1502,12 +1515,52 @@ void ExecutePartialClose(const string correlationId, const string positionId, co
 //+------------------------------------------------------------------+
 //| Command polling and dispatch                                        |
 //+------------------------------------------------------------------+
+
+// ADR-034 Amendment 5 -- true once enough time has passed since the last
+// recorded poll failure to try again (base * 2^attempt, capped at
+// PollBackoffMaxDelayMs); true unconditionally once a poll has succeeded
+// (g_consecutivePollFailures reset to 0). Same second-resolution
+// TimeCurrent() comparison technique EnsureSocketConnected() already
+// uses for its own reconnect backoff -- not a new precision this file
+// doesn't already rely on elsewhere.
+bool IsPollCooldownElapsed()
+  {
+   if(g_consecutivePollFailures == 0)
+      return(true);
+   int cappedAttempt = (g_consecutivePollFailures > 10) ? 10 : g_consecutivePollFailures - 1;
+   int delayMs = (int)MathMin((double)PollBackoffBaseDelayMs * MathPow(2.0, cappedAttempt),
+                               (double)PollBackoffMaxDelayMs);
+   return(((long)(TimeCurrent() - g_lastPollAttemptAt)) * 1000 >= delayMs);
+  }
+
 void PollAndExecuteCommands()
   {
+   // ADR-034 Amendment 5 -- only gates the HTTP transport: Socket's own
+   // EnsureSocketConnected() reconnect backoff already governs its retry
+   // pacing, and this cooldown must not change Socket behavior at all.
+   if(g_effectiveTransport == TRANSPORT_HTTP && !IsPollCooldownElapsed())
+      return; // still cooling down from a recent poll failure -- skip silently, no Experts-log spam
+
    int status;
    string response = BridgePollCommands(status);
+   g_lastPollAttemptAt = TimeCurrent();
    if(response == "")
+     {
+      if(g_effectiveTransport == TRANSPORT_HTTP)
+        {
+         g_consecutivePollFailures++;
+         int cappedAttempt = (g_consecutivePollFailures > 10) ? 10 : g_consecutivePollFailures - 1;
+         int delayMs = (int)MathMin((double)PollBackoffBaseDelayMs * MathPow(2.0, cappedAttempt),
+                                     (double)PollBackoffMaxDelayMs);
+         Print("TitanProtocolEA: /bridge/commands/poll failed -- entering HTTP poll cooldown. ",
+               "consecutivePollFailures=", g_consecutivePollFailures, " cooldownMs=", delayMs,
+               " nextPollAt=", TimeToIsoString(g_lastPollAttemptAt + (delayMs / 1000)),
+               " lastSuccessfulPollAt=", (g_lastSuccessfulPollAt > 0 ? TimeToIsoString(g_lastSuccessfulPollAt) : "never"));
+        }
       return; // no successful contact this cycle -- handled by the fail-closed check next tick
+     }
+   g_consecutivePollFailures = 0;
+   g_lastSuccessfulPollAt = TimeCurrent();
 
    // Final Release Hardening -- learn the server's emergency-stop state
    // from this same poll response (no separate endpoint, no duplicate

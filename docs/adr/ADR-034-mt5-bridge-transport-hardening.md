@@ -151,6 +151,92 @@ neither a transport redesign:
 Neither part of this amendment touches a pipeline-stage engine, a
 message schema, a validation rule, or the Bridge's route behavior.
 
+**Amendment 5 (2026-07-21 — "HTTP poll-level backoff + runtime state-
+machine fix"):** a live deployment reported the Amendment 4 fixes working
+as designed (transport-pseudo-status failures now correctly classified
+and logged) but the underlying instability continuing, visible as
+continuous per-second `TITAN_DIAG ATTEMPT`/failure spam in the Experts
+log ("looping"), and asked directly what Titan's own implementation got
+wrong relative to the reference architectures it was modeled after. Two
+distinct, real defects were found and fixed, neither a transport
+redesign:
+
+1. **`/bridge/commands/poll` had no backoff between polling cycles**,
+   unlike `EnsureSocketConnected()`'s own reconnect backoff for the
+   Socket transport. `HttpGet()`'s existing `MaxRetries`/`RetryDelayMs`
+   bounds retries *within* one poll call, but `OnTimer()` called
+   `PollAndExecuteCommands()` again every single tick (once per second)
+   regardless of the previous cycle's outcome — a persistently failing
+   poll therefore retried at full intensity forever. Fixed:
+   `PollAndExecuteCommands()` now gates itself behind
+   `IsPollCooldownElapsed()`, an exponential backoff (`PollBackoffBaseDelayMs`
+   × 2^attempt, capped at `PollBackoffMaxDelayMs` — 500ms/1s/2s/4s/8s/15s,
+   matching `EnsureSocketConnected()`'s own technique), reset immediately
+   on the next successful poll. HTTP-only by construction
+   (`g_effectiveTransport == TRANSPORT_HTTP`) — Socket's own reconnect
+   backoff is untouched, and this amendment changes no Socket-path
+   behavior. A skipped tick returns before even printing the `TITAN_DIAG
+   ATTEMPT` line, which is what actually eliminates the per-tick spam;
+   a real, failed poll attempt (already rate-limited by the backoff
+   itself) logs once with `consecutivePollFailures`/`cooldownMs`/
+   `nextPollAt`/`lastSuccessfulPollAt`.
+2. **The deeper "why doesn't Titan ever trade" question** traced to a
+   genuine runtime-state-machine gap, not the transport layer: a
+   `TradeCommand` Compliance approves is enqueued into `CommandQueue`
+   (`BridgeEngine.submit_command()`) independently of whether the EA
+   ever successfully polls it. `CommandQueue.poll()` silently drops a
+   pending command once it exceeds `BridgeConfig.command_ttl_seconds`
+   (15s default) — the EA simply never receives it, with no signal back
+   to Runtime. Before this fix, `InFlightCommandRegistry.has_unresolved()`
+   had no way to distinguish "the EA is still working on this" from
+   "this command already vanished, undelivered, 285 seconds ago" — both
+   looked identical (an entry present, not yet resolved) — so the pair
+   stayed blocked for the full in-flight `ttl_seconds` (300s, `deployment_windows/
+   start.py`'s `_IN_FLIGHT_COMMAND_TTL_SECONDS`) regardless. Under a
+   persistently flaky poll transport this reproduces indefinitely:
+   submit, silently expire undelivered within 15s, wait out most of a
+   5-minute window doing nothing, resubmit, repeat — Compliance keeps
+   approving entries that never reach the market, with no error anywhere
+   in the loop. Fixed: `BridgeEngine.command_delivered()` (new, mirrors
+   `command_resolved()`) exposes `CommandQueue.is_delivered()`;
+   `InFlightCommandRegistry` gained an optional `undelivered_grace_seconds`
+   constructor parameter and an optional `is_delivered` parameter on
+   `reconcile()` (both default to the prior behavior when omitted) — an
+   entry that was never delivered and is older than that grace period
+   (wired to `BridgeConfig.command_ttl_seconds` in `start.py`) is now
+   dropped as abandoned immediately, freeing the pair for a fresh
+   submission in ~15s instead of ~300s. A resolved entry (a real
+   `ExecutionReport` arrived) always takes priority over this check —
+   only a genuinely undelivered, expired command is treated as abandoned.
+3. **A new diagnostic, `deployment_windows/verify_transport_configuration.py`**,
+   answers "are the EA and Bridge actually running the same transport"
+   from real evidence (never assumed): the Bridge's configured
+   `bridge.transport`, the EA's own OnInit-resolved `Transport=` value,
+   the Bridge's actual bound listener(s), a per-request tally of the
+   EA's own `TITAN_DIAG ATTEMPT transport=` lines, and whether the EA's
+   automatic Socket→HTTP fallback (Amendment 3) fired — reusing
+   `diagnose_communication.py`'s own log-location/parsing helpers rather
+   than a second, divergent implementation.
+
+Comparison against the reference-repo research this session's audits
+already captured (`docs/research/mql5-json-api-2-audit.md`,
+`docs/research/dwx-zeromq-connector-audit.md`): the one lesson those
+audits flagged as actually transferable — "bounded, logged-reason retry
+on startup connectivity" — was already correctly implemented in this
+codebase, but only on the Socket transport; item 1 above closes that gap
+on the HTTP transport too. The reference repos' own reliability strategy
+otherwise routes through a compiled DLL + ZeroMQ, a tradeoff already
+evaluated and rejected for Titan Protocol on trust-boundary grounds
+(unchanged by this amendment) — there was no transplantable fix to adopt
+from there for either defect above.
+
+Neither part of this amendment redesigns the transport protocol or
+changes Bridge route behavior. Item 2 touches only
+`titan_protocol/runtime/in_flight_commands.py` (additive, backward-
+compatible parameters) and `titan_protocol/bridge/engine.py` (one new
+passthrough method, same pattern as `command_resolved()`) — no pipeline-
+stage engine, message schema, or validation rule changes.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)
