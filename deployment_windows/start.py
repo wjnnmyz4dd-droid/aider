@@ -1071,7 +1071,7 @@ def run_foreground(config_path: Path) -> int:
     in_flight_store = InFlightCommandStore(
         InFlightStoreConfig(state_file=settings.state_dir / "in_flight_commands.json")
     )
-    _startup_now = datetime.now(timezone.utc)
+    _startup_now = _utc_now()
     _restored_entries = in_flight_store.load()
     _restored_count = in_flight_commands.restore(_restored_entries, _startup_now)
     logger.info(
