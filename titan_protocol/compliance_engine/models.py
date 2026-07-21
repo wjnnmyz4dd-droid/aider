@@ -53,6 +53,13 @@ class ComplianceRuleId(Enum):
     MAX_SIMULTANEOUS_RISK_EXCEEDED = "MAX_SIMULTANEOUS_RISK_EXCEEDED"
     MAX_TRADES_PER_DAY_EXCEEDED = "MAX_TRADES_PER_DAY_EXCEEDED"
     CONSISTENCY_RULE_VIOLATED = "CONSISTENCY_RULE_VIOLATED"
+    #: The EA-reported account balance backing this evaluation is older
+    #: than `ComplianceRuleProfile.max_account_state_age_seconds` --
+    #: daily-loss/drawdown/profit-protection cannot be evaluated safely
+    #: against a stale balance, so every new entry is rejected until a
+    #: fresh `/bridge/account` report arrives (never affects existing
+    #: position management, which this engine has no authority over).
+    ACCOUNT_STATE_STALE = "ACCOUNT_STATE_STALE"
     INSUFFICIENT_CONFIDENCE_FOR_ELEVATED_LOSS_BAND = "INSUFFICIENT_CONFIDENCE_FOR_ELEVATED_LOSS_BAND"
     INSUFFICIENT_QUALITY_FOR_ELEVATED_LOSS_BAND = "INSUFFICIENT_QUALITY_FOR_ELEVATED_LOSS_BAND"
     DAILY_LOSS_REDUCTION = "DAILY_LOSS_REDUCTION"
@@ -95,6 +102,13 @@ class ComplianceRuleProfile:
     #: config override (deployment_windows/config_loader.py) -- never by
     #: editing this default, which every profile inherits unless overridden.
     max_positions_per_pair: int = 1
+    #: Fail-closed freshness bound on the account balance this evaluation
+    #: relies on (`AccountState.account_report_age_seconds`). Configurable
+    #: via `compliance.max_account_state_age_seconds`
+    #: (deployment_windows/config_loader.py) -- default matches the EA's
+    #: own `FailClosedTimeoutSeconds` (mt5/TitanProtocolEA.mq5), the
+    #: existing "no successful contact" cutoff this mirrors.
+    max_account_state_age_seconds: float = 30.0
     max_currency_exposure_r: float = 4.0
     max_symbol_exposure_r: float = 2.0
     max_pending_orders: int = 5
@@ -149,6 +163,15 @@ class AccountState:
     cumulative_profit_pct: Optional[float] = None
     emergency_stop_active: bool = False
     rule_profile_name: str = "example_generic_profile"
+    #: Seconds elapsed since the EA-reported `/bridge/account` snapshot
+    #: `account_balance` (and the balance the daily-loss/drawdown/profit-
+    #: protection curves below evaluate) was actually received. `None`
+    #: (the default) means the caller isn't tracking freshness -- every
+    #: existing caller/test that doesn't pass this keeps its old,
+    #: unaffected behavior (no staleness gate ever fires). Real production
+    #: callers (deployment_windows/start.py) always populate this from
+    #: `BridgeEngine.latest_account_state.received_at`.
+    account_report_age_seconds: Optional[float] = None
 
 
 @dataclass(frozen=True)

@@ -415,6 +415,7 @@ def _write_health_snapshot(
     in_flight_commands: Optional[InFlightCommandRegistry] = None,
     http_fallback_active: bool = False,
     configured_max_positions_per_pair: Optional[int] = None,
+    configured_max_account_state_age_seconds: Optional[float] = None,
 ) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
@@ -430,6 +431,21 @@ def _write_health_snapshot(
     open_positions_per_pair: Dict[str, int] = {}
     for position in bridge_engine.latest_positions:
         open_positions_per_pair[position.symbol] = open_positions_per_pair.get(position.symbol, 0) + 1
+    # ACCOUNT_STATE_STALE diagnostics: independently recomputed here from
+    # BridgeEngine.latest_account_state.received_at -- the same source
+    # _build_compliance_account_state() reads in the live-cycle thread --
+    # so an operator can see account-state freshness even on a cycle
+    # where account_state was None (never reported) or the account gate
+    # itself never ran (e.g. an earlier pre-engine skip already applied).
+    latest_account_state = bridge_engine.latest_account_state
+    account_report_age_seconds = (
+        (now - latest_account_state.received_at).total_seconds() if latest_account_state is not None else None
+    )
+    account_state_fresh = (
+        account_report_age_seconds <= configured_max_account_state_age_seconds
+        if account_report_age_seconds is not None and configured_max_account_state_age_seconds is not None
+        else None
+    )
     run_status = {
         "communication_mode": bridge_transport,
         "http_fallback_enabled": http_fallback_active,
@@ -442,6 +458,9 @@ def _write_health_snapshot(
         "in_flight_command_count": in_flight_commands.in_flight_count() if in_flight_commands is not None else None,
         "open_positions_per_pair": open_positions_per_pair,
         "configured_max_positions_per_pair": configured_max_positions_per_pair,
+        "account_report_age_seconds": account_report_age_seconds,
+        "configured_max_account_state_age_seconds": configured_max_account_state_age_seconds,
+        "account_state_fresh": account_state_fresh,
         "compliance_state": "BLOCKED" if live_cycle["compliance_lock_active"] else "READY",
         "compliance_block_reason": live_cycle["compliance_lock_reason"],
         "last_submitted_correlation_id": live_cycle["last_submitted_correlation_id"],
@@ -496,6 +515,7 @@ def _heartbeat_loop(
     in_flight_commands: Optional[InFlightCommandRegistry] = None,
     http_fallback_active: bool = False,
     configured_max_positions_per_pair: Optional[int] = None,
+    configured_max_account_state_age_seconds: Optional[float] = None,
 ) -> None:
     logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
@@ -524,6 +544,7 @@ def _heartbeat_loop(
                 connection_health=connection_health, in_flight_commands=in_flight_commands,
                 http_fallback_active=http_fallback_active,
                 configured_max_positions_per_pair=configured_max_positions_per_pair,
+                configured_max_account_state_age_seconds=configured_max_account_state_age_seconds,
             )
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
@@ -547,7 +568,14 @@ def _build_compliance_account_state(
     Returns `(None, persisted_state)` (caller skips the cycle) if the
     EA has not reported account state yet -- day-state is only ever
     bootstrapped or reconciled once a real balance is available, never
-    guessed."""
+    guessed.
+
+    Also threads `account_report_age_seconds` (seconds since `latest`
+    was received) onto the returned `AccountState`, so
+    `ComplianceEngine.evaluate()` can reject new entries with
+    `ACCOUNT_STATE_STALE` if this balance is too old to trust for
+    daily-loss/drawdown -- rather than silently evaluating those curves
+    against a frozen snapshot that may no longer reflect reality."""
 
     latest = bridge_engine.latest_account_state
     if latest is None:
@@ -555,7 +583,10 @@ def _build_compliance_account_state(
     if persisted_state is None:
         persisted_state = compliance_state_store.load_or_bootstrap(now, latest.balance)
     persisted_state = compliance_state_store.reconcile(persisted_state, now, latest.balance)
-    account_state = _compliance_state_to_account_state(persisted_state, latest.balance)
+    account_report_age_seconds = (now - latest.received_at).total_seconds()
+    account_state = _compliance_state_to_account_state(
+        persisted_state, latest.balance, account_report_age_seconds=account_report_age_seconds,
+    )
     return account_state, persisted_state
 
 
@@ -969,9 +1000,9 @@ def run_foreground(config_path: Path) -> int:
     # Run Status diagnostics (item 10): the position-limit invariant an
     # operator needs alongside "how many positions are actually open" --
     # resolved once here rather than re-looked-up on every health snapshot.
-    configured_max_positions_per_pair = settings.compliance_config.profile_for(
-        settings.compliance_rule_profile_name
-    ).max_positions_per_pair
+    _selected_compliance_profile = settings.compliance_config.profile_for(settings.compliance_rule_profile_name)
+    configured_max_positions_per_pair = _selected_compliance_profile.max_positions_per_pair
+    configured_max_account_state_age_seconds = _selected_compliance_profile.max_account_state_age_seconds
     compliance_state_store = ComplianceStateStore(
         ComplianceStateStoreConfig(
             state_file=settings.state_dir / "compliance_state.json",
@@ -1002,6 +1033,7 @@ def run_foreground(config_path: Path) -> int:
             "connection_health": connection_health, "in_flight_commands": in_flight_commands,
             "http_fallback_active": http_fallback_active,
             "configured_max_positions_per_pair": configured_max_positions_per_pair,
+            "configured_max_account_state_age_seconds": configured_max_account_state_age_seconds,
         },
         name="titan_protocol-reliability-heartbeat", daemon=True,
     )

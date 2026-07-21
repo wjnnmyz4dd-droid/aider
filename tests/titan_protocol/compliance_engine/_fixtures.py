@@ -84,6 +84,7 @@ def make_account_state(
     cumulative_profit_pct: Optional[float] = None,
     emergency_stop_active: bool = False,
     rule_profile_name: str = "example_generic_profile",
+    account_report_age_seconds: Optional[float] = None,
 ) -> AccountState:
     return AccountState(
         account_balance=account_balance, daily_starting_balance=daily_starting_balance,
@@ -92,6 +93,7 @@ def make_account_state(
         trades_today_count=trades_today_count, pending_orders_count=pending_orders_count,
         best_single_day_profit_pct=best_single_day_profit_pct, cumulative_profit_pct=cumulative_profit_pct,
         emergency_stop_active=emergency_stop_active, rule_profile_name=rule_profile_name,
+        account_report_age_seconds=account_report_age_seconds,
     )
 
 

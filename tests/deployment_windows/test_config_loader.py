@@ -74,5 +74,37 @@ class TestMaxPositionsPerPairConfigurability(unittest.TestCase):
             self.assertEqual(selected.name, settings.compliance_rule_profile_name)
 
 
+class TestMaxAccountStateAgeSecondsConfigurability(unittest.TestCase):
+    """ACCOUNT_STATE_STALE fail-closed freshness bound -- configurable,
+    defaults to 30s (matching the EA's own FailClosedTimeoutSeconds),
+    fails closed at startup for anything <= 0."""
+
+    def test_defaults_to_thirty_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+            settings = load_settings(config_path)
+            profile = settings.compliance_config.profile_for(settings.compliance_rule_profile_name)
+            self.assertEqual(profile.max_account_state_age_seconds, 30.0)
+
+    def test_explicit_value_is_honored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"max_account_state_age_seconds": 60.0})
+            settings = load_settings(config_path)
+            profile = settings.compliance_config.profile_for(settings.compliance_rule_profile_name)
+            self.assertEqual(profile.max_account_state_age_seconds, 60.0)
+
+    def test_zero_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"max_account_state_age_seconds": 0})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_negative_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"max_account_state_age_seconds": -5.0})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+
 if __name__ == "__main__":
     unittest.main()

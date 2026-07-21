@@ -399,6 +399,16 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         raise ConfigError(
             f"compliance.max_positions_per_pair must be an integer >= 1, got {max_positions_per_pair}"
         )
+    # Fail-closed freshness bound on the account balance daily-loss/
+    # drawdown/profit-protection are evaluated against (ACCOUNT_STATE_STALE).
+    # Must be strictly positive -- zero or negative would either reject
+    # every cycle unconditionally or accept unconditionally, neither of
+    # which is a real threshold.
+    max_account_state_age_seconds = _get_float(compliance_section, "max_account_state_age_seconds", 30.0)
+    if max_account_state_age_seconds <= 0:
+        raise ConfigError(
+            f"compliance.max_account_state_age_seconds must be > 0, got {max_account_state_age_seconds}"
+        )
     _base_compliance_config = ComplianceEngineConfig()
     try:
         _base_rule_profile = _base_compliance_config.profile_for(compliance_rule_profile_name)
@@ -407,7 +417,10 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     compliance_config = dataclasses.replace(
         _base_compliance_config,
         rule_profiles=tuple(
-            dataclasses.replace(p, max_positions_per_pair=max_positions_per_pair)
+            dataclasses.replace(
+                p, max_positions_per_pair=max_positions_per_pair,
+                max_account_state_age_seconds=max_account_state_age_seconds,
+            )
             if p.name == compliance_rule_profile_name else p
             for p in _base_compliance_config.rule_profiles
         ),

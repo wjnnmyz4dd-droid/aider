@@ -52,6 +52,9 @@ class TestPrintRunStatusPanel(unittest.TestCase):
             "in_flight_command_count": 1,
             "open_positions_per_pair": {"EURUSD": 1},
             "configured_max_positions_per_pair": 1,
+            "account_report_age_seconds": 3.2,
+            "configured_max_account_state_age_seconds": 30.0,
+            "account_state_fresh": True,
             "compliance_state": "BLOCKED",
             "compliance_block_reason": "daily loss limit reached",
             "last_submitted_correlation_id": "live-1:EURUSD",
@@ -72,6 +75,8 @@ class TestPrintRunStatusPanel(unittest.TestCase):
         self.assertIn("live-1:EURUSD", output)
         self.assertIn("EURUSD: COMPLIANCE_REJECTED -- MAX_POSITIONS_PER_PAIR_EXCEEDED.", output)
         self.assertIn("GBPUSD: SUBMITTED (correlation_id=live-5:GBPUSD)", output)
+        self.assertIn("3.2s ago (fresh)", output)
+        self.assertIn("Configured max account age: 30.0s", output)
 
     def test_ready_state_omits_reason_parenthetical(self):
         output = self._run({"compliance_state": "READY", "compliance_block_reason": None})
@@ -80,6 +85,29 @@ class TestPrintRunStatusPanel(unittest.TestCase):
     def test_no_pairs_reports_none_evaluated(self):
         output = self._run({"pairs": {}})
         self.assertIn("no pairs evaluated yet", output)
+
+
+class TestPrintRunStatusPanelAccountStateFreshness(unittest.TestCase):
+    """ACCOUNT_STATE_STALE diagnostics (fix option (b))."""
+
+    def _run(self, run_status):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            health_check._print_run_status_panel(run_status)
+        return buf.getvalue()
+
+    def test_stale_account_state_labeled_stale(self):
+        output = self._run({
+            "account_report_age_seconds": 45.0, "account_state_fresh": False,
+            "configured_max_account_state_age_seconds": 30.0,
+        })
+        self.assertIn("45.0s ago (STALE)", output)
+
+    def test_never_reported_labeled_unknown_not_stale(self):
+        """account_state_fresh is None (never reported at all) --
+        must not be mislabeled as either 'fresh' or 'STALE'."""
+        output = self._run({"account_report_age_seconds": None, "account_state_fresh": None})
+        self.assertIn("never (unknown)", output)
 
 
 if __name__ == "__main__":

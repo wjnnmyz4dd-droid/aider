@@ -97,6 +97,17 @@ class ComplianceEngine:
             return self._reject(pair, now, original_size_r, ComplianceRuleId.EMERGENCY_STOP_ACTIVE, "Emergency stop is active.", account_state, profile)
         if account_state.compliance_lock.active:
             return self._reject(pair, now, original_size_r, ComplianceRuleId.COMPLIANCE_LOCK_ACTIVE, f"Compliance lock active: {account_state.compliance_lock.reason}", account_state, profile)
+        if (
+            account_state.account_report_age_seconds is not None
+            and account_state.account_report_age_seconds > profile.max_account_state_age_seconds
+        ):
+            return self._reject(
+                pair, now, original_size_r, ComplianceRuleId.ACCOUNT_STATE_STALE,
+                f"Account state is {account_state.account_report_age_seconds:.0f}s old, exceeds the "
+                f"configured {profile.max_account_state_age_seconds:.0f}s maximum -- refusing to "
+                "evaluate daily-loss/drawdown/profit-protection against a stale balance.",
+                account_state, profile,
+            )
         if not risk.approved:
             return self._reject(pair, now, original_size_r, ComplianceRuleId.RISK_NOT_APPROVED, "Risk Engine did not approve this trade.", account_state, profile)
         if strategy.rejected or strategy.winning_strategy is None:

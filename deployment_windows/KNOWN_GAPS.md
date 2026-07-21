@@ -260,6 +260,75 @@ the out-of-the-box default. See
 `docs/adr/ADR-034-mt5-bridge-transport-hardening.md` Amendment 4 for the
 full rationale.
 
+## 8. `AccountState` had no freshness gate — CLOSED (ACCOUNT_STATE_STALE)
+
+`BridgeEngine.latest_account_state` is set only when `/bridge/account`
+succeeds and never expires — once set, it persists indefinitely.
+`_build_compliance_account_state()` (`deployment_windows/start.py`) only
+checked `if latest is None`, never how old `latest` was. If
+`/bridge/account` succeeded exactly once and then kept failing (e.g.
+during the WebRequest instability in section 7), compliance kept
+evaluating daily-loss/drawdown/profit-protection against that one
+frozen, increasingly stale balance indefinitely — real losses or gains
+since that snapshot were invisible to the compliance gate, the opposite
+failure mode of "not trading": the system could keep trading past a
+real daily-loss threshold without knowing it.
+
+**CLOSED:** `ComplianceEngine.evaluate()` now rejects with
+`ACCOUNT_STATE_STALE` (an early gate, alongside
+`EMERGENCY_STOP_ACTIVE`/`COMPLIANCE_LOCK_ACTIVE`) whenever
+`AccountState.account_report_age_seconds` exceeds the configurable
+`ComplianceRuleProfile.max_account_state_age_seconds` (default 30s,
+matching the EA's own `FailClosedTimeoutSeconds`; configurable via
+`compliance.max_account_state_age_seconds`, fails closed at startup for
+any value <= 0). This fail-closed gate:
+- blocks all new trade entries for the affected pair(s) until a fresh
+  report arrives -- it does not merely skip the daily-loss/drawdown
+  curves while still evaluating everything else;
+- never affects existing position management -- `ComplianceEngine` has
+  no position-close/modify authority at all (ADR-028 Hard Rule 1: only
+  APPROVE/REDUCE/REJECT a proposed *new* entry);
+- resumes automatically the moment a fresh `/bridge/account` report
+  succeeds -- there is no separate "resume" mechanism to fail, since
+  `evaluate()` is a pure function of its inputs each cycle (ADR-028 Hard
+  Rule 6);
+- is visible in `state/health.json`'s `run_status` block
+  (`account_report_age_seconds`, `configured_max_account_state_age_seconds`,
+  `account_state_fresh`) and `health_check.py`'s RUN STATUS panel,
+  independently of whether the compliance gate itself ran that cycle.
+
+Every existing caller that never threads `account_report_age_seconds`
+through (the field defaults to `None`) keeps its prior, unaffected
+behavior -- the gate only ever fires when a real age is supplied, which
+`deployment_windows/start.py` always does in production.
+
+## 9. Compliance day-one bootstrap can use a non-representative balance — OPEN (distinct from section 8)
+
+`ComplianceStateStore.load_or_bootstrap()` sets `daily_starting_balance`
+and `peak_balance` from whichever balance the *first-ever successful*
+`/bridge/account` report carries -- only when the persisted state file
+doesn't exist yet (i.e. a fresh install, or state deliberately cleared).
+If that first success is delayed (by WebRequest instability, a slow
+first attach, etc.) until after the real trading day has already
+started, and the account already has floating P&L or trades by then,
+the daily-loss baseline is bootstrapped from a balance that doesn't
+represent the true start-of-day value. After that one bootstrap,
+day-rollover is wall-clock-based (`trading_day_id_for()`, independent
+of report timing) and unaffected by this gap.
+
+This is a one-time, day-one-of-a-fresh-install risk, not an ongoing one
+-- section 8's `ACCOUNT_STATE_STALE` gate does not close it, since the
+bootstrap uses whatever balance is available at that moment regardless
+of its age (there is no prior persisted state to compare it against
+yet). Not fixed here: doing so would require either delaying bootstrap
+until a balance is confirmed to predate any trading activity (unverifiable
+from this wire message alone) or accepting an operator-supplied
+day-start balance, both of which are scope beyond this fix. Operators
+installing fresh should confirm the EA successfully reports account
+state before the trading day's balance has moved, or manually correct
+`state/compliance_state.json`'s `daily_starting_balance` once if it
+bootstrapped from a stale snapshot.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access

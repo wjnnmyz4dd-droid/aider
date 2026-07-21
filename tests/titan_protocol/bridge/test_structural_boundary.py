@@ -194,6 +194,18 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # New test files added by this phase only:
             "tests/deployment_windows/test_transport_defaults.py",
             "tests/mt5/test_titan_protocol_ea_transport_classification.py",
+            # ACCOUNT_STATE_STALE fail-closed freshness gate (fix option (b)):
+            # ComplianceEngine gains one new early-reject rule
+            # (ACCOUNT_STATE_STALE), configurable via
+            # compliance.max_account_state_age_seconds (config_loader.py,
+            # already covered above), surfaced in run_status/health_check.py
+            # (already covered above). _build_compliance_account_state()
+            # (start.py, already covered) now threads account_report_age_seconds
+            # through -- the only pre-existing test file this touches is
+            # test_compliance_state_persistence.py (its _FakeBridgeEngine stub
+            # needed a received_at field); the rest are new test files.
+            "tests/deployment_windows/test_compliance_state_persistence.py",
+            "tests/titan_protocol/runtime/test_account_state_staleness_integration.py",
         )
 
         def is_allowed(path: str) -> bool:

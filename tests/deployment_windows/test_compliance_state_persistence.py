@@ -54,8 +54,11 @@ class TestDailyResetHourUtcConfigParsing(unittest.TestCase):
 
 
 class _FakeBridgeEngine:
-    def __init__(self, balance):
-        self.latest_account_state = SimpleNamespace(balance=balance) if balance is not None else None
+    def __init__(self, balance, received_at=None):
+        self.latest_account_state = (
+            SimpleNamespace(balance=balance, received_at=received_at or _utc(2026, 7, 14, 7, 59, 0))
+            if balance is not None else None
+        )
 
 
 class TestBuildComplianceAccountStateWiring(unittest.TestCase):
@@ -90,7 +93,7 @@ class TestBuildComplianceAccountStateWiring(unittest.TestCase):
         _, persisted = start_module._build_compliance_account_state(
             bridge, self.store, None, _utc(2026, 7, 14, 8, 0, 0),
         )
-        bridge.latest_account_state = SimpleNamespace(balance=9_000.0)
+        bridge.latest_account_state = SimpleNamespace(balance=9_000.0, received_at=_utc(2026, 7, 14, 11, 59, 0))
         account_state, persisted = start_module._build_compliance_account_state(
             bridge, self.store, persisted, _utc(2026, 7, 14, 12, 0, 0),
         )
