@@ -127,6 +127,12 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         # shipped default reverts from "socket" to "http" -- a config
         # default only, no news_ingestion behavior touched.
         "titan_protocol/bridge/config.py",
+        # ADR-034 Amendment 5/6 (later, separately-authorized): the
+        # undelivered-command-abandonment fix and its production-readiness
+        # hardening add CommandQueue.is_abandoned() and its
+        # mutual-exclusion _abandoned_ids bookkeeping -- additive only, no
+        # news_ingestion behavior touched.
+        "titan_protocol/bridge/command_queue.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_phase(self):

@@ -112,5 +112,121 @@ class TestRecordResult(unittest.TestCase):
         self.assertEqual({r.correlation_id for r in results}, {"c1", "c2"})
 
 
+class TestIsAbandoned(unittest.TestCase):
+    """`is_abandoned()` -- the single atomic query
+    `InFlightCommandRegistry.reconcile()` uses to distinguish "silently
+    vanished, undelivered" from "still genuinely in flight," replacing an
+    earlier version of this fix that composed `is_delivered()` with a
+    separately-computed age (see this queue's own docstring for why that
+    combination was unsafe: it let a genuinely delivered command be
+    treated as abandoned once retention purged it, and it left an
+    unguarded window between two independently-timed reads)."""
+
+    def test_unknown_correlation_id_is_never_abandoned(self):
+        queue = make_queue()
+        self.assertFalse(queue.is_abandoned("never-submitted", T0))
+
+    def test_enqueued_but_not_yet_stale_is_not_abandoned(self):
+        config = make_config(command_ttl_seconds=15.0)
+        queue = make_queue(config)
+        queue.enqueue(make_command(correlation_id="c1", issued_at=T0), is_ready=True)
+        self.assertFalse(queue.is_abandoned("c1", T0 + timedelta(seconds=10)))
+
+    def test_undelivered_and_past_ttl_is_abandoned(self):
+        config = make_config(command_ttl_seconds=15.0)
+        queue = make_queue(config)
+        queue.enqueue(make_command(correlation_id="c1", issued_at=T0), is_ready=True)
+        self.assertTrue(queue.is_abandoned("c1", T0 + timedelta(seconds=15.1)))
+
+    def test_delivered_command_is_never_abandoned_no_matter_how_stale(self):
+        """Production-readiness requirement: the registry must not
+        release a delivered command merely because it aged out of the
+        queue's own staleness window -- the reservation belongs to
+        execution/rejection reconciliation from here on."""
+        config = make_config(command_ttl_seconds=15.0)
+        queue = make_queue(config)
+        queue.enqueue(make_command(correlation_id="c1", issued_at=T0), is_ready=True)
+        delivered = queue.poll(T0 + timedelta(seconds=5))
+        self.assertEqual(len(delivered), 1)
+        self.assertFalse(queue.is_abandoned("c1", T0 + timedelta(seconds=999)))
+
+    def test_exactly_at_ttl_boundary_is_not_yet_abandoned(self):
+        """poll()'s own staleness check is `age > command_ttl_seconds`
+        (strictly greater) -- is_abandoned() must agree exactly, so a
+        command still deliverable via poll() is never independently
+        flagged abandoned by this method."""
+        config = make_config(command_ttl_seconds=15.0)
+        queue = make_queue(config)
+        queue.enqueue(make_command(correlation_id="c1", issued_at=T0), is_ready=True)
+        self.assertFalse(queue.is_abandoned("c1", T0 + timedelta(seconds=15.0)))
+
+
+class TestIsAbandonedConcurrencySafety(unittest.TestCase):
+    """Production-readiness requirement: the delivery check and queue
+    expiry must be race-safe -- a poll() landing at nearly the same
+    moment as an abandonment decision must never result in both a
+    released reservation AND a live delivery for the same
+    correlation_id, regardless of which order the two threads'
+    operations actually interleave in.
+
+    Deliberately races two *different* `now` readings, not the same one:
+    Runtime's live-cycle loop and the Bridge's request-handling threads
+    each call their own clock independently in production
+    (`deployment_windows/start.py`'s `_utc_now()`, called separately by
+    each), so a `poll()` call and a concurrent `is_abandoned()` call can
+    plausibly disagree about whether a command is stale, by fractions of
+    a second, purely due to when each thread happened to read the clock
+    -- not because either individually miscomputed anything. `poll_now`
+    is chosen just under `command_ttl_seconds` (poll() would, in
+    isolation, still deliver) and `abandon_now` just over it
+    (is_abandoned() would, in isolation, still conclude abandonment) --
+    exactly the disagreement window a genuinely delivered-vs-abandoned
+    race requires; without the mutual-exclusion fix (`_abandoned_ids`
+    also checked by `poll()`), whichever thread's check ran second would
+    contradict the other's already-committed decision."""
+
+    def test_concurrent_poll_and_is_abandoned_never_both_succeed_for_the_same_correlation_id(self):
+        import threading
+
+        ttl = 15.0
+        config = make_config(command_ttl_seconds=ttl)
+        poll_now = T0 + timedelta(seconds=ttl - 0.001)  # poll() alone would deliver
+        abandon_now = T0 + timedelta(seconds=ttl + 0.001)  # is_abandoned() alone would abandon
+        iterations = 500
+        violations = []
+        barrier = threading.Barrier(2)
+
+        for i in range(iterations):
+            queue = make_queue(config)
+            correlation_id = f"c{i}"
+            queue.enqueue(make_command(correlation_id=correlation_id, issued_at=T0), is_ready=True)
+            poll_result = {}
+            abandoned_result = {}
+
+            def do_poll():
+                barrier.wait()
+                poll_result["delivered"] = len(queue.poll(poll_now)) == 1
+
+            def do_check():
+                barrier.wait()
+                abandoned_result["abandoned"] = queue.is_abandoned(correlation_id, abandon_now)
+
+            t1 = threading.Thread(target=do_poll)
+            t2 = threading.Thread(target=do_check)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+            # Whichever order the two threads' critical sections actually
+            # ran in, the two facts must never both hold: a command
+            # cannot be simultaneously delivered (still live, reserved)
+            # AND independently declared abandoned.
+            if poll_result["delivered"] and abandoned_result["abandoned"]:
+                violations.append(i)
+
+        self.assertEqual(violations, [], f"is_abandoned() and a genuine delivery were both true for {len(violations)}/{iterations} runs")
+
+
 if __name__ == "__main__":
     unittest.main()

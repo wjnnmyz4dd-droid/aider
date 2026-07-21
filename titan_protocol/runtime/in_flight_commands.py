@@ -35,14 +35,37 @@ command had already vanished from `CommandQueue` after `command_ttl_seconds`.
 Under a persistently flaky poll transport this reproduces indefinitely:
 submit, silently expire undelivered, wait out most of `ttl_seconds` doing
 nothing, resubmit, repeat -- Compliance keeps approving entries that never
-reach the market. `reconcile()` now accepts an optional `is_delivered`
-callable (`BridgeEngine.command_delivered`, mirroring `command_resolved`)
-and, when supplied alongside `undelivered_grace_seconds` (constructor
-parameter), drops an entry as abandoned once it is older than that grace
-period and was never delivered -- freeing the pair for a fresh submission
-far sooner than the full `ttl_seconds`, instead of blindly waiting it out.
-Both new parameters default to `None`/disabled, so any existing caller
-that does not opt in keeps exactly its prior behavior.
+reach the market. `reconcile()` now accepts an optional `is_abandoned`
+callable (`BridgeEngine.command_abandoned`) and, when supplied, drops an
+entry immediately once it reports abandonment -- freeing the pair for a
+fresh submission far sooner than the full `ttl_seconds`, instead of
+blindly waiting it out. Defaults to `None`/disabled, so any existing
+caller that does not opt in keeps exactly its prior behavior.
+
+Deliberately a single atomic callable, not "is it delivered" plus a
+separately-computed age here: an earlier version of this fix combined an
+`is_delivered` callable with this registry's own `undelivered_grace_seconds`
+threshold, composed from two independent reads (this registry's own
+`now`/`entry.submitted_at`, and `CommandQueue`'s own `_delivered_ids`) --
+taken at two different instants, under two different locks
+(`InFlightCommandRegistry._lock` and `CommandQueue._lock`), with no
+atomicity between them. That left two real defects: (1) a genuinely
+delivered command could, under retention settings shorter than this
+registry's own windows, appear "not delivered" again once `CommandQueue`
+purged it, causing a live reservation to be released while the EA might
+still execute it; (2) a `poll()` call landing at nearly the same instant
+as this registry's own age check was a genuine, unguarded race -- the
+two locks provide no ordering guarantee relative to each other, so this
+registry's read could observe "not yet delivered" a moment before (or
+after) `poll()` committed the opposite fact, risking both a released
+reservation and a live delivery for the same correlation_id at once
+(a duplicate-command/duplicate-position risk). `is_abandoned` closes
+both: `CommandQueue.is_abandoned()` is evaluated entirely under
+`CommandQueue`'s own single lock, using its own `command_ttl_seconds`
+and its own `_delivered_ids`/`_commands` state at one consistent
+instant -- the only object that actually owns both facts. A delivered
+command is never abandoned, and a concurrent `poll()` (holding the same
+lock) can never interleave with this check.
 
 Post-resolution position confirmation: an `ExecutionReport` can arrive
 (marking a command resolved) before the *next* `/bridge/positions`
@@ -85,14 +108,8 @@ class InFlightCommandRegistry:
     regardless -- cheap, and removes any future assumption that this
     can only ever be called single-threaded."""
 
-    def __init__(self, ttl_seconds: float, undelivered_grace_seconds: Optional[float] = None) -> None:
+    def __init__(self, ttl_seconds: float) -> None:
         self._ttl_seconds = ttl_seconds
-        # None (default) preserves prior behavior exactly -- only
-        # ttl_seconds bounds how long an entry may sit unresolved,
-        # regardless of delivery status. Set to (roughly)
-        # BridgeConfig.command_ttl_seconds to close the undelivered-
-        # abandonment gap described in this module's docstring.
-        self._undelivered_grace_seconds = undelivered_grace_seconds
         self._lock = threading.Lock()
         self._by_pair: Dict[str, _InFlightEntry] = {}
         # Pair -> the moment reconcile() observed that pair's command
@@ -125,14 +142,15 @@ class InFlightCommandRegistry:
         self,
         now: datetime,
         is_resolved: Callable[[str], bool],
-        is_delivered: Optional[Callable[[str], bool]] = None,
+        is_abandoned: Optional[Callable[[str], bool]] = None,
     ) -> int:
         """Drops every tracked entry that has either resolved (per
         `is_resolved(correlation_id)`, a caller-supplied query -- this
         module never assumes how resolution is determined), been
-        abandoned (never delivered, per `is_delivered`, and older than
-        `undelivered_grace_seconds` -- only checked when both that
-        constructor parameter and `is_delivered` are supplied), or
+        abandoned (per `is_abandoned`, a single atomic query -- see this
+        module's own docstring for why the abandonment decision must be
+        one atomic callable, not composed here from separate delivery/age
+        reads -- only checked when `is_abandoned` is supplied), or
         expired past `ttl_seconds`. A resolved (not expired, not
         abandoned) pair moves into `_awaiting_position_confirmation`
         rather than being fully cleared -- `has_unresolved()` keeps
@@ -145,20 +163,14 @@ class InFlightCommandRegistry:
         with self._lock:
             to_drop = []
             for pair, entry in self._by_pair.items():
-                age = (now - entry.submitted_at).total_seconds()
                 if is_resolved(entry.correlation_id):
                     to_drop.append(pair)
                     self._awaiting_position_confirmation[pair] = now
                     continue
-                if (
-                    self._undelivered_grace_seconds is not None
-                    and is_delivered is not None
-                    and age > self._undelivered_grace_seconds
-                    and not is_delivered(entry.correlation_id)
-                ):
+                if is_abandoned is not None and is_abandoned(entry.correlation_id):
                     to_drop.append(pair)
                     continue
-                if age > self._ttl_seconds:
+                if (now - entry.submitted_at).total_seconds() > self._ttl_seconds:
                     to_drop.append(pair)
             for pair in to_drop:
                 del self._by_pair[pair]

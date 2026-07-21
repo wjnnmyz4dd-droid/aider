@@ -373,17 +373,32 @@ undelivered within 15s, wait out most of a 5-minute window doing
 nothing, resubmit, repeat — Compliance keeps approving entries that
 never reach the market, with no error anywhere in the loop.
 
-**CLOSED:** `BridgeEngine.command_delivered()` (new, mirrors
-`command_resolved()`) exposes `CommandQueue.is_delivered()`.
-`InFlightCommandRegistry` gained an optional `undelivered_grace_seconds`
-constructor parameter and an optional `is_delivered` parameter on
-`reconcile()` (both default to prior behavior when omitted, so no
-existing caller is affected) — an entry that was never delivered and is
-older than that grace period (wired to `BridgeConfig.command_ttl_seconds`
-in `start.py`) is now dropped as abandoned immediately, freeing the pair
-in ~15s instead of ~300s. A resolved entry (a real `ExecutionReport`
-arrived) always takes priority — only a genuinely undelivered, expired
-command is treated as abandoned.
+**CLOSED, then hardened (production-readiness review):** the first
+version of this fix added `BridgeEngine.command_delivered()` (mirroring
+`command_resolved()`) plus an `undelivered_grace_seconds` constructor
+parameter and an `is_delivered` parameter on `reconcile()`. A pre-
+production review flagged two correctness requirements this composition
+didn't fully satisfy: (1) a delivered command must never be released
+merely because it aged out of tracking; (2) the delivery check and queue
+expiry must be race-safe against a `poll()` landing at nearly the same
+moment. Both were real, since `is_delivered`/age were two independently-
+timed reads across two different locks with no atomicity between them.
+
+**Fixed:** `CommandQueue.is_abandoned(correlation_id, now)` (new)
+replaces `is_delivered()` for this purpose — evaluated entirely under
+`CommandQueue`'s own single lock, and once it concludes abandonment, it
+permanently records that (`_abandoned_ids`), which `poll()` now also
+checks and refuses to ever deliver — making "delivered" and "abandoned"
+permanent, mutually exclusive outcomes regardless of which of
+`poll()`/`is_abandoned()` a concurrent thread reaches first.
+`InFlightCommandRegistry.reconcile()`'s `is_delivered`/
+`undelivered_grace_seconds` parameters are replaced by a single
+`is_abandoned` callable (`BridgeEngine.command_abandoned`) — the registry
+no longer independently computes any age/grace threshold of its own for
+this purpose. Verified with a real multi-threaded test racing
+deliberately disagreeing clock readings 500 times
+(`TestIsAbandonedConcurrencySafety`). See ADR-034 Amendment 6 for the
+full trace.
 
 **Also added:** `deployment_windows/verify_transport_configuration.py` —
 answers "are the EA and Bridge actually running the same transport" from

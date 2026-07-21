@@ -123,29 +123,42 @@ class TestCommandResolved(unittest.TestCase):
         self.assertTrue(engine.command_resolved("corr-1"))
 
 
-class TestCommandDelivered(unittest.TestCase):
-    """command_delivered() -- mirrors command_resolved()'s own additive
-    passthrough pattern. Lets Runtime's InFlightCommandRegistry tell "the
-    EA actually polled and received this command" apart from "still
-    sitting in CommandQueue, never yet delivered" -- the distinction the
-    undelivered-command abandonment fix needs (see
-    titan_protocol/runtime/in_flight_commands.py)."""
+class TestCommandAbandoned(unittest.TestCase):
+    """command_abandoned() -- the single atomic query
+    InFlightCommandRegistry.reconcile() needs to tell "this command
+    silently vanished from CommandQueue, undelivered" apart from "still
+    genuinely in flight," without composing a separate is_delivered()
+    check and an externally-computed age (which would reopen the exact
+    race/production-readiness gap this method exists to close -- see
+    titan_protocol/runtime/in_flight_commands.py's module docstring and
+    CommandQueue.is_abandoned()'s own docstring)."""
 
-    def test_unknown_correlation_id_is_not_delivered(self):
+    def test_unknown_correlation_id_is_never_abandoned(self):
         engine, _, _, _ = make_engine()
-        self.assertFalse(engine.command_delivered("never-submitted"))
+        self.assertFalse(engine.command_abandoned("never-submitted", T0))
 
-    def test_enqueued_but_not_yet_polled_is_not_delivered(self):
+    def test_enqueued_but_not_yet_stale_is_not_abandoned(self):
         engine, queue, _, _ = make_engine()
         queue.enqueue(make_command(correlation_id="corr-1"), is_ready=True)
-        self.assertFalse(engine.command_delivered("corr-1"))
+        self.assertFalse(engine.command_abandoned("corr-1", T0))
 
-    def test_polled_command_is_delivered(self):
+    def test_undelivered_and_past_command_ttl_is_abandoned(self):
+        engine, queue, _, _ = make_engine()  # command_ttl_seconds=15.0
+        queue.enqueue(make_command(correlation_id="corr-1", issued_at=T0), is_ready=True)
+        past_ttl = T0 + timedelta(seconds=15.1)
+        self.assertTrue(engine.command_abandoned("corr-1", past_ttl))
+
+    def test_polled_command_is_never_abandoned_even_long_past_ttl(self):
+        """A command the EA actually received keeps its reservation --
+        production-readiness requirement: never release a delivered
+        command merely because it aged out of the queue's own staleness
+        window."""
         engine, queue, _, _ = make_engine()
-        queue.enqueue(make_command(correlation_id="corr-1"), is_ready=True)
-        delivered = engine.poll_commands(T0)
+        queue.enqueue(make_command(correlation_id="corr-1", issued_at=T0), is_ready=True)
+        delivered = engine.poll_commands(T0 + timedelta(seconds=5))
         self.assertEqual(len(delivered), 1)
-        self.assertTrue(engine.command_delivered("corr-1"))
+        long_after = T0 + timedelta(seconds=9999)
+        self.assertFalse(engine.command_abandoned("corr-1", long_after))
 
 
 class TestSubmitAndPollCommands(unittest.TestCase):

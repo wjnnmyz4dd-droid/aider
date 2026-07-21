@@ -188,66 +188,54 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
 class TestUndeliveredCommandAbandonment(unittest.TestCase):
     """Fix for "the runtime never exits the failure loop": a command
     that silently expires in CommandQueue before the EA ever polls it
-    (age > undelivered_grace_seconds, never delivered) must be dropped
-    far sooner than the full ttl_seconds -- otherwise the pair stays
-    blocked doing nothing until ttl_seconds elapses, even though the
-    command was already abandoned long before that."""
+    must be dropped far sooner than the full ttl_seconds -- otherwise the
+    pair stays blocked doing nothing until ttl_seconds elapses, even
+    though the command was already abandoned long before that.
 
-    def test_undelivered_entry_past_grace_is_dropped_before_full_ttl(self):
-        registry = InFlightCommandRegistry(ttl_seconds=300.0, undelivered_grace_seconds=15.0)
+    `is_abandoned` is a single, caller-supplied callable (in production,
+    `BridgeEngine.command_abandoned`, backed by `CommandQueue.
+    is_abandoned()`'s own atomic delivered/stale check) -- this registry
+    never computes delivery status or a grace-period age itself, exactly
+    to avoid recomposing the same two-separately-timed-reads race that an
+    earlier version of this fix had (see this module's own docstring)."""
+
+    def test_abandoned_entry_is_dropped_before_full_ttl(self):
+        registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
-        later = _NOW + timedelta(seconds=16)  # past grace, nowhere near the 300s ttl
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_delivered=lambda cid: False)
+        later = _NOW + timedelta(seconds=16)  # nowhere near the 300s ttl
+        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_abandoned=lambda cid: True)
         self.assertEqual(dropped, 1)
         self.assertFalse(registry.has_unresolved("EURUSD", later))
         self.assertFalse(registry.is_awaiting_position_confirmation("EURUSD"))
 
-    def test_delivered_entry_past_grace_is_not_abandoned(self):
-        """A command the EA actually received keeps its full ttl_seconds
+    def test_not_abandoned_entry_is_kept(self):
+        """A command the EA actually received (is_abandoned() says False,
+        per CommandQueue's own atomic check) keeps its full ttl_seconds
         -- it may simply be slow to execute or report back."""
-        registry = InFlightCommandRegistry(ttl_seconds=300.0, undelivered_grace_seconds=15.0)
+        registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_delivered=lambda cid: True)
+        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_abandoned=lambda cid: False)
         self.assertEqual(dropped, 0)
         self.assertTrue(registry.has_unresolved("EURUSD", later))
 
-    def test_undelivered_entry_within_grace_is_not_yet_abandoned(self):
-        registry = InFlightCommandRegistry(ttl_seconds=300.0, undelivered_grace_seconds=15.0)
-        registry.record_submission("EURUSD", "corr-1", _NOW)
-        soon = _NOW + timedelta(seconds=10)
-        dropped = registry.reconcile(soon, is_resolved=lambda cid: False, is_delivered=lambda cid: False)
-        self.assertEqual(dropped, 0)
-        self.assertTrue(registry.has_unresolved("EURUSD", soon))
-
-    def test_resolved_entry_takes_priority_over_undelivered_grace(self):
-        """A command that somehow resolved despite is_delivered() saying
-        False (e.g. a caller whose delivery tracking lagged) must still
-        move to awaiting-position-confirmation, never be treated as
-        abandoned -- resolution is the stronger, more specific signal."""
-        registry = InFlightCommandRegistry(ttl_seconds=300.0, undelivered_grace_seconds=15.0)
+    def test_resolved_entry_takes_priority_over_abandonment(self):
+        """A command that somehow resolved despite is_abandoned() saying
+        True (e.g. a caller whose two signals raced) must still move to
+        awaiting-position-confirmation, never be treated as abandoned --
+        resolution is the stronger, more specific signal."""
+        registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: True, is_delivered=lambda cid: False)
+        dropped = registry.reconcile(later, is_resolved=lambda cid: True, is_abandoned=lambda cid: True)
         self.assertEqual(dropped, 1)
         self.assertTrue(registry.is_awaiting_position_confirmation("EURUSD"))
 
     def test_feature_disabled_by_default_preserves_prior_behavior(self):
-        """undelivered_grace_seconds defaults to None -- an entry that is
-        never delivered still waits out the full ttl_seconds, exactly as
-        before this fix, unless a caller explicitly opts in."""
+        """is_abandoned defaults to None -- an entry waits out the full
+        ttl_seconds regardless of delivery status, exactly as before this
+        fix, unless a caller explicitly opts in."""
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
-        registry.record_submission("EURUSD", "corr-1", _NOW)
-        later = _NOW + timedelta(seconds=16)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_delivered=lambda cid: False)
-        self.assertEqual(dropped, 0)
-        self.assertTrue(registry.has_unresolved("EURUSD", later))
-
-    def test_is_delivered_omitted_preserves_prior_behavior(self):
-        """A caller that opts into undelivered_grace_seconds but doesn't
-        pass is_delivered still gets prior (ttl_seconds-only) behavior --
-        the new fast-abandonment path requires both."""
-        registry = InFlightCommandRegistry(ttl_seconds=300.0, undelivered_grace_seconds=15.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)
         dropped = registry.reconcile(later, is_resolved=lambda cid: False)

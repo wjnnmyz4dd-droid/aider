@@ -237,6 +237,75 @@ compatible parameters) and `titan_protocol/bridge/engine.py` (one new
 passthrough method, same pattern as `command_resolved()`) — no pipeline-
 stage engine, message schema, or validation rule changes.
 
+**Amendment 6 (2026-07-21 — "Production-readiness review of Amendment 5's
+undelivered-command abandonment"):** before Amendment 5's item 2 shipped
+to production, a review raised two correctness requirements against it:
+(1) the registry must never release a delivered command merely because
+it aged out of tracking — the reservation must remain until execution/
+rejection reconciliation, or a separate execution timeout; (2) the
+delivery check and queue-expiry check must be race-safe — a `poll()`
+landing at nearly the same moment as an abandonment decision must not
+result in both a release and a live delivery for the same
+`correlation_id`. Both were real, on inspection:
+
+1. Amendment 5's `is_delivered`/`undelivered_grace_seconds` design
+   composed two independently-timed reads — `InFlightCommandRegistry`'s
+   own `age = now - entry.submitted_at` (using Runtime's own clock
+   reading, captured once per live-cycle tick) and a separate call into
+   `CommandQueue.is_delivered()` (guarded by `CommandQueue`'s own,
+   different lock) — with no atomicity between them. Under a
+   `correlation_ttl_seconds` configured shorter than this registry's own
+   windows, `CommandQueue`'s retention purge could clear a genuinely
+   delivered command's `_delivered_ids` entry, making a real delivery
+   look like "never delivered" again. More fundamentally, even with
+   default retention, a `poll()` call succeeding a fraction of a second
+   after `InFlightCommandRegistry` had already committed to "abandoned"
+   (based on its own, possibly slightly earlier, clock reading) could
+   still deliver the command to the EA after Runtime had already freed
+   the pair and potentially resubmitted a fresh command for it — a
+   duplicate-command/duplicate-position risk (Phantom Protocol §2: "No
+   duplicate trades. No uncontrolled pyramiding").
+2. **Fixed by moving the entire delivered-or-abandoned decision into
+   `CommandQueue` itself**, the only object that actually owns both
+   facts, and making it a permanent, mutually-exclusive outcome rather
+   than a transient read:
+   - `CommandQueue.is_abandoned(correlation_id, now)` (new) is evaluated
+     entirely under `CommandQueue`'s own single lock: a command already
+     in `_delivered_ids` is never abandoned, regardless of age. One
+     never delivered and already past `command_ttl_seconds` is marked
+     into a new, permanent `_abandoned_ids` set and reported abandoned.
+   - `poll()` now refuses to ever deliver a `correlation_id` already in
+     `_abandoned_ids` — closing the residual race precisely: Runtime's
+     live-cycle loop and the Bridge's request-handling threads each call
+     their own clock independently (`deployment_windows/start.py`'s
+     `_utc_now()`), so a `poll()` call could carry a `now` a fraction of
+     a second "behind" the `now` a concurrent `is_abandoned()` call used
+     — without this check, that poll() could still deliver a command
+     Runtime had already released. With it, "delivered" and "abandoned"
+     become permanent, mutually exclusive facts, decided by whichever of
+     `poll()`/`is_abandoned()` acquires the lock first; the other,
+     whenever it runs, observes that committed outcome and can never
+     contradict it.
+   - `BridgeEngine.command_delivered()` (Amendment 5) is removed —
+     superseded by `BridgeEngine.command_abandoned(correlation_id, now)`,
+     the sole passthrough `InFlightCommandRegistry.reconcile()` now uses.
+   - `InFlightCommandRegistry.reconcile()`'s `is_delivered`/
+     `undelivered_grace_seconds` parameters are replaced by a single
+     `is_abandoned` callable; the registry no longer independently
+     computes or duplicates any age/grace threshold of its own for this
+     purpose (Phantom Protocol §1.4: "check for duplicate...filters") —
+     `CommandQueue.is_abandoned()` is the sole source of truth.
+   - Verified with a real multi-threaded test
+     (`tests/titan_protocol/bridge/test_command_queue.py`'s
+     `TestIsAbandonedConcurrencySafety`) that races a `poll()` call and
+     an `is_abandoned()` call at deliberately disagreeing clock readings
+     (one just under `command_ttl_seconds`, one just over) across 500
+     iterations, asserting the two outcomes are never both true for the
+     same `correlation_id`.
+
+No transport redesign, no Bridge route behavior change, no pipeline-stage
+engine touched.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

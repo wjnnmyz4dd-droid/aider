@@ -61,6 +61,18 @@ class CommandQueue:
         self._commands: Dict[str, TradeCommand] = {}
         self._pending_order: List[str] = []
         self._delivered_ids: Set[str] = set()
+        # Once a correlation_id is declared abandoned (see is_abandoned()),
+        # it is permanently ineligible for delivery -- checked by poll()
+        # below -- so that a poll() landing at nearly the same moment as
+        # an abandonment decision (possibly carrying a slightly different
+        # "now" than the one that declared it abandoned; Runtime and the
+        # Bridge's request handlers each call their own clock
+        # independently) can never still deliver a command Runtime has
+        # already released the reservation for. "Delivered" and
+        # "abandoned" are mutually exclusive and both permanent, decided
+        # by whichever of poll()/is_abandoned() wins the race for this
+        # lock first.
+        self._abandoned_ids: Set[str] = set()
         self._executed_ids: Set[str] = set()
         self._results: Dict[str, ExecutionReport] = {}
         self._emergency_stop = EmergencyStopState(active=False, reason=None, activated_at=None)
@@ -112,6 +124,16 @@ class CommandQueue:
                 return ()
             ready = []
             for correlation_id in self._pending_order:
+                if correlation_id in self._abandoned_ids:
+                    # Runtime has already declared this abandoned (see
+                    # is_abandoned()) -- permanently ineligible for
+                    # delivery from here on, regardless of this poll()
+                    # call's own `now` reading. Closes the race where a
+                    # poll() landing at nearly the same moment as an
+                    # abandonment decision could otherwise still deliver
+                    # a command Runtime has already released the pair's
+                    # reservation for.
+                    continue
                 command = self._commands[correlation_id]
                 age = (now - command.issued_at).total_seconds()
                 if age > self.config.command_ttl_seconds:
@@ -152,6 +174,54 @@ class CommandQueue:
     def is_executed(self, correlation_id: str) -> bool:
         with self._lock:
             return correlation_id in self._executed_ids
+
+    def is_abandoned(self, correlation_id: str, now: datetime) -> bool:
+        """True only if this `correlation_id` was submitted, was never
+        delivered (see `is_delivered()`), and is already older than
+        `command_ttl_seconds` -- i.e. `poll()` would already refuse to
+        deliver it if called right now. This is the single, atomic
+        source of truth `InFlightCommandRegistry.reconcile()` needs to
+        distinguish "already vanished, undelivered" from "still
+        genuinely in flight": deliberately evaluated under this queue's
+        own lock, in one critical section, so it can never observe an
+        inconsistent split of "was it delivered" and "is it stale" from
+        two different instants the way composing `is_delivered()` with a
+        separately-computed age would.
+
+        Not a pure read: once this method concludes abandonment, it
+        permanently records that in `_abandoned_ids`, and `poll()` refuses
+        to ever deliver a correlation_id listed there -- regardless of
+        that later `poll()` call's own `now` (Runtime's live-cycle loop
+        and the Bridge's request handlers each call their own clock
+        independently; a `poll()` landing a moment after an abandonment
+        decision could otherwise carry a slightly earlier `now` that,
+        read in isolation, would still consider the command fresh enough
+        to deliver). "Delivered" and "abandoned" are therefore mutually
+        exclusive and both permanent outcomes for a given correlation_id,
+        decided by whichever of `poll()`/`is_abandoned()` acquires
+        `self._lock` first -- the other, whenever it runs, observes the
+        first one's fully committed result and can never contradict it.
+
+        A command already delivered is NEVER considered abandoned,
+        regardless of how much time has passed -- once delivered, its
+        reservation belongs to execution/rejection reconciliation (or a
+        separate execution timeout), not this check. An unknown
+        `correlation_id` (never submitted here, or already purged by
+        retention) is also never considered abandoned -- fail-closed:
+        this method only ever asserts abandonment from positive,
+        currently-held evidence, never from an absence of evidence."""
+        with self._lock:
+            if correlation_id in self._delivered_ids:
+                return False
+            if correlation_id in self._abandoned_ids:
+                return True
+            command = self._commands.get(correlation_id)
+            if command is None:
+                return False
+            if (now - command.issued_at).total_seconds() > self.config.command_ttl_seconds:
+                self._abandoned_ids.add(correlation_id)
+                return True
+            return False
 
     def all_results(self) -> Tuple[ExecutionReport, ...]:
         with self._lock:
@@ -231,6 +301,7 @@ class CommandQueue:
         for correlation_id in to_purge:
             self._commands.pop(correlation_id, None)
             self._delivered_ids.discard(correlation_id)
+            self._abandoned_ids.discard(correlation_id)
             self._executed_ids.discard(correlation_id)
             self._results.pop(correlation_id, None)
         self._expired_removed_count += len(to_purge)
