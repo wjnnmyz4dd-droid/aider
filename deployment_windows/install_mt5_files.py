@@ -75,11 +75,11 @@ _SOURCE_DIR = _REPO_ROOT / "mt5"
 # for. Every other line in the shipped template (comments, the less
 # safety-critical tuning knobs) passes through unchanged. Deliberately
 # excludes "Transport" (ADR-034 Amendment 2, default flipped by
-# Amendment 4): it's a custom MQL5 enum input, and this session could
-# not confirm .set's serialization convention for a custom enum with
-# confidence -- the EA's own compiled default (Http) applies whenever a
-# .set file omits the key, which is exactly what happens here, so
-# nothing is lost by leaving it out.
+# Amendment 4, flipped back by Amendment 7): it's a custom MQL5 enum
+# input, and this session could not confirm .set's serialization
+# convention for a custom enum with confidence -- the EA's own compiled
+# default (Socket) applies whenever a .set file omits the key, which is
+# exactly what happens here, so nothing is lost by leaving it out.
 _PERSONALIZABLE_KEYS = ("ApiKey", "MagicNumber", "BackendUrl", "AllowedSymbolsCsv", "SocketHost", "SocketPort")
 
 

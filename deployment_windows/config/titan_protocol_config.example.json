@@ -19,12 +19,12 @@
 
   "bridge": {
     "_maps_to": "titan_protocol.bridge.config.BridgeConfig",
-    "_transport_note": "ADR-034 (Amendment 4): transport is 'http' (default -- WebRequest()-based, see docs/adr/ADR-034-mt5-bridge-transport-hardening.md) or 'socket' (native MQL5 TCP socket, a fully-supported explicit opt-in). When transport is 'socket', start.py also binds an HTTP fallback listener on 'port' automatically (ADR-034 Amendment 3), so an EA that cannot reach the socket port can fall back to HTTP on its own without a config edit or restart. When transport is 'http', no separate fallback listener is bound -- HTTP is already the only, default transport. socket_* fields are read only when transport is 'socket'.",
+    "_transport_note": "ADR-034 (Amendment 7): transport is 'socket' (default -- native MQL5 TCP socket, bypasses WinINet/WebRequest() entirely, see docs/adr/ADR-034-mt5-bridge-transport-hardening.md) or 'http' (WebRequest()-based, a fully-supported explicit rollback). When transport is 'socket', start.py also binds an HTTP fallback listener on 'port' automatically (ADR-034 Amendment 3), so an EA that cannot reach the socket port can fall back to HTTP on its own without a config edit or restart. When transport is 'http', no separate fallback listener is bound -- HTTP is already the only transport. socket_* fields are read only when transport is 'socket'.",
     "api_key_env_var": "TITAN_PROTOCOL_BRIDGE_API_KEY",
     "api_key": "REPLACE_WITH_YOUR_BRIDGE_API_KEY",
     "host": "127.0.0.1",
     "port": 8787,
-    "transport": "http",
+    "transport": "socket",
     "socket_port": 8788,
     "socket_max_message_bytes": 65536,
     "socket_idle_timeout_seconds": 60.0,

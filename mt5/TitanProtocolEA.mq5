@@ -20,9 +20,14 @@
 //| above onto a persistent native MQL5 TCP socket (SocketCreate/     |
 //| SocketConnect family) instead of WebRequest()/HTTP -- the same    |
 //| message bodies, the same routes, the same fail-closed semantics,  |
-//| just a different substrate underneath. Transport=Http (Amendment |
-//| 4 default) is entirely unchanged and remains fully supported;     |
-//| Transport=Socket is a fully-supported explicit opt-in.             |
+//| just a different substrate underneath. Transport=Socket (Amendment|
+//| 7 default) bypasses WinINet/WebRequest() entirely -- repeated      |
+//| field evidence showed HTTP failing with undocumented pseudo-status |
+//| codes (1001, GetLastError=5203) even after Amendment 4's fixes,    |
+//| including elapsed times exceeding WebRequest()'s own timeout       |
+//| parameter, consistent with a WinINet-layer problem this substrate  |
+//| doesn't depend on. Transport=Http remains fully supported as an    |
+//| explicit rollback.                                                  |
 //|                                                                    |
 //| Original implementation. No source code from any reference        |
 //| repository was copied -- see docs/research/ for the architectural |
@@ -54,11 +59,11 @@ input int    PollBackoffMaxDelayMs    = 15000;                      // ADR-034 A
 //--- ADR-034: transport substrate selection -----------------------------
 enum ENUM_TRANSPORT_MODE
   {
-   TRANSPORT_HTTP,    // WebRequest()/HTTP -- today's transport, the rollback path
-   TRANSPORT_SOCKET   // native MQL5 TCP socket -- ADR-034
+   TRANSPORT_HTTP,    // WebRequest()/HTTP -- the explicit rollback path
+   TRANSPORT_SOCKET   // native MQL5 TCP socket -- ADR-034, Amendment 7 default
   };
 
-input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_HTTP;      // ADR-034 transport substrate (Amendment 4 default; Socket = explicit opt-in)
+input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_SOCKET;    // ADR-034 transport substrate (Amendment 7 default; Http = explicit rollback)
 input string SocketHost                     = "127.0.0.1";         // Bridge socket host (Transport=Socket only)
 input int    SocketPort                     = 8788;                // Bridge socket port -- must match BridgeConfig.socket_port
 input int    SocketConnectTimeoutMs         = 5000;                // SocketConnect() timeout
@@ -95,7 +100,7 @@ int      g_reconnectAttempt     = 0;
 // TRANSPORT_HTTP for the remainder of the run. Every
 // BridgeRequest()/BridgePollCommands() call consults this, never the
 // raw `Transport` input directly.
-ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_HTTP;
+ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_SOCKET;
 bool                g_hasFallenBackToHttp = false;
 
 // Amendment 1 (ADR-023) -- market-data reporting state.

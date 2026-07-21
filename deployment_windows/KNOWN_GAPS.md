@@ -260,6 +260,21 @@ the out-of-the-box default. See
 `docs/adr/ADR-034-mt5-bridge-transport-hardening.md` Amendment 4 for the
 full rationale.
 
+**Superseded (ADR-034 Amendment 7):** the operator's actual VPS, running
+the Amendment 4-6 build, produced persistent (not intermittent)
+`WebRequest()` `1001`/`GetLastError=5203` failures on every
+`/bridge/heartbeat`/`/bridge/account` attempt, with elapsed time
+consistently exceeding `WebRequest()`'s own 5000ms timeout parameter —
+conclusive field evidence the HTTP/WinINet path is unreliable on this
+deployment, not merely a hypothetical risk. Both defaults revert back to
+`"socket"`/`TRANSPORT_SOCKET`; `"http"`/`TRANSPORT_HTTP` remain fully
+supported as an explicit rollback. See
+`docs/adr/ADR-034-mt5-bridge-transport-hardening.md` Amendment 7 —
+including the operational note on why recompiling alone does not change
+an already-attached EA's active transport, and the exact steps
+(`verify_transport_configuration.py`) to confirm the switch actually took
+effect on a live deployment.
+
 ## 8. `AccountState` had no freshness gate — CLOSED (ACCOUNT_STATE_STALE)
 
 `BridgeEngine.latest_account_state` is set only when `/bridge/account`

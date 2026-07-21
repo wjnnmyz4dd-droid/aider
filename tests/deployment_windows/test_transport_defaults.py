@@ -1,7 +1,7 @@
-"""Tests for the ADR-034 Amendment 4 transport-default flip: `http` is
+"""Tests for the ADR-034 Amendment 7 transport-default flip: `socket` is
 now the shipped default for `bridge.transport` (both when the JSON
 config omits the key entirely and via `BridgeConfig`'s own dataclass
-default), with `socket` remaining a fully-supported explicit override.
+default), with `http` remaining a fully-supported explicit rollback.
 Complements `tests/titan_protocol/bridge/test_config.py`'s dataclass-
 level assertions with the config-loading path an operator's JSON file
 actually goes through."""
@@ -20,7 +20,7 @@ from config_loader import load_settings
 
 
 class TestBridgeTransportDefault(unittest.TestCase):
-    def test_missing_bridge_transport_defaults_to_http(self):
+    def test_missing_bridge_transport_defaults_to_socket(self):
         """Deletes the key entirely (not merely overriding it) so this
         proves the loader's own fallback, not just an unrelated example
         value -- config_loader.py derives this from BridgeConfig.transport
@@ -33,7 +33,7 @@ class TestBridgeTransportDefault(unittest.TestCase):
             config_path = Path(tmp) / "titan_protocol_config.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             settings = load_settings(config_path)
-        self.assertEqual(settings.bridge_config.transport, "http")
+        self.assertEqual(settings.bridge_config.transport, "socket")
 
     def test_explicit_socket_override_still_works(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,13 +47,13 @@ class TestBridgeTransportDefault(unittest.TestCase):
             settings = load_settings(config_path)
         self.assertEqual(settings.bridge_config.transport, "http")
 
-    def test_shipped_example_config_itself_defaults_to_http(self):
+    def test_shipped_example_config_itself_defaults_to_socket(self):
         """The example config an operator copies is expected to already
         state the real default explicitly (documentation-as-code) --
         this guards against the example drifting from BridgeConfig's
-        own default the way it did before Amendment 4."""
+        own default the way it did before Amendment 7."""
         config = load_example_config()
-        self.assertEqual(config["bridge"]["transport"], "http")
+        self.assertEqual(config["bridge"]["transport"], "socket")
 
 
 if __name__ == "__main__":

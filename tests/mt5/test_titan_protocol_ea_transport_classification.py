@@ -1,8 +1,10 @@
 """Source-inspection tests for two corrective changes to
-mt5/TitanProtocolEA.mq5 (Runtime Audit Phase 4 / ADR-034 Amendment 4):
+mt5/TitanProtocolEA.mq5 (Runtime Audit Phase 4 / ADR-034 Amendments 4 and 7):
 
-1. The shipped `Transport` input default is `TRANSPORT_HTTP`, not
-   `TRANSPORT_SOCKET` (Amendment 4 reverts Amendment 2's default).
+1. The shipped `Transport` input default is `TRANSPORT_SOCKET`, not
+   `TRANSPORT_HTTP` (Amendment 7 reverts Amendment 4's default, after
+   repeated field evidence showed the HTTP/WebRequest() path continuing
+   to fail with undocumented WinINet pseudo-status codes).
 2. `HttpPost()`/`HttpGet()` classify `WebRequest()`'s return value with a
    strict 100-599 HTTP-status boundary, so a WinINet transport pseudo-
    status (e.g. 1001) is never printed as "rejected, HTTP <n>" or treated
@@ -31,20 +33,20 @@ class _EASourceTestCase(unittest.TestCase):
         cls.source = EA_PATH.read_text(encoding="utf-8")
 
 
-class TestTransportDefaultIsHttp(_EASourceTestCase):
-    def test_transport_input_defaults_to_http(self):
-        self.assertIn("input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_HTTP;", self.source)
+class TestTransportDefaultIsSocket(_EASourceTestCase):
+    def test_transport_input_defaults_to_socket(self):
+        self.assertIn("input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_SOCKET;", self.source)
 
     def test_effective_transport_initializer_matches(self):
         """g_effectiveTransport's compile-time initializer must agree
         with the Transport input's own default -- OnInit() overwrites it
         for real, but the initializer itself should never silently claim
         a different default than the input it mirrors."""
-        self.assertIn("ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_HTTP;", self.source)
+        self.assertIn("ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_SOCKET;", self.source)
 
-    def test_no_stale_comment_still_claims_socket_is_default(self):
-        self.assertNotIn("Amendment 2 default", self.source)
-        self.assertNotIn("Transport=Http (default)", self.source)
+    def test_no_stale_comment_still_claims_http_is_default(self):
+        self.assertNotIn("Amendment 4 default", self.source)
+        self.assertNotIn("Transport=Socket (default)", self.source)
 
 
 class TestHttpStatusClassificationBoundary(_EASourceTestCase):

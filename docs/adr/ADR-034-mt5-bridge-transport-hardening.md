@@ -306,6 +306,67 @@ result in both a release and a live delivery for the same
 No transport redesign, no Bridge route behavior change, no pipeline-stage
 engine touched.
 
+**Amendment 7 (2026-07-21 — "Revert shipped default back to socket, field
+evidence exhausted for HTTP"):** the operator's own live VPS, running the
+Amendment 5/6 build, produced fresh Experts-log evidence
+(`TITAN_DIAG NO_RESPONSE transport=HTTP method=POST endpoint=/bridge/
+heartbeat pseudoStatus=1001 lastError=5203 elapsedMs=7016`, repeated
+across `/bridge/heartbeat` and `/bridge/account`, `~7000ms` elapsed each
+time) proving two things conclusively:
+
+1. **The classification and abandonment fixes are working exactly as
+   designed** — the log is now honest (`NO_RESPONSE`/`pseudoStatus=`,
+   never "rejected, HTTP 1001"), confirming Amendments 4-6 shipped
+   correctly.
+2. **The underlying HTTP/WebRequest() instability is unresolved and, on
+   this specific deployment, persistent rather than merely intermittent**
+   — every observed heartbeat/account attempt failed the same way. Worse,
+   the elapsed time (~7000ms) consistently exceeds `WebRequest()`'s own
+   5000ms timeout parameter, indicating something below the MQL5
+   application layer (WinINet itself, a system proxy, or AV/firewall
+   interception) is holding the connection past the timeout MT5 asked
+   for — a system-level symptom this codebase cannot fix from inside the
+   EA or Bridge, and precisely the class of problem Option 3 (native
+   socket transport, this ADR's own original recommendation, §4) was
+   chosen specifically to route around.
+
+Given persistent (not merely occasional) failure on the operator's actual
+deployment, continuing to ship HTTP as the default is no longer
+defensible caution — it is shipping a substrate already proven broken on
+this machine as the out-of-the-box experience. **Both shipped defaults
+revert to `"socket"`/`TRANSPORT_SOCKET`:**
+
+- `BridgeConfig.transport` default: `"http"` → `"socket"`.
+- `TitanProtocolEA.mq5`'s `Transport` input default:
+  `TRANSPORT_HTTP` → `TRANSPORT_SOCKET`.
+- `deployment_windows/config/titan_protocol_config.example.json`'s
+  `bridge.transport` and its own note updated to match.
+- `"http"`/`TRANSPORT_HTTP` remain fully supported as an explicit
+  rollback — no code path, message schema, or validation rule changes,
+  only which value ships as the out-of-the-box default (the same
+  category of change as every prior transport-default amendment).
+
+**Operational note, critical for applying this across an already-running
+deployment:** `Transport` is a compiled MQL5 input — an already-attached
+chart keeps whatever value it was attached with, regardless of what the
+newly-compiled `.ex5`'s default says. Recompiling this file alone does
+**not** change a currently-running EA instance's active transport. To
+actually pick up this default on a live deployment: recompile
+`TitanProtocolEA.mq5` (or load the refreshed `.set`/select `Transport=
+Socket` explicitly in the Inputs tab), **fully close and reopen the MT5
+terminal** (not merely reattach — a documented ADR-034 Amendment 3
+finding that also applies here), then reattach the EA to **every** chart
+it runs on. Restart the Bridge process separately to pick up
+`bridge.transport`'s new default (or its own explicit override). Use
+`deployment_windows/verify_transport_configuration.py` afterward against
+the real logs to confirm the EA's OnInit-resolved transport, the Bridge's
+configured transport, and the per-request `TITAN_DIAG ATTEMPT
+transport=` tally all agree on Socket, with no fallback event —
+"recompiled" is not the same claim as "confirmed running."
+
+No transport redesign, no Bridge route behavior change, no pipeline-stage
+engine touched.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

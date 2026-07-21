@@ -9,12 +9,12 @@ it introduces zero new trading logic, zero new engine behavior, and no
 architectural redesign. What it starts:
 
   1. The Bridge (titan_protocol.bridge.server.serve /
-     titan_protocol.bridge.socket_transport.serve_socket) -- HTTP
-     transport by default (ADR-034 Amendment 4), with the native socket
-     transport fully supported as an explicit opt-in (bridge.transport
-     ="socket"); an automatic HTTP fallback listener is also bound
-     whenever transport is socket (ADR-034 Amendment 3), so an EA that
-     falls back to HTTP client-side is still reachable.
+     titan_protocol.bridge.socket_transport.serve_socket) -- native
+     socket transport by default (ADR-034 Amendment 7), with HTTP fully
+     supported as an explicit rollback (bridge.transport="http"); an
+     automatic HTTP fallback listener is also bound whenever transport
+     is socket (ADR-034 Amendment 3), so an EA that falls back to HTTP
+     client-side is still reachable.
   2. The five core trading engines (Evidence, Market Intelligence,
      Strategy, Risk, Compliance) and the Runtime Orchestrator wired to
      them, per titan_protocol/runtime/engine.py's real constructor signature.
@@ -947,8 +947,8 @@ def run_foreground(config_path: Path) -> int:
         metrics=bridge_metrics, market_data_engine=market_data_engine,
     )
     # ADR-034: exactly one transport is ever active, selected by
-    # bridge.transport ("http" default -- Amendment 4 -- "socket" the
-    # native ADR-034 substrate, a fully-supported explicit opt-in).
+    # bridge.transport ("socket" default -- Amendment 7, the native
+    # ADR-034 substrate -- "http" a fully-supported explicit rollback).
     # Flip the config field and restart to switch; never a second
     # concurrently-running listener.
     transport_is_socket = settings.bridge_config.transport == "socket"
