@@ -5,6 +5,7 @@ on:
     branches: ["claude/phantom-ea-mkycj5"]
   pull_request:
     branches: ["claude/phantom-ea-mkycj5"]
+  workflow_dispatch: {}
   schedule:
     # Weekly scan, Monday 06:00 UTC, catches drift even with no recent pushes.
     - cron: "0 6 * * 1"
