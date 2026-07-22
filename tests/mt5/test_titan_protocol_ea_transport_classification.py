@@ -1,14 +1,12 @@
-"""Source-inspection tests for two corrective changes to
-mt5/TitanProtocolEA.mq5 (Runtime Audit Phase 4 / ADR-034 Amendments 4 and 7):
+"""Source-inspection tests for mt5/TitanProtocolEA.mq5's HTTP-status
+classification (Runtime Audit Phase 4 / ADR-034 Amendment 4), which
+remains after Amendment 10 removed native socket transport entirely and
+made HTTP the sole transport:
 
-1. The shipped `Transport` input default is `TRANSPORT_SOCKET`, not
-   `TRANSPORT_HTTP` (Amendment 7 reverts Amendment 4's default, after
-   repeated field evidence showed the HTTP/WebRequest() path continuing
-   to fail with undocumented WinINet pseudo-status codes).
-2. `HttpPost()`/`HttpGet()` classify `WebRequest()`'s return value with a
-   strict 100-599 HTTP-status boundary, so a WinINet transport pseudo-
-   status (e.g. 1001) is never printed as "rejected, HTTP <n>" or treated
-   as a genuine Bridge response.
+`HttpPost()`/`HttpGet()` classify `WebRequest()`'s return value with a
+strict 100-599 HTTP-status boundary, so a WinINet transport pseudo-
+status (e.g. 1001) is never printed as "rejected, HTTP <n>" or treated
+as a genuine Bridge response.
 
 MQL5 cannot be compiled or executed outside MetaEditor/a real MT5
 terminal, so these are source-inspection tests -- the same technique
@@ -33,20 +31,20 @@ class _EASourceTestCase(unittest.TestCase):
         cls.source = EA_PATH.read_text(encoding="utf-8")
 
 
-class TestTransportDefaultIsSocket(_EASourceTestCase):
-    def test_transport_input_defaults_to_socket(self):
-        self.assertIn("input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_SOCKET;", self.source)
+class TestNoSocketTransportRemains(_EASourceTestCase):
+    """ADR-034 Amendment 10 -- native socket transport was removed
+    entirely; guards against any of it silently reappearing."""
 
-    def test_effective_transport_initializer_matches(self):
-        """g_effectiveTransport's compile-time initializer must agree
-        with the Transport input's own default -- OnInit() overwrites it
-        for real, but the initializer itself should never silently claim
-        a different default than the input it mirrors."""
-        self.assertIn("ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_SOCKET;", self.source)
+    def test_no_transport_enum_or_input(self):
+        self.assertNotIn("ENUM_TRANSPORT_MODE", self.source)
+        self.assertNotIn("TRANSPORT_SOCKET", self.source)
+        self.assertNotIn("TRANSPORT_HTTP", self.source)
 
-    def test_no_stale_comment_still_claims_http_is_default(self):
-        self.assertNotIn("Amendment 4 default", self.source)
-        self.assertNotIn("Transport=Socket (default)", self.source)
+    def test_no_socket_functions_or_globals(self):
+        self.assertNotIn("SocketConnect", self.source)
+        self.assertNotIn("SocketCreate", self.source)
+        self.assertNotIn("g_effectiveTransport", self.source)
+        self.assertNotIn("g_hasFallenBackToHttp", self.source)
 
 
 class TestHttpStatusClassificationBoundary(_EASourceTestCase):

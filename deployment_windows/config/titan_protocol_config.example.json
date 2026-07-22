@@ -19,16 +19,11 @@
 
   "bridge": {
     "_maps_to": "titan_protocol.bridge.config.BridgeConfig",
-    "_transport_note": "ADR-034 (Amendment 7): transport is 'socket' (default -- native MQL5 TCP socket, bypasses WinINet/WebRequest() entirely, see docs/adr/ADR-034-mt5-bridge-transport-hardening.md) or 'http' (WebRequest()-based, a fully-supported explicit rollback). When transport is 'socket', start.py also binds an HTTP fallback listener on 'port' automatically (ADR-034 Amendment 3), so an EA that cannot reach the socket port can fall back to HTTP on its own without a config edit or restart. When transport is 'http', no separate fallback listener is bound -- HTTP is already the only transport. socket_* fields are read only when transport is 'socket'.",
+    "_transport_note": "ADR-034 (Amendment 10): HTTP (WebRequest()-based) is the only supported transport -- native MQL5 socket transport has been removed entirely. 'port' is the sole listener.",
     "api_key_env_var": "TITAN_PROTOCOL_BRIDGE_API_KEY",
     "api_key": "REPLACE_WITH_YOUR_BRIDGE_API_KEY",
     "host": "127.0.0.1",
     "port": 8787,
-    "transport": "socket",
-    "socket_port": 8788,
-    "socket_max_message_bytes": 65536,
-    "socket_idle_timeout_seconds": 60.0,
-    "socket_max_connections": 8,
     "allowed_symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"],
     "magic_number": 20260710,
     "max_lot_size": 5.0,

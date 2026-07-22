@@ -43,8 +43,7 @@ class TestPrintRunStatusPanel(unittest.TestCase):
 
     def test_full_payload_surfaces_every_field(self):
         run_status = {
-            "communication_mode": "socket",
-            "http_fallback_enabled": True,
+            "communication_mode": "HTTP",
             "bridge_connection_status": "connected",
             "runtime_status": "DEGRADED",
             "last_heartbeat_age_seconds": 2.5,
@@ -64,8 +63,7 @@ class TestPrintRunStatusPanel(unittest.TestCase):
             },
         }
         output = self._run(run_status)
-        self.assertIn("socket", output)
-        self.assertIn("enabled", output)
+        self.assertIn("HTTP", output)
         self.assertIn("connected", output)
         self.assertIn("DEGRADED", output)
         self.assertIn("2.5s ago", output)

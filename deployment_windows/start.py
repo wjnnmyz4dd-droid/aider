@@ -8,13 +8,9 @@ PHANTOM_MT5_DEPLOYMENT_AUDIT.md's own Runtime Startup Order describe --
 it introduces zero new trading logic, zero new engine behavior, and no
 architectural redesign. What it starts:
 
-  1. The Bridge (titan_protocol.bridge.server.serve /
-     titan_protocol.bridge.socket_transport.serve_socket) -- native
-     socket transport by default (ADR-034 Amendment 7), with HTTP fully
-     supported as an explicit rollback (bridge.transport="http"); an
-     automatic HTTP fallback listener is also bound whenever transport
-     is socket (ADR-034 Amendment 3), so an EA that falls back to HTTP
-     client-side is still reachable.
+  1. The Bridge (titan_protocol.bridge.server.serve) -- HTTP is the only
+     supported transport (ADR-034 Amendment 10; native MQL5 socket
+     transport has been removed entirely).
   2. The five core trading engines (Evidence, Market Intelligence,
      Strategy, Risk, Compliance) and the Runtime Orchestrator wired to
      them, per titan_protocol/runtime/engine.py's real constructor signature.
@@ -116,7 +112,6 @@ from titan_protocol.bridge.engine import BridgeEngine
 from titan_protocol.bridge.metrics import BridgeMetrics
 from titan_protocol.bridge.models import PositionDirection, PositionReport
 from titan_protocol.bridge.server import serve as bridge_serve
-from titan_protocol.bridge.socket_transport import serve_socket as bridge_serve_socket
 from titan_protocol.compliance_engine.engine import ComplianceEngine
 from titan_protocol.compliance_engine.models import AccountState as ComplianceAccountState
 from titan_protocol.compliance_state_store.config import ComplianceStateStoreConfig
@@ -410,11 +405,8 @@ def _write_health_snapshot(
     runtime_metrics: Optional[RuntimeMetrics] = None,
     news_engine: Optional[NewsIngestionEngine] = None,
     news_metrics: Optional[NewsIngestionMetrics] = None,
-    bridge_transport: Optional[str] = None,
-    bridge_metrics: Optional[BridgeMetrics] = None,
     connection_health: Optional[ConnectionHealth] = None,
     in_flight_commands: Optional[InFlightCommandRegistry] = None,
-    http_fallback_active: bool = False,
     configured_max_positions_per_pair: Optional[int] = None,
     configured_max_account_state_age_seconds: Optional[float] = None,
 ) -> None:
@@ -448,8 +440,7 @@ def _write_health_snapshot(
         else None
     )
     run_status = {
-        "communication_mode": bridge_transport,
-        "http_fallback_enabled": http_fallback_active,
+        "communication_mode": "HTTP",
         "bridge_connection_status": "connected" if bridge_engine.is_connection_healthy else "disconnected",
         "runtime_status": snapshot.degradation_level.value,
         "last_heartbeat_age_seconds": (now - last_heartbeat_at).total_seconds() if last_heartbeat_at else None,
@@ -497,13 +488,6 @@ def _write_health_snapshot(
             {"cycle_count": runtime_metrics.cycle_count, "failure_count": runtime_metrics.failure_count}
             if runtime_metrics is not None else None
         ),
-        # ADR-034 -- detailed socket-transport health, only meaningful
-        # (and only ever non-None) when bridge.transport=="socket".
-        "bridge_transport": bridge_transport,
-        "bridge_socket": (
-            bridge_metrics.socket_health_snapshot()
-            if bridge_metrics is not None and bridge_transport == "socket" else None
-        ),
         "run_status": run_status,
     }
     (state_dir / "health.json").write_text(json.dumps(payload, indent=2))
@@ -516,11 +500,8 @@ def _heartbeat_loop(
     runtime_metrics: Optional[RuntimeMetrics] = None,
     news_engine: Optional[NewsIngestionEngine] = None,
     news_metrics: Optional[NewsIngestionMetrics] = None,
-    bridge_transport: Optional[str] = None,
-    bridge_metrics: Optional[BridgeMetrics] = None,
     connection_health: Optional[ConnectionHealth] = None,
     in_flight_commands: Optional[InFlightCommandRegistry] = None,
-    http_fallback_active: bool = False,
     configured_max_positions_per_pair: Optional[int] = None,
     configured_max_account_state_age_seconds: Optional[float] = None,
 ) -> None:
@@ -547,9 +528,7 @@ def _heartbeat_loop(
             _write_health_snapshot(
                 state_dir, reliability, bridge_engine, bridge_host, bridge_port, queue_depth,
                 market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_metrics,
-                bridge_transport=bridge_transport, bridge_metrics=bridge_metrics,
                 connection_health=connection_health, in_flight_commands=in_flight_commands,
-                http_fallback_active=http_fallback_active,
                 configured_max_positions_per_pair=configured_max_positions_per_pair,
                 configured_max_account_state_age_seconds=configured_max_account_state_age_seconds,
             )
@@ -985,54 +964,17 @@ def run_foreground(config_path: Path) -> int:
         settings.bridge_config, command_queue, connection_health, _utc_now,
         metrics=bridge_metrics, market_data_engine=market_data_engine,
     )
-    # ADR-034: exactly one transport is ever active, selected by
-    # bridge.transport ("socket" default -- Amendment 7, the native
-    # ADR-034 substrate -- "http" a fully-supported explicit rollback).
-    # Flip the config field and restart to switch; never a second
-    # concurrently-running listener.
-    transport_is_socket = settings.bridge_config.transport == "socket"
-    active_bridge_port = settings.bridge_config.socket_port if transport_is_socket else settings.bridge_port
-    transport_label = "socket" if transport_is_socket else "HTTP"
+    # ADR-034 Amendment 10: HTTP is the only supported transport.
+    active_bridge_port = settings.bridge_port
     try:
-        if transport_is_socket:
-            transport_server = bridge_serve_socket(
-                bridge_engine, settings.bridge_config, _utc_now,
-                host=settings.bridge_host, port=active_bridge_port, metrics=bridge_metrics,
-            )
-        else:
-            transport_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_bridge_port)
+        transport_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_bridge_port)
     except OSError as exc:
-        logger.error("Bridge %s server failed to bind %s:%s -- %s", transport_label, settings.bridge_host, active_bridge_port, exc)
+        logger.error("Bridge HTTP server failed to bind %s:%s -- %s", settings.bridge_host, active_bridge_port, exc)
         print(f"FAILED: Bridge could not bind {settings.bridge_host}:{active_bridge_port}: {exc}", file=sys.stderr)
         return 2
     server_thread = threading.Thread(target=transport_server.serve_forever, name="titan_protocol-bridge-transport", daemon=True)
     server_thread.start()
-    logger.info("Bridge %s service listening on %s:%s", transport_label, settings.bridge_host, active_bridge_port)
-
-    # ADR-034 Amendment 3: when socket is the primary transport, also bind
-    # an HTTP fallback listener on the same BridgeEngine -- an EA that
-    # cannot reach the socket port (e.g. a Tools>Options>Expert Advisors
-    # permission this deployment layer cannot pre-validate) falls back to
-    # HTTP on its own; without this listener that fallback would just
-    # trade one connection failure for another. Bind failure here is a
-    # warning, not fatal -- the primary (socket) transport above is
-    # already confirmed bound.
-    http_fallback_active = False
-    fallback_server = None
-    if transport_is_socket:
-        try:
-            fallback_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
-        except OSError as exc:
-            logger.warning(
-                "Bridge HTTP fallback listener failed to bind %s:%s -- %s (socket transport still "
-                "active; an EA that falls back to HTTP will not be reachable until this is resolved)",
-                settings.bridge_host, settings.bridge_port, exc,
-            )
-        else:
-            fallback_thread = threading.Thread(target=fallback_server.serve_forever, name="titan_protocol-bridge-http-fallback", daemon=True)
-            fallback_thread.start()
-            http_fallback_active = True
-            logger.info("Bridge HTTP fallback listener also active on %s:%s", settings.bridge_host, settings.bridge_port)
+    logger.info("Bridge HTTP service listening on %s:%s", settings.bridge_host, active_bridge_port)
 
     evidence_engine = EvidenceEngine(EvidenceEngineConfig())
     market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
@@ -1092,9 +1034,7 @@ def run_foreground(config_path: Path) -> int:
         args=(reliability, bridge_engine, command_queue, settings.state_dir, settings.bridge_host, active_bridge_port,
               market_data_engine, market_data_metrics, runtime_metrics, news_engine, news_ingestion_metrics),
         kwargs={
-            "bridge_transport": settings.bridge_config.transport, "bridge_metrics": bridge_metrics,
             "connection_health": connection_health, "in_flight_commands": in_flight_commands,
-            "http_fallback_active": http_fallback_active,
             "configured_max_positions_per_pair": configured_max_positions_per_pair,
             "configured_max_account_state_age_seconds": configured_max_account_state_age_seconds,
         },
@@ -1123,9 +1063,7 @@ def run_foreground(config_path: Path) -> int:
 
     print("=" * 72)
     print("TITAN_PROTOCOL DEPLOYMENT LAYER -- STATUS: DEGRADED")
-    print(f"  Bridge {transport_label} service : LIVE on {settings.bridge_host}:{active_bridge_port}")
-    if transport_is_socket:
-        print(f"  Bridge HTTP fallback : {'LIVE on ' + settings.bridge_host + ':' + str(settings.bridge_port) if http_fallback_active else 'NOT ACTIVE (see log -- bind failed)'}")
+    print(f"  Bridge HTTP service  : LIVE on {settings.bridge_host}:{active_bridge_port}")
     print(f"  Trading profile      : {profile.profile_id} (validated OK)")
     print("  5 core engines       : constructed OK")
     print("  Reliability monitor  : running (process-liveness + Bridge/MT5 heartbeats)")
@@ -1145,13 +1083,9 @@ def run_foreground(config_path: Path) -> int:
         while not _shutdown_event.is_set():
             time.sleep(1.0)
     finally:
-        logger.info("Stopping Bridge %s server", transport_label)
+        logger.info("Stopping Bridge HTTP server")
         transport_server.shutdown()
         transport_server.server_close()
-        if fallback_server is not None:
-            logger.info("Stopping Bridge HTTP fallback server")
-            fallback_server.shutdown()
-            fallback_server.server_close()
         try:
             pid_file.unlink()
         except OSError:

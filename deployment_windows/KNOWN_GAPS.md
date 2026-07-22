@@ -470,10 +470,42 @@ underlying native `WebRequest()`/WinINet pseudo-status instability
 (`1001`/`1003`, `GetLastError=5203`) itself — this fix stops it from
 producing runaway log spam and from silently starving trade entries for
 minutes at a time, but does not make the platform-level WinINet layer
-itself reliable. The Socket transport (ADR-034's own answer to this
-exact instability class) remains the recommended mitigation; use
-`verify_transport_configuration.py` to confirm both the EA and Bridge
-are genuinely running it before concluding it "didn't help."
+itself reliable. **Superseded by Amendment 10 below:** the paragraph
+above recommended the Socket transport as mitigation and pointed at
+`verify_transport_configuration.py` to confirm it; both no longer exist
+(Socket transport was removed entirely, and that tool along with it) —
+see section 11.
+
+## 11. Native socket transport removed entirely — HTTP is now the only transport (ADR-034 Amendment 10)
+
+**What changed:** at the operator's explicit direction, after this exact
+deployment's own field evidence showed *both* transports independently
+failing on this VPS (Socket: `GetLastError=4014` despite a confirmed
+allow-list entry and full terminal restarts; HTTP: `pseudoStatus=1001`/
+`5203`, elapsed time exceeding `WebRequest()`'s own timeout — identical
+to the failure section 7 above already documented), the operator chose
+to remove Socket entirely and standardize on HTTP, modeled on the
+original Phantom architecture. Full rationale, everything removed, and
+everything explicitly preserved is documented in
+`docs/adr/ADR-034-mt5-bridge-transport-hardening.md` Amendment 10 — not
+duplicated here.
+
+**Practical effect on every socket-related item elsewhere in this
+document:** section 7's and section 10's own mentions of
+`bridge.transport`/`Transport=Socket`/`verify_transport_configuration.py`
+now describe removed code, kept above only as an accurate historical
+record of what those fixes did *at the time* — do not act on them as
+current configuration guidance. There is no `transport` field to set
+anymore; `bridge.port`/EA `BackendUrl` are the only address configuration
+that exists.
+
+**Still open, unchanged by this amendment:** the underlying
+`WebRequest()`/WinINet pseudo-status instability itself (`1001`/`1003`,
+`GetLastError=5203`) is a property of this VPS/terminal's environment,
+not of Titan Protocol's code, and this amendment does not and cannot fix
+it — it only removes the Socket transport that had been mitigating it.
+Continuing to operate on this VPS with HTTP as the sole transport is the
+operator's own accepted risk, made with full knowledge of this history.
 
 ## Everything else in this release is fully implemented
 

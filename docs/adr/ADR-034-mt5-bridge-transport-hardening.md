@@ -493,6 +493,110 @@ enabled unconditionally, matching this amendment's charter mandate).
 No transport change, no Bridge route behavior change, no pipeline-stage
 engine touched.
 
+**Amendment 10 (2026-07-22 — "Remove native socket transport entirely;
+HTTP-only"):** at the operator's explicit direction, after this exact
+deployment's own field evidence — collected during this same session,
+methodically, after Amendment 7 shipped socket as the default — showed
+`SocketConnect()` persistently failing with `GetLastError=4014` despite a
+confirmed-correct allow-list entry and full terminal restarts (root cause
+never conclusively established; see Amendment 3's own admission that
+MQL5's `Socket*()` whitelist-entry format could not be confirmed with
+confidence), the operator asked to roll back to `Transport=Http` as a
+diagnostic step. The resulting Experts log showed HTTP failing
+**identically** to the pre-Amendment-7 evidence that originally justified
+socket becoming the default: `pseudoStatus=1001`/`5203`, elapsed time
+(~7000ms) exceeding `WebRequest()`'s own 5000ms timeout parameter — a
+WinINet-layer problem, unchanged since Amendment 4, and demonstrably still
+present on this VPS.
+
+Presented with both transports independently failing on this specific
+deployment, the operator was given three options — keep Socket and keep
+diagnosing the 4014 root cause; remove Socket and go HTTP-only anyway,
+modeled on the original Phantom architecture (a Flask REST API reached
+over plain `WebRequest()`); or implement HTTP-only but keep it dormant
+behind a flag — and explicitly chose the second: **remove native socket
+transport completely, standardize on HTTP.** This is recorded here
+because it is an operational/organizational decision made with full
+knowledge of the WinINet evidence above, not a claim that this amendment
+fixes the underlying WinINet failure — it does not, and cannot; the
+WinINet-layer issue is a property of this VPS/terminal's environment, not
+of Titan Protocol's own code. Continuing to operate with HTTP as the sole
+transport on a VPS with this history is the operator's own accepted risk;
+if the WinINet issue is later diagnosed and resolved (e.g. proxy
+configuration, corrupted WinINet cache, a Windows update), HTTP should
+work reliably again, at which point this amendment's removal of the
+socket fallback becomes purely a maintenance-surface win rather than a
+availability tradeoff.
+
+**What was removed, in full:**
+- `titan_protocol/bridge/socket_transport.py` (the entire native-socket
+  server module: `_BridgeSocketHandler`, `_BridgeSocketServer`,
+  `serve_socket()`, the length-prefixed JSON frame protocol, the
+  route-to-HTTP-path mapping, per-connection strictly-increasing `seq`
+  replay guard) — deleted entirely, not deprecated in place.
+- `BridgeConfig.transport`, `VALID_TRANSPORTS`, `socket_port`,
+  `socket_max_message_bytes`, `socket_idle_timeout_seconds`,
+  `socket_max_connections`, and the `__post_init__` transport validation
+  — removed from `titan_protocol/bridge/config.py`. `BridgeConfig` no
+  longer has a concept of "which transport" — there is only ever one.
+- `BridgeMetrics`'s ten `socket_*` counters and `socket_health_snapshot()`
+  — removed from `titan_protocol/bridge/metrics.py`; the general
+  (non-socket-specific) counters are untouched.
+- `server.py`'s socket-frame-only rejection labels
+  (`invalid_json_frame`, `missing_or_invalid_seq`,
+  `missing_or_invalid_route`, `missing_or_invalid_body`,
+  `duplicate_or_replayed_seq`) — removed from `_REJECTION_LABELS`; these
+  strings were only ever produced by the now-deleted socket handler.
+- `TitanProtocolEA.mq5`'s entire socket-transport section: the
+  `ENUM_TRANSPORT_MODE` enum and `Transport` input, all `Socket*`-prefixed
+  inputs (`SocketHost`, `SocketPort`, `SocketConnectTimeoutMs`,
+  `SocketReadTimeoutMs`, `SocketReconnectBaseDelayMs`,
+  `SocketReconnectMaxDelayMs`, `SocketMaxMessageBytes`,
+  `SocketFailoverAfterAttempts`), the runtime-fallback globals
+  (`g_effectiveTransport`, `g_hasFallenBackToHttp`, `g_socket`,
+  `g_socketSeq`, `g_lastConnectAttemptAt`, `g_reconnectAttempt`), and
+  every socket-transport function (`LogSocketDiagnostics()`,
+  `CheckSocketFailoverThreshold()`, `EnsureSocketConnected()`,
+  `SocketSendFrame()`, `SocketReadExact()`, `SocketReadFrame()`,
+  `SocketRequest()`) — `BridgeRequest()`/`BridgePollCommands()` are now
+  thin, HTTP-only wrappers. `PollAndExecuteCommands()`'s HTTP poll-backoff
+  cooldown (Amendment 5) is now unconditional, since HTTP is the only
+  transport it could ever have gated.
+- `deployment_windows/start.py`'s Amendment-3 dual-listen logic (socket
+  primary + HTTP fallback listener) — collapsed to a single
+  `bridge_serve()` call; the `bridge_transport`/`bridge_socket`/
+  `http_fallback_active` health-snapshot fields are gone from
+  `health.json`'s `run_status`/top-level payload.
+- `deployment_windows/config_loader.py`'s `bridge.transport`/`socket_*`
+  JSON config keys, `install.py`'s `SocketHost`/`SocketPort` `.set`-file
+  personalization and its HTTP-fallback-listener verification step,
+  `install_mt5_files.py`'s `SocketHost`/`SocketPort` from
+  `_PERSONALIZABLE_KEYS`, and `health_check.py`'s per-transport
+  reachability branching (now a single `bridge reachable (http)` check).
+- `deployment_windows/verify_transport_configuration.py` and its test —
+  deleted outright; this tool existed solely to diagnose a socket-vs-HTTP
+  transport mismatch between the EA and the Bridge, a condition that
+  cannot occur once only one transport exists.
+- `diagnose_communication.py`'s socket-frame log parsing
+  (`_SOCKET_LOG_LINE_RE`, `_parse_bridge_rotating_log()`, the rotating-log
+  discovery step) and the `Socket`-branch of its event-matching
+  functions — the classifier is now HTTP-only; its EA-route-label-to-
+  HTTP-path mapping (previously imported from `socket_transport.py`) is
+  now defined locally since that module no longer exists.
+
+**What was explicitly preserved, unchanged:** every reliability
+improvement built on top of the transport layer, none of which cared
+which transport carried the bytes — HTTP poll-level exponential backoff
+(`PollBackoffBaseDelayMs`/`PollBackoffMaxDelayMs`,
+`IsPollCooldownElapsed()`), the atomic Delivered-vs-Abandoned in-flight
+command lifecycle, `InFlightCommandRegistry`'s position-confirmation
+timeout (Amendment 8) and restart-safe persistence (Amendment 9), replay
+protection at the command-queue level, health monitoring, and every
+`describe_rejection()`-driven diagnostic that isn't socket-specific.
+Trading logic, Compliance Engine, AI/research packages, command
+lifecycle semantics, and risk management are untouched by this amendment
+— it is strictly a transport-layer simplification.
+
 Owner: Backend Architect (Accountable per `.claude/agents/TEAM.md` — same
 rationale as `ADR-023`: this is a transport/protocol boundary between an
 external process and the pipeline)

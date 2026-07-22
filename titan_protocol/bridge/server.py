@@ -365,10 +365,7 @@ def _auth_result_for_status(status: int) -> str:
 # stable ErrorCode (validation.py) and every other literal `error` string
 # this module's own handlers ever return onto one short, human-readable
 # label, so a rejected request's log line names the precise cause instead
-# of a generic PASS/FAIL -- shared by both transports (socket_transport.py
-# imports this rather than re-deriving its own copy) so a request rejected
-# for the same reason is described identically regardless of which
-# transport carried it.
+# of a generic PASS/FAIL.
 #
 # Deliberately NOT included here because no such rejection exists in this
 # codebase today (confirmed by reading every handler in this file and
@@ -401,11 +398,6 @@ _REJECTION_LABELS = {
     "unknown_route": "Unknown route",
     "invalid_json_body": "Malformed request body (not valid JSON)",
     "json_object_required": "Request body is not a JSON object",
-    "invalid_json_frame": "Malformed socket frame (not valid JSON)",
-    "missing_or_invalid_seq": "Socket frame missing/invalid seq",
-    "missing_or_invalid_route": "Socket frame missing/invalid route",
-    "missing_or_invalid_body": "Socket frame missing/invalid body",
-    "duplicate_or_replayed_seq": "Duplicate or replayed socket seq",
 }
 
 
@@ -413,9 +405,8 @@ def describe_rejection(status: int, response_body: dict) -> Optional[str]:
     """Returns one short, human-readable line naming the exact rejection
     cause for a non-2xx response, or None for a 2xx one. Every value this
     function can see was already produced deterministically by a handler
-    in this file (or, for the socket transport, the identical shared
-    handlers via socket_transport.py) -- this only relabels an existing,
-    known reason; it never infers or guesses one."""
+    in this file -- this only relabels an existing, known reason; it
+    never infers or guesses one."""
     if 200 <= status < 300:
         return None
     error = response_body.get("error") if isinstance(response_body, dict) else None

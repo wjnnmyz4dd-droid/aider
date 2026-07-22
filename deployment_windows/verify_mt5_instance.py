@@ -7,12 +7,12 @@ to know when GetLastError=4014 persists despite having "added the URL":
   3. Correct Experts folder -- the installed EA matches this release byte-for-byte
   4. WebRequest whitelist   -- CANNOT be verified by file inspection (see below);
                                reported honestly as unverifiable, not faked
-  5. Bridge reachable       -- a real socket connection to the configured transport(s)
+  5. Bridge reachable       -- a real TCP connection to the Bridge's HTTP listener
   6. EA can successfully POST -- a real, recent EA heartbeat already recorded
                                by the running Titan Protocol process
 
 Item 4 is the one claim this script does NOT make good on, and says so
-explicitly: MT5 stores the WebRequest/Socket allow-list in
+explicitly: MT5 stores the WebRequest allow-list in
 `<data folder>\\Config\\experts.ini`, an undocumented binary format with
 no supported read/write API (confirmed via MQL5 community documentation,
 not assumed -- see mt5_terminal.py's own module docstring for the same
@@ -108,7 +108,7 @@ def check_experts_folder(data_folder: Path):
 def check_whitelist_unverifiable() -> None:
     """Item 4, told straight: this cannot be checked by file inspection."""
     _print_result(
-        None, "WebRequest/Socket allow-list contents",
+        None, "WebRequest allow-list contents",
         "CANNOT BE VERIFIED by this or any script -- MT5 stores it in an undocumented, "
         "binary <data folder>\\Config\\experts.ini with no supported read/write API "
         "(confirmed against MQL5 community documentation, not assumed). The only trustworthy "
@@ -119,23 +119,14 @@ def check_whitelist_unverifiable() -> None:
 
 def check_bridge_reachable(settings) -> bool:
     """Item 5: a real TCP connection, not a assumed one."""
-    all_ok = True
-    checks = []
-    if settings.bridge_config.transport == "socket":
-        checks.append(("socket (primary)", settings.bridge_host, settings.bridge_config.socket_port))
-        checks.append(("HTTP (fallback, if start.py's dual-listen bound it)", settings.bridge_host, settings.bridge_port))
-    else:
-        checks.append(("HTTP (primary)", settings.bridge_host, settings.bridge_port))
-    for label, host, port in checks:
-        try:
-            with socket.create_connection((host, port), timeout=2.0):
-                _print_result(True, f"Bridge reachable -- {label}", f"{host}:{port}")
-        except OSError as exc:
-            informational = "fallback" in label
-            _print_result(None if informational else False, f"Bridge reachable -- {label}", f"{host}:{port}: {exc}")
-            if not informational:
-                all_ok = False
-    return all_ok
+    host, port = settings.bridge_host, settings.bridge_port
+    try:
+        with socket.create_connection((host, port), timeout=2.0):
+            _print_result(True, "Bridge reachable -- HTTP", f"{host}:{port}")
+            return True
+    except OSError as exc:
+        _print_result(False, "Bridge reachable -- HTTP", f"{host}:{port}: {exc}")
+        return False
 
 
 def check_ea_can_post(settings):
@@ -143,7 +134,7 @@ def check_ea_can_post(settings):
     reached the Bridge recently, per this deployment's own running
     process, not a synthetic Python-side request standing in for it
     (a Python HTTP POST succeeding would only prove ordinary networking
-    works, not that MT5's separately-sandboxed WebRequest/Socket
+    works, not that MT5's separately-sandboxed WebRequest
     permission does)."""
     import json
     from datetime import datetime, timezone
@@ -197,7 +188,7 @@ def main() -> int:
         _print_result(False, "Correct Experts folder (EA installed)", "skipped -- no resolved data folder from checks 1-2.")
     print()
 
-    print("=== Check 4: WebRequest/Socket allow-list ===")
+    print("=== Check 4: WebRequest allow-list ===")
     check_whitelist_unverifiable()
     print()
 

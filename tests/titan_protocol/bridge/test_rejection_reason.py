@@ -1,6 +1,6 @@
 """Tests for Runtime Audit Phase 2 -- exact rejection-cause instrumentation
-(`server.describe_rejection`) and its use in both transports' per-request
-log lines.
+(`server.describe_rejection`) and its use in the Bridge's per-request log
+lines.
 
 Context: an operator reported the Bridge returning "HTTP 1003" and asked
 for the authentication path to be traced and instrumented so every
@@ -10,8 +10,8 @@ established (via exhaustive code review and direct curl testing in an
 earlier session) that it is an undocumented MT5-side WinINet pseudo-status
 originating in the terminal's own network stack. These tests validate the
 real, buildable half of that request: every genuine Bridge-side rejection
-(API key, magic number, symbol, payload, correlation id, unknown route,
-malformed frame) now logs its exact cause in one line, on both transports.
+(API key, magic number, symbol, payload, correlation id, unknown route)
+now logs its exact cause in one line.
 """
 
 from __future__ import annotations
@@ -26,10 +26,7 @@ from titan_protocol.bridge.command_queue import CommandQueue
 from titan_protocol.bridge.connection_health import ConnectionHealth
 from titan_protocol.bridge.engine import BridgeEngine
 from titan_protocol.bridge.server import describe_rejection
-from titan_protocol.bridge.socket_transport import encode_frame
-from tests.titan_protocol.bridge._fixtures import API_KEY, make_config
 from tests.titan_protocol.bridge.test_http_server import HttpServerTestCase
-from tests.titan_protocol.bridge.test_socket_transport import SocketTransportTestCase
 
 
 def _wait_for_substring(get_text, substring: str, timeout: float = 2.0) -> str:
@@ -82,13 +79,6 @@ class TestDescribeRejectionUnit(unittest.TestCase):
     def test_unknown_route_labeled_for_both_transports_spellings(self):
         self.assertEqual(describe_rejection(404, {"error": "not found"}), "Unknown route")
         self.assertEqual(describe_rejection(404, {"error": "unknown_route"}), "Unknown route")
-
-    def test_frame_level_socket_errors_are_labeled(self):
-        self.assertEqual(describe_rejection(400, {"error": "invalid_json_frame"}), "Malformed socket frame (not valid JSON)")
-        self.assertEqual(describe_rejection(400, {"error": "missing_or_invalid_seq"}), "Socket frame missing/invalid seq")
-        self.assertEqual(describe_rejection(400, {"error": "missing_or_invalid_route"}), "Socket frame missing/invalid route")
-        self.assertEqual(describe_rejection(400, {"error": "missing_or_invalid_body"}), "Socket frame missing/invalid body")
-        self.assertEqual(describe_rejection(400, {"error": "duplicate_or_replayed_seq"}), "Duplicate or replayed socket seq")
 
     def test_invalid_payload_prefix_keeps_the_underlying_detail(self):
         reason = describe_rejection(400, {"error": "invalid_payload:'balance'"})
@@ -152,51 +142,6 @@ class TestHttpTransportLogsExactReason(HttpServerTestCase):
         status, _body, text = self._post_and_capture("/bridge/heartbeat", {"magic_number": self.config.magic_number})
         self.assertEqual(status, 200)
         self.assertNotIn("Rejection reason:", text)
-
-
-class TestSocketTransportLogsExactReason(SocketTransportTestCase):
-    """Real messages over a real socket connection -- confirms
-    socket_transport.py, which previously logged nothing per rejected
-    message, now logs the same precise-cause line server.py does."""
-
-    def test_wrong_api_key_logs_via_python_logging(self):
-        sock = self._connect()
-        try:
-            with self.assertLogs("titan_protocol.bridge.socket_transport", level="INFO") as captured:
-                frame = encode_frame({"seq": 1, "route": "heartbeat", "body": {"api_key": "wrong", "magic_number": self.config.magic_number}})
-                sock.sendall(frame)
-                response = self._recv_frame(sock)
-        finally:
-            sock.close()
-        self.assertEqual(response["status"], 401)
-        joined = "\n".join(captured.output)
-        self.assertIn("reason=API key mismatch", joined)
-
-    def test_malformed_frame_level_error_logs_via_python_logging(self):
-        sock = self._connect()
-        try:
-            with self.assertLogs("titan_protocol.bridge.socket_transport", level="WARNING") as captured:
-                frame = encode_frame({"seq": "not-an-int", "route": "heartbeat", "body": {}})
-                sock.sendall(frame)
-                response = self._recv_frame(sock)
-        finally:
-            sock.close()
-        self.assertEqual(response["status"], 400)
-        joined = "\n".join(captured.output)
-        self.assertIn("reason=Socket frame missing/invalid seq", joined)
-
-    def test_unknown_route_logs_unknown_route(self):
-        sock = self._connect()
-        try:
-            with self.assertLogs("titan_protocol.bridge.socket_transport", level="INFO") as captured:
-                frame = encode_frame({"seq": 1, "route": "not_a_real_route", "body": {"api_key": API_KEY, "magic_number": self.config.magic_number}})
-                sock.sendall(frame)
-                response = self._recv_frame(sock)
-        finally:
-            sock.close()
-        self.assertEqual(response["status"], 404)
-        joined = "\n".join(captured.output)
-        self.assertIn("reason=Unknown route", joined)
 
 
 if __name__ == "__main__":

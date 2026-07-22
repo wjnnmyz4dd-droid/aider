@@ -17,13 +17,6 @@ from .symbol_mapping import SymbolMapping
 
 BRIDGE_VERSION = "1.0.0-phase1"
 
-#: ADR-034 -- the only two transports this Bridge can serve over.
-#: `"socket"` is the native-MQL5-socket transport and the shipped default
-#: (Amendment 7); `"http"` is the `WebRequest()`-based transport, fully
-#: supported as an explicit rollback. Exactly one is active per
-#: deployment (Amendment 1).
-VALID_TRANSPORTS: Tuple[str, ...] = ("http", "socket")
-
 
 @dataclass(frozen=True)
 class BridgeConfig:
@@ -69,39 +62,8 @@ class BridgeConfig:
     max_error_history: int = 1000
     max_trade_transaction_history: int = 1000
 
-    # -- ADR-034: native MQL5 socket transport. `transport="socket"` is the
-    # shipped default (Amendment 7 -- reverted from Amendment 4's `"http"`
-    # default after repeated field evidence showed the HTTP/WebRequest()
-    # path continuing to fail with undocumented WinINet pseudo-status
-    # codes, including elapsed times exceeding WebRequest()'s own timeout
-    # parameter -- consistent with a WinINet-layer problem the native
-    # socket substrate doesn't depend on). `"http"` remains fully
-    # supported as an explicit rollback -- set it and restart to switch,
-    # never a second concurrently-running transport (ADR-034 Amendment 1).
-    transport: str = "socket"
-    socket_port: int = 8788
-    #: Rejected (frame refused, connection closed) before the payload is
-    #: ever read -- bounds worst-case per-message memory, independent of
-    #: `max_lot_size`/queue retention, which bound trading state, not
-    #: wire frames.
-    socket_max_message_bytes: int = 65536
-    #: A connection that sends nothing for this long is treated as a
-    #: stale/dead session and closed -- distinct from
-    #: `heartbeat_timeout_seconds` (an application-level EA-liveness
-    #: fact `ConnectionHealth` tracks); this is a transport-level socket
-    #: fact, enforced by the OS via `socket.settimeout()`.
-    socket_idle_timeout_seconds: float = 60.0
-    #: Bounds concurrently-open socket connections -- mirrors
-    #: `_BridgeHTTPServer.request_queue_size`'s existing precedent of a
-    #: documented, cheap, defensive resource bound.
-    socket_max_connections: int = 8
-
     def __post_init__(self) -> None:
         object.__setattr__(self, "allowed_symbols", tuple(self.allowed_symbols))
-        if self.transport not in VALID_TRANSPORTS:
-            raise ValueError(
-                f"BridgeConfig.transport must be one of {VALID_TRANSPORTS}, got {self.transport!r}"
-            )
 
 
 __all__ = ["BRIDGE_VERSION", "BridgeConfig"]

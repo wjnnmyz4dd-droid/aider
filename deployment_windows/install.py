@@ -167,23 +167,14 @@ def step_install_mt5_files(settings, whitelist_confirmed: bool = False) -> StepR
         "MagicNumber": str(settings.bridge_config.magic_number),
         "BackendUrl": f"http://{settings.bridge_host}:{settings.bridge_port}",
         "AllowedSymbolsCsv": ",".join(settings.bridge_config.allowed_symbols),
-        # ADR-034 -- kept identical to the live Bridge config so the .set
-        # file can never drift from it (Transport itself is deliberately
-        # not personalized here; see install_mt5_files.py's own comment).
-        "SocketHost": settings.bridge_host,
-        "SocketPort": str(settings.bridge_config.socket_port),
     }
-    bridge_address = (
-        f"{settings.bridge_host}:{settings.bridge_config.socket_port}"
-        if settings.bridge_config.transport == "socket"
-        else f"http://{settings.bridge_host}:{settings.bridge_port}"
-    )
+    bridge_address = f"http://{settings.bridge_host}:{settings.bridge_port}"
     exit_code = install_mt5_module.run(
         explicit_mt5_dir="", non_interactive=True, personalize=personalize,
         bridge_address=bridge_address, whitelist_confirmed=whitelist_confirmed,
     )
     if exit_code == 0:
-        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the correct, currently-running MT5 terminal's data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl/SocketHost/SocketPort, and whitelist confirmed by operator for that exact terminal instance")
+        return StepReport("Copy + personalize MT5 EA files", _OK, "TitanProtocolEA.mq5/.set copied into the correct, currently-running MT5 terminal's data folder, .set personalized with the real ApiKey/MagicNumber/BackendUrl, and whitelist confirmed by operator for that exact terminal instance")
     if exit_code == 3:
         return StepReport(
             "Copy + personalize MT5 EA files", _SKIPPED,
@@ -194,7 +185,7 @@ def step_install_mt5_files(settings, whitelist_confirmed: bool = False) -> StepR
     if exit_code == 4:
         return StepReport(
             "Copy + personalize MT5 EA files", _FAILED,
-            "MT5 EA files were copied into the resolved terminal, but the WebRequest/Socket "
+            "MT5 EA files were copied into the resolved terminal, but the WebRequest "
             "allow-list was NOT confirmed for that terminal (deployment-bug fix, item 5 -- this "
             "installer refuses to silently continue past an unconfirmed allow-list, since MT5 "
             "stores it in an undocumented, binary experts.ini this installer cannot read or write "
@@ -208,29 +199,22 @@ def step_install_mt5_files(settings, whitelist_confirmed: bool = False) -> StepR
 
 
 def step_verify_bridge(settings) -> StepReport:
-    """ADR-034: verifies whichever transport `bridge.transport` actually
-    names -- binding the HTTP server when a config still says "http"
-    would silently "pass" this step while never proving the transport
-    that's actually going to run works at all."""
+    """ADR-034 Amendment 10: HTTP is the only supported transport --
+    verifies the real Bridge HTTP server actually binds and is reachable."""
     from titan_protocol.bridge.command_queue import CommandQueue
     from titan_protocol.bridge.connection_health import ConnectionHealth
     from titan_protocol.bridge.engine import BridgeEngine
+    from titan_protocol.bridge.server import serve as bridge_serve
 
-    transport = settings.bridge_config.transport
-    active_port = settings.bridge_config.socket_port if transport == "socket" else settings.bridge_port
+    active_port = settings.bridge_port
 
     try:
         command_queue = CommandQueue(settings.bridge_config)
         connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
         bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now)
-        if transport == "socket":
-            from titan_protocol.bridge.socket_transport import serve_socket
-            transport_server = serve_socket(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_port)
-        else:
-            from titan_protocol.bridge.server import serve as bridge_serve
-            transport_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_port)
+        transport_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=active_port)
     except OSError as exc:
-        return StepReport("Verify Bridge (socket transport)" if transport == "socket" else "Verify Bridge (HTTP transport)", _FAILED, f"Could not bind {settings.bridge_host}:{active_port}: {exc}")
+        return StepReport("Verify Bridge (HTTP transport)", _FAILED, f"Could not bind {settings.bridge_host}:{active_port}: {exc}")
     except Exception as exc:  # noqa: BLE001 -- report any construction failure, don't let it crash the installer
         return StepReport("Verify Bridge", _FAILED, f"Bridge construction failed: {exc}")
 
@@ -247,56 +231,10 @@ def step_verify_bridge(settings) -> StepReport:
     transport_server.shutdown()
     transport_server.server_close()
 
-    label = f"Verify Bridge ({transport} transport)"
+    label = "Verify Bridge (HTTP transport)"
     if reachable:
-        return StepReport(label, _OK, f"Constructed BridgeEngine and bound the real {transport} server on {settings.bridge_host}:{active_port}; confirmed reachable via a live socket connection, then shut it down cleanly")
+        return StepReport(label, _OK, f"Constructed BridgeEngine and bound the real HTTP server on {settings.bridge_host}:{active_port}; confirmed reachable via a live socket connection, then shut it down cleanly")
     return StepReport(label, _FAILED, f"Bridge bound but was not reachable{detail_extra}")
-
-
-def step_verify_http_fallback_listener(settings) -> StepReport:
-    """ADR-034 Amendment 3: when transport=="socket", start.py also binds
-    an HTTP fallback listener so an EA that auto-falls-back to HTTP (after
-    repeated Socket connection failures) can still reach the Bridge.
-    Verifies that listener can actually bind here too. Non-fatal if it
-    can't -- mirrors start.py's own warning-not-fatal treatment of this
-    listener, since the primary transport is already confirmed by
-    step_verify_bridge above."""
-    if settings.bridge_config.transport != "socket":
-        return StepReport("Verify HTTP fallback listener", _OK, "transport is already http -- no separate fallback listener applies")
-
-    from titan_protocol.bridge.command_queue import CommandQueue
-    from titan_protocol.bridge.connection_health import ConnectionHealth
-    from titan_protocol.bridge.engine import BridgeEngine
-    from titan_protocol.bridge.server import serve as bridge_serve
-
-    try:
-        command_queue = CommandQueue(settings.bridge_config)
-        connection_health = ConnectionHealth(settings.bridge_config, _utc_now)
-        bridge_engine = BridgeEngine(settings.bridge_config, command_queue, connection_health, _utc_now)
-        fallback_server = bridge_serve(bridge_engine, settings.bridge_config, _utc_now, host=settings.bridge_host, port=settings.bridge_port)
-    except OSError as exc:
-        return StepReport(
-            "Verify HTTP fallback listener", _FAILED,
-            f"Could not bind HTTP fallback {settings.bridge_host}:{settings.bridge_port}: {exc} -- an EA "
-            "that auto-falls-back to HTTP (ADR-034 Amendment 3) will not be reachable until this port is free",
-        )
-
-    server_thread = threading.Thread(target=fallback_server.serve_forever, name="titan_protocol-install-http-fallback-smoketest", daemon=True)
-    server_thread.start()
-    try:
-        with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
-            reachable = True
-    except OSError as exc:
-        reachable = False
-        detail_extra = f" (socket connect failed: {exc})"
-    else:
-        detail_extra = ""
-    fallback_server.shutdown()
-    fallback_server.server_close()
-
-    if reachable:
-        return StepReport("Verify HTTP fallback listener", _OK, f"Bound and confirmed reachable on {settings.bridge_host}:{settings.bridge_port}, then shut down cleanly")
-    return StepReport("Verify HTTP fallback listener", _FAILED, f"HTTP fallback listener bound but was not reachable{detail_extra}")
 
 
 def step_verify_magic_number_consistency(settings) -> StepReport:
@@ -327,13 +265,11 @@ def step_report_mt5_prerequisites(settings) -> StepReport:
     skipped) so the installation report has an explicit line item for
     it, matching this module's existing honesty precedent (see
     step_verify_news_providers)."""
-    active_port = settings.bridge_config.socket_port if settings.bridge_config.transport == "socket" else settings.bridge_port
     return StepReport(
-        "MT5 WebRequest/socket prerequisites", _INFO,
+        "MT5 WebRequest prerequisites", _INFO,
         f"Cannot be verified by this script -- requires the real MT5 GUI. In MT5: "
         f"Tools > Options > Expert Advisors > check 'Allow WebRequest for listed URL' "
-        f"and add {settings.bridge_host}:{active_port} to the list (MQL5's WebRequest() "
-        f"and Socket*() functions share this same allowed-address list).",
+        f"and add {settings.bridge_host}:{settings.bridge_port} to the list.",
     )
 
 
@@ -596,10 +532,6 @@ def main() -> int:
     if run_step(step_verify_bridge(settings)):
         _write_report(steps, overall_ok=False)
         return 1
-    # Non-blocking by design -- mirrors start.py's own warning-not-fatal
-    # treatment of the HTTP fallback listener (the primary transport is
-    # already confirmed above).
-    run_step(step_verify_http_fallback_listener(settings))
     if run_step(step_verify_runtime(settings)):
         _write_report(steps, overall_ok=False)
         return 1

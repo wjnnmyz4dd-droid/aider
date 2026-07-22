@@ -21,18 +21,6 @@ class BridgeMetrics:
         self._error_report_count = 0
         self._emergency_stop_count = 0
 
-        # -- ADR-034: socket transport, additive only --
-        self._socket_connections_opened_count = 0
-        self._socket_connections_closed_count = 0
-        self._socket_connections_rejected_count = 0
-        self._socket_messages_processed_count = 0
-        self._socket_malformed_frame_count = 0
-        self._socket_duplicate_or_replayed_seq_count = 0
-        self._socket_oversized_frame_count = 0
-        self._socket_idle_timeout_count = 0
-        self._socket_bytes_received_count = 0
-        self._socket_bytes_sent_count = 0
-
     def record_heartbeat(self) -> None:
         self._heartbeat_count += 1
 
@@ -68,38 +56,6 @@ class BridgeMetrics:
 
     def record_emergency_stop(self) -> None:
         self._emergency_stop_count += 1
-
-    # -- ADR-034: socket transport ----------------------------------
-
-    def record_socket_connection_opened(self) -> None:
-        self._socket_connections_opened_count += 1
-
-    def record_socket_connection_closed(self) -> None:
-        self._socket_connections_closed_count += 1
-
-    def record_socket_connection_rejected(self) -> None:
-        self._socket_connections_rejected_count += 1
-
-    def record_socket_message_processed(self) -> None:
-        self._socket_messages_processed_count += 1
-
-    def record_socket_malformed_frame(self) -> None:
-        self._socket_malformed_frame_count += 1
-
-    def record_socket_duplicate_or_replayed_seq(self) -> None:
-        self._socket_duplicate_or_replayed_seq_count += 1
-
-    def record_socket_oversized_frame(self) -> None:
-        self._socket_oversized_frame_count += 1
-
-    def record_socket_idle_timeout(self) -> None:
-        self._socket_idle_timeout_count += 1
-
-    def record_socket_bytes_received(self, count: int) -> None:
-        self._socket_bytes_received_count += count
-
-    def record_socket_bytes_sent(self, count: int) -> None:
-        self._socket_bytes_sent_count += count
 
     @property
     def heartbeat_count(self) -> int:
@@ -148,66 +104,6 @@ class BridgeMetrics:
     @property
     def emergency_stop_count(self) -> int:
         return self._emergency_stop_count
-
-    # -- ADR-034: socket transport ----------------------------------
-
-    @property
-    def socket_connections_opened_count(self) -> int:
-        return self._socket_connections_opened_count
-
-    @property
-    def socket_connections_closed_count(self) -> int:
-        return self._socket_connections_closed_count
-
-    @property
-    def socket_connections_rejected_count(self) -> int:
-        return self._socket_connections_rejected_count
-
-    @property
-    def socket_messages_processed_count(self) -> int:
-        return self._socket_messages_processed_count
-
-    @property
-    def socket_malformed_frame_count(self) -> int:
-        return self._socket_malformed_frame_count
-
-    @property
-    def socket_duplicate_or_replayed_seq_count(self) -> int:
-        return self._socket_duplicate_or_replayed_seq_count
-
-    @property
-    def socket_oversized_frame_count(self) -> int:
-        return self._socket_oversized_frame_count
-
-    @property
-    def socket_idle_timeout_count(self) -> int:
-        return self._socket_idle_timeout_count
-
-    @property
-    def socket_bytes_received_count(self) -> int:
-        return self._socket_bytes_received_count
-
-    @property
-    def socket_bytes_sent_count(self) -> int:
-        return self._socket_bytes_sent_count
-
-    def socket_health_snapshot(self) -> dict:
-        """One-call observability surface for the socket transport --
-        every counter above, in one dict, for `health_check.py`/
-        `start.py`'s health snapshot to expose without reaching into
-        private attributes."""
-        return {
-            "connections_opened": self._socket_connections_opened_count,
-            "connections_closed": self._socket_connections_closed_count,
-            "connections_rejected": self._socket_connections_rejected_count,
-            "messages_processed": self._socket_messages_processed_count,
-            "malformed_frames": self._socket_malformed_frame_count,
-            "duplicate_or_replayed_seq": self._socket_duplicate_or_replayed_seq_count,
-            "oversized_frames": self._socket_oversized_frame_count,
-            "idle_timeouts": self._socket_idle_timeout_count,
-            "bytes_received": self._socket_bytes_received_count,
-            "bytes_sent": self._socket_bytes_sent_count,
-        }
 
 
 __all__ = ["BridgeMetrics"]

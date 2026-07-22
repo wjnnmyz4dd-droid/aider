@@ -117,16 +117,14 @@ class TestWriteHealthSnapshotRunStatus(unittest.TestCase):
             state_dir = Path(tmp)
             start._write_health_snapshot(
                 state_dir, reliability, bridge_engine, "127.0.0.1", 1, queue_depth=0,
-                bridge_transport="socket",
                 connection_health=connection_health, in_flight_commands=in_flight_commands,
-                http_fallback_active=True, configured_max_positions_per_pair=1,
+                configured_max_positions_per_pair=1,
                 configured_max_account_state_age_seconds=30.0,
             )
             payload = json.loads((state_dir / "health.json").read_text())
 
         run_status = payload["run_status"]
-        self.assertEqual(run_status["communication_mode"], "socket")
-        self.assertTrue(run_status["http_fallback_enabled"])
+        self.assertEqual(run_status["communication_mode"], "HTTP")
         self.assertEqual(run_status["bridge_connection_status"], "connected")
         self.assertIsNotNone(run_status["runtime_status"])
         self.assertGreater(run_status["last_heartbeat_age_seconds"], 0)
@@ -168,7 +166,6 @@ class TestWriteHealthSnapshotRunStatus(unittest.TestCase):
         self.assertIsNone(run_status["in_flight_command_count"])
         self.assertEqual(run_status["open_positions_per_pair"], {})
         self.assertIsNone(run_status["configured_max_positions_per_pair"])
-        self.assertFalse(run_status["http_fallback_enabled"])
         self.assertEqual(run_status["bridge_connection_status"], "disconnected")
         self.assertIsNone(run_status["account_report_age_seconds"])
         self.assertIsNone(run_status["configured_max_account_state_age_seconds"])

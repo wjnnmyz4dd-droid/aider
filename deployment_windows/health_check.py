@@ -95,7 +95,6 @@ def _print_run_status_panel(run_status: Optional[dict]) -> None:
         return
 
     print(f"  Communication mode        : {run_status.get('communication_mode')}")
-    print(f"  HTTP fallback             : {'enabled' if run_status.get('http_fallback_enabled') else 'disabled'}")
     print(f"  Bridge connection status  : {run_status.get('bridge_connection_status')}")
     print(f"  Runtime status            : {run_status.get('runtime_status')}")
     print(f"  Last heartbeat age        : {_format_age(run_status.get('last_heartbeat_age_seconds'))}")
@@ -202,7 +201,7 @@ def run(config_path: Path) -> int:
 
     checks.append(("active API key source", True, _describe_api_key_source(settings, config_path)))
 
-    checks.append(("active transport", True, settings.bridge_config.transport))
+    checks.append(("active transport", True, "http"))
 
     checks.append((
         "magic number consistency (bridge/runtime)", True,
@@ -255,29 +254,11 @@ def run(config_path: Path) -> int:
         except OSError as exc:
             checks.append((label, False, f"{path}: {exc}"))
 
-    # ADR-034: check whichever transport is actually configured active --
-    # bridge.transport=="socket" means the HTTP port was never bound, so
-    # checking it would report a false "not reachable".
-    active_bridge_port = (
-        settings.bridge_config.socket_port if settings.bridge_config.transport == "socket" else settings.bridge_port
-    )
     try:
-        with socket.create_connection((settings.bridge_host, active_bridge_port), timeout=2.0):
-            checks.append((f"bridge reachable ({settings.bridge_config.transport})", True, f"{settings.bridge_host}:{active_bridge_port}"))
+        with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
+            checks.append(("bridge reachable (http)", True, f"{settings.bridge_host}:{settings.bridge_port}"))
     except OSError as exc:
-        checks.append((f"bridge reachable ({settings.bridge_config.transport})", False, f"{settings.bridge_host}:{active_bridge_port}: {exc}"))
-
-    # ADR-034 Amendment 3: when socket is primary, start.py also binds an
-    # HTTP fallback listener so an EA that auto-falls-back can still
-    # reach the Bridge. Informational only -- its absence doesn't
-    # degrade overall health, since the primary transport check above
-    # already covers whether the Bridge itself is reachable at all.
-    if settings.bridge_config.transport == "socket":
-        try:
-            with socket.create_connection((settings.bridge_host, settings.bridge_port), timeout=2.0):
-                checks.append(("HTTP fallback listener reachable", True, f"{settings.bridge_host}:{settings.bridge_port}"))
-        except OSError as exc:
-            checks.append(("HTTP fallback listener reachable", False, f"{settings.bridge_host}:{settings.bridge_port}: {exc} -- an EA that auto-falls-back to HTTP will not be reachable"))
+        checks.append(("bridge reachable (http)", False, f"{settings.bridge_host}:{settings.bridge_port}: {exc}"))
 
     pid_file = settings.state_dir / "titan_protocol.pid"
     if pid_file.exists():
@@ -353,11 +334,6 @@ def run(config_path: Path) -> int:
         # is exactly the drift this check exists to catch, and should
         # gate like any other real failure.
         "EA .set file detection",
-        # ADR-034 Amendment 3: the fallback listener is a safety net, not
-        # the primary transport -- its absence doesn't degrade overall
-        # health since "bridge reachable (<transport>)" above already
-        # covers whether the Bridge itself is up.
-        "HTTP fallback listener reachable",
     }
 
     live_cycle = payload.get("live_cycle")

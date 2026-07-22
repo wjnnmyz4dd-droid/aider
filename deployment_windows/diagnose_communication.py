@@ -3,12 +3,13 @@
 
 Context: ADR-034 already established (an earlier session, via exhaustive
 code review and direct curl testing) that the "1003"/"1001"/"4014"
-symptoms an operator sees inside MT5 are undocumented MT5-side WinINet/
-socket-permission pseudo-statuses, generated inside the terminal's own
-network stack -- never emitted by this Bridge. Runtime Audit Phase 2
+symptoms an operator sees inside MT5 are undocumented MT5-side WinINet
+pseudo-statuses, generated inside the terminal's own network stack --
+never emitted by this Bridge. Runtime Audit Phase 2
 (server.describe_rejection) then instrumented every rejection this
-Bridge genuinely can produce with an exact one-line cause, on both
-transports.
+Bridge genuinely can produce with an exact one-line cause. ADR-034
+Amendment 10 removed native MQL5 socket transport entirely -- HTTP is
+now the only transport this classifier needs to reason about.
 
 This script closes the remaining gap: proving, from real evidence and
 never a guess, which of exactly four mutually exclusive states a given
@@ -16,7 +17,7 @@ request fell into:
 
   1. MT5 never attempted the request.
   2. MT5 attempted it, but it was blocked before reaching the Bridge
-     (WebRequest()/SocketConnect()/SocketSend() itself failed).
+     (WebRequest() itself failed).
   3. The Bridge received it and rejected it -- exact reason from
      server.describe_rejection().
   4. The Bridge received it and accepted it.
@@ -28,11 +29,9 @@ Evidence sources (never inferred, always read from a real file):
     structure, not assumed). This module never touches MT5's platform-
     level logs\\ folder (a different, unrelated log covering the
     Journal tab, not the Experts tab Print() output lands on).
-  - The Bridge's own persisted logs: bridge_console.log (server.py's
+  - The Bridge's own persisted bridge_console.log (server.py's
     print()-based per-request lifecycle block, one per HTTP request,
-    success or failure) and the newest titan_protocol_*.log (the
-    `logging` module's records, which is where socket_transport.py's
-    per-request accept/reject lines land).
+    success or failure).
 
 Matching method and its one necessary assumption, stated plainly rather
 than silently relied upon: every timestamp compared here is UTC on both
@@ -87,13 +86,25 @@ sys.path.insert(0, str(_HERE))
 
 import mt5_terminal  # noqa: E402
 from config_loader import ConfigError, load_settings  # noqa: E402
-# Reused, not re-derived: the single source of truth for socket route name
-# <-> HTTP path already lives in socket_transport.py (ADR-034). Duplicating
-# it here would risk the two silently drifting apart.
-from titan_protocol.bridge.socket_transport import (  # noqa: E402
-    _COMMANDS_POLL_ROUTE,
-    _ROUTE_TO_HTTP_PATH,
-)
+
+# The EA's TITAN_DIAG route= labels (BridgeRequest()'s first argument in
+# TitanProtocolEA.mq5) are short names, not URL paths -- this maps each
+# to the HTTP path server.py actually registers the handler under, so an
+# EA ATTEMPT line can be matched against the Bridge's own bridge_console.log
+# entries (which record the real path). Mirrors TitanProtocolEA.mq5's own
+# BridgeRequest() call sites exactly; add an entry here whenever a new one
+# is added there.
+_COMMANDS_POLL_ROUTE = "commands_poll"
+_ROUTE_TO_HTTP_PATH = {
+    "heartbeat": "/bridge/heartbeat",
+    "account": "/bridge/account",
+    "positions": "/bridge/positions",
+    "orders": "/bridge/orders",
+    "market_data": "/bridge/market-data",
+    "trade_transaction": "/bridge/trade-transaction",
+    "error": "/bridge/error",
+    "execution_report": "/bridge/execution/report",
+}
 
 # validation.py's real, confirmed check order (api_key -> magic_number ->
 # symbol_allowed, short-circuiting on first failure -- see
@@ -114,11 +125,6 @@ _REASON_TO_SUBFIELDS = {
     "Unknown route": (_NA, _NA, _NA),  # route never matched -- nothing downstream ever runs
     "Malformed request body (not valid JSON)": (_NA, _NA, _NA),
     "Request body is not a JSON object": (_NA, _NA, _NA),
-    "Malformed socket frame (not valid JSON)": (_NA, _NA, _NA),
-    "Socket frame missing/invalid seq": (_NA, _NA, _NA),
-    "Socket frame missing/invalid route": (_NA, _NA, _NA),
-    "Socket frame missing/invalid body": (_NA, _NA, _NA),
-    "Duplicate or replayed socket seq": (_NA, _NA, _NA),
 }
 # Every other named validation rejection (symbol/volume/SL/TP/timestamp/
 # correlation-id/bridge-not-ready/emergency-stop/market-data-not-configured)
@@ -147,7 +153,7 @@ def _subfields_for_reason(reason: Optional[str]):
 class EaEvent:
     kind: str  # ATTEMPT | BLOCKED | NO_RESPONSE
     route: str
-    transport: str  # HTTP | Socket
+    transport: str  # always "HTTP" (ADR-034 Amendment 10 -- the EA's own printed label)
     timestamp: datetime
     detail: str
     source_file: str
@@ -157,8 +163,8 @@ class EaEvent:
 @dataclass
 class BridgeEvent:
     timestamp: datetime
-    transport: str  # HTTP | Socket
-    route: str  # HTTP path (e.g. "/bridge/heartbeat") for HTTP; short route name for Socket
+    transport: str  # always "HTTP" (ADR-034 Amendment 10)
+    route: str  # HTTP path, e.g. "/bridge/heartbeat"
     rejection_reason: Optional[str]
     response_status: Optional[int]
     source_file: str
@@ -250,43 +256,6 @@ def _parse_bridge_console_log_text(text: str, source: str = "<text>") -> List[Br
     return events
 
 
-_SOCKET_LOG_LINE_RE = re.compile(
-    r"socket_transport: (?P<verdict>accepted|rejected) route=(?P<route>\S+) "
-    r"status=(?P<status>\d+)(?: reason=(?P<reason>.+?))? remote=.+? now=(?P<now>\S+)"
-)
-
-
-def _parse_bridge_rotating_log(path: Path) -> List[BridgeEvent]:
-    return _parse_bridge_rotating_log_lines(
-        path.read_text(encoding="utf-8", errors="replace").splitlines(), source=str(path),
-    )
-
-
-def _parse_bridge_rotating_log_lines(lines: List[str], source: str = "<lines>") -> List[BridgeEvent]:
-    """Deliberately does not anchor to the `logging` module's own line
-    prefix (e.g. `%(asctime)s %(levelname)-8s %(name)s: `) -- that prefix
-    format is a formatter/handler configuration detail, not part of the
-    log message itself, and differs between a real RotatingFileHandler
-    line and, say, unittest.assertLogs' own default formatting. Only the
-    message payload this module's own logger.info/warning calls produce
-    is matched."""
-    events: List[BridgeEvent] = []
-    for line in lines:
-        match = _SOCKET_LOG_LINE_RE.search(line)
-        if not match:
-            continue
-        try:
-            timestamp = datetime.fromisoformat(match.group("now"))
-        except ValueError:
-            continue
-        events.append(BridgeEvent(
-            timestamp=timestamp, transport="Socket", route=match.group("route"),
-            rejection_reason=match.group("reason"), response_status=int(match.group("status")),
-            source_file=source, source_line=line.strip(),
-        ))
-    return events
-
-
 def _route_as_http_path(route: str) -> str:
     if route.startswith("/"):
         return route
@@ -298,16 +267,8 @@ def _route_as_http_path(route: str) -> str:
 def _find_matching_bridge_event(attempt: EaEvent, bridge_events: List[BridgeEvent], window: timedelta) -> Optional[BridgeEvent]:
     candidates = []
     for event in bridge_events:
-        if attempt.transport == "HTTP" and event.transport != "HTTP":
+        if event.route != _route_as_http_path(attempt.route):
             continue
-        if attempt.transport == "Socket" and event.transport != "Socket":
-            continue
-        if attempt.transport == "HTTP":
-            if event.route != _route_as_http_path(attempt.route):
-                continue
-        else:
-            if event.route != attempt.route:
-                continue
         delta = abs((event.timestamp - attempt.timestamp).total_seconds())
         if delta <= window.total_seconds():
             candidates.append((delta, event))
@@ -337,9 +298,7 @@ def _is_http_pseudo_status_no_response(outcome: EaEvent) -> bool:
     """True only for the EA's `TITAN_DIAG NO_RESPONSE transport=HTTP ...
     pseudoStatus=<n> ...` marker -- `HttpPost()`/`HttpGet()`'s own label
     for a `WebRequest()` return value outside the valid HTTP range
-    (100-599). Never true for the Socket transport's own NO_RESPONSE
-    marker (no `pseudoStatus` field there), which stays genuinely
-    ambiguous (see its own comment in TitanProtocolEA.mq5)."""
+    (100-599)."""
     return outcome.transport == "HTTP" and "pseudoStatus=" in outcome.detail
 
 
@@ -381,11 +340,9 @@ def classify(attempt: EaEvent, ea_events: List[EaEvent], bridge_events: List[Bri
         # NO_RESPONSE marker is this EA's own honest label for a
         # WebRequest() return value outside the valid HTTP range (e.g.
         # 1001): the request never resulted in a real HTTP response from
-        # this Bridge (which only ever returns 100-599), so -- unlike the
-        # generic Socket-side NO_RESPONSE case below, where the frame
-        # demonstrably left the process and genuine ambiguity remains --
-        # this is classified directly and confidently as state 2, not
-        # left unmatched.
+        # this Bridge (which only ever returns 100-599), so this is
+        # classified directly and confidently as state 2, not left
+        # unmatched.
         evidence.append(f"EA log: {outcome.source_file}: {outcome.source_line}")
         evidence.append(
             "EA's own NO_RESPONSE marker carries pseudoStatus= -- WebRequest() returned a value "
@@ -461,11 +418,6 @@ def _locate_bridge_console_log(log_dir: Path) -> Optional[Path]:
     return candidate if candidate.exists() else None
 
 
-def _locate_newest_rotating_log(log_dir: Path) -> Optional[Path]:
-    candidates = sorted(log_dir.glob("titan_protocol_*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", nargs="?", default=str(_REPO_ROOT / "titan_protocol_config.json"))
@@ -513,20 +465,14 @@ def main() -> int:
     print(f"  {len(ea_events)} TITAN_DIAG line(s) parsed.")
     print()
 
-    print("=== Step 3: locate the Bridge's own persisted logs ===")
+    print("=== Step 3: locate the Bridge's own persisted log ===")
     console_log = _locate_bridge_console_log(settings.log_dir)
-    rotating_log = _locate_newest_rotating_log(settings.log_dir)
     bridge_events: List[BridgeEvent] = []
     if console_log is not None:
         print(f"  Found: {console_log}")
         bridge_events.extend(_parse_bridge_console_log(console_log))
     else:
         print(f"  {settings.log_dir / 'bridge_console.log'} not found -- has start.py been run since this fix was deployed?")
-    if rotating_log is not None:
-        print(f"  Found: {rotating_log}")
-        bridge_events.extend(_parse_bridge_rotating_log(rotating_log))
-    else:
-        print(f"  No titan_protocol_*.log found under {settings.log_dir}.")
     print(f"  {len(bridge_events)} Bridge request record(s) parsed.")
     print()
 

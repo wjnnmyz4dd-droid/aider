@@ -139,6 +139,15 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         # state -- additive only, no news_ingestion behavior touched.
         "titan_protocol/runtime/config.py",
         "titan_protocol/runtime/in_flight_store.py",
+        # ADR-034 Amendment 10 (later, separately-authorized): native
+        # MQL5 socket transport removed entirely, HTTP-only -- deletes
+        # titan_protocol/bridge/socket_transport.py, drops its export
+        # from __init__.py, and removes its now-dead metrics counters
+        # from metrics.py. Transport-layer only, no news_ingestion
+        # behavior touched.
+        "titan_protocol/bridge/__init__.py",
+        "titan_protocol/bridge/metrics.py",
+        "titan_protocol/bridge/socket_transport.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_phase(self):

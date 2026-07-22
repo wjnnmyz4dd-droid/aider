@@ -2,9 +2,8 @@
 
 Locates (or asks for) the active MT5 data folder, copies
 TitanProtocolEA.mq5 into MQL5/Experts/TitanProtocol/ and a *personalized*
-TitanProtocolEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv/
-SocketHost/SocketPort filled in from titan_protocol_config.json, when
-available) into
+TitanProtocolEA.set (ApiKey/MagicNumber/BackendUrl/AllowedSymbolsCsv
+filled in from titan_protocol_config.json, when available) into
 MQL5/Presets/TitanProtocol/, taking a timestamped backup of any file it
 would otherwise overwrite. Does NOT compile the .mq5 -- that step can
 only happen inside MetaEditor on the real Windows/MT5 installation;
@@ -20,7 +19,7 @@ Usage: python install_mt5_files.py ["C:\\path\\to\\MT5\\data\\folder"]
   found running.
 
 Deployment-bug fix (GetLastError=4014 despite the operator having added
-the Bridge address to the allow-list): MT5's WebRequest/Socket
+the Bridge address to the allow-list): MT5's WebRequest
 allow-list lives in an undocumented, binary `<data folder>\\Config\\
 experts.ini` -- there is no supported way for this script to read or
 write its contents (confirmed via MQL5 community documentation before
@@ -73,14 +72,8 @@ _SOURCE_DIR = _REPO_ROOT / "mt5"
 # .set files are plain `key=value` text (see mt5/TitanProtocolEA.set) --
 # these are the keys install.py's auto-generated config has real values
 # for. Every other line in the shipped template (comments, the less
-# safety-critical tuning knobs) passes through unchanged. Deliberately
-# excludes "Transport" (ADR-034 Amendment 2, default flipped by
-# Amendment 4, flipped back by Amendment 7): it's a custom MQL5 enum
-# input, and this session could not confirm .set's serialization
-# convention for a custom enum with confidence -- the EA's own compiled
-# default (Socket) applies whenever a .set file omits the key, which is
-# exactly what happens here, so nothing is lost by leaving it out.
-_PERSONALIZABLE_KEYS = ("ApiKey", "MagicNumber", "BackendUrl", "AllowedSymbolsCsv", "SocketHost", "SocketPort")
+# safety-critical tuning knobs) passes through unchanged.
+_PERSONALIZABLE_KEYS = ("ApiKey", "MagicNumber", "BackendUrl", "AllowedSymbolsCsv")
 
 
 def _find_mt5_data_dirs() -> list:
@@ -237,7 +230,7 @@ def run(
     (not fatal -- the rest of installation still proceeds; see
     install.py, which treats 3 as "skipped, report it, keep going"),
     and 4 when the files were copied successfully but the operator has
-    not confirmed the WebRequest/Socket allow-list is set in the
+    not confirmed the WebRequest allow-list is set in the
     correct, currently-running terminal (deployment-bug fix, item 5:
     stop with a clear error rather than silently continuing -- see
     module docstring for why this can't be a genuine file-content
@@ -310,7 +303,7 @@ def run(
     print("is outside what a Python script can do.")
     print("=" * 60)
 
-    # Items 4/5 of the deployment-bug fix. MT5's WebRequest/Socket
+    # Items 4/5 of the deployment-bug fix. MT5's WebRequest
     # allow-list lives in an undocumented, binary <data folder>\Config\
     # experts.ini -- there is no supported way to read or write it from
     # here (see module docstring). Rather than silently assume it is

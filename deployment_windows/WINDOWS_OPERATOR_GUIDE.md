@@ -105,13 +105,8 @@ This is the master installer. It runs, in order:
    note below) before it completes — pass `--whitelist-confirmed` once
    you have, or `--skip-whitelist-check` to bypass this gate entirely.
 6. **Verify Bridge** — actually constructs the real `BridgeEngine` and
-   binds it on your configured transport (native socket by default;
-   ADR-034 Amendment 7), confirms it's reachable over a real connection,
-   then shuts it down.
-   When transport is socket, also binds and verifies an automatic HTTP
-   fallback listener (ADR-034 Amendment 3) — non-blocking, since the
-   primary transport check above already confirms the Bridge itself is
-   reachable.
+   binds it on HTTP (the only supported transport; ADR-034 Amendment 10),
+   confirms it's reachable over a real connection, then shuts it down.
 7. **Verify Runtime** — actually constructs all 5 core engines and the
    `RuntimeOrchestrator`.
 8. **Verify Reliability** — actually constructs the `ReliabilityEngine`
@@ -153,16 +148,10 @@ every step's real outcome, and prints next steps.
    TitanProtocol\` — this loads the personalized `ApiKey`/`MagicNumber`
    `install.py` already filled in. Click **OK**.
 4. Allow-list the Bridge address if you haven't already: MT5 →
-   **Tools → Options → Expert Advisors**. With the default native Socket
-   transport (ADR-034 Amendment 7), add your configured socket host/port
-   (default `127.0.0.1:8788`) to the allow-list MT5's `Socket*()`
-   functions consult. Also check **"Allow WebRequest for listed URL"**
-   and add `http://127.0.0.1:8787` (or your configured host/port) even
-   though HTTP isn't primary — it's the address an EA that auto-falls-
-   back to HTTP after repeated Socket failures needs (see
-   `docs/adr/ADR-034-mt5-bridge-transport-hardening.md` Amendment 3). If
-   you've explicitly rolled back to `Transport=Http`/`bridge.transport=
-   "http"` instead, only the HTTP entry is required.
+   **Tools → Options → Expert Advisors** → check **"Allow WebRequest for
+   listed URL"** and add `http://127.0.0.1:8787` (or your configured
+   host/port). HTTP is the only transport Titan Protocol supports
+   (ADR-034 Amendment 10).
 
    **If `GetLastError=4014` persists even after adding the address**:
    the single most common cause is that the change does not take effect
@@ -188,10 +177,8 @@ python health_check.py
 ```
 
 Reports, among other things:
-- `active transport` and `bridge reachable (<transport>)` / `HTTP
-  fallback listener reachable` — which transport is configured, and
-  (when socket) whether the automatic HTTP fallback listener is also
-  up.
+- `active transport` and `bridge reachable (http)` — confirms the
+  Bridge's HTTP listener is actually up and reachable.
 - `MT5 bridge connectivity (EA heartbeat)` — checks the Bridge's real
   signal that the EA has actually heartbeated, not just that the port
   is open.
@@ -207,8 +194,7 @@ Reports, among other things:
 
 Also check the "Experts" tab in MT5's Terminal window (bottom panel)
 for the EA's own log lines confirming successful Bridge calls. If you
-see repeated `SocketConnect`/`WebRequest` errors, re-check step 5's
-allow-list.
+see repeated `WebRequest` errors, re-check step 5's allow-list.
 
 ## Day-to-day operation
 

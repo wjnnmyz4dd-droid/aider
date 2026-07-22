@@ -3,12 +3,10 @@ exponential backoff around PollAndExecuteCommands()).
 
 Root cause: /bridge/commands/poll was retried at full intensity every
 OnTimer tick (once per second) forever, with no cooldown between
-failures -- unlike EnsureSocketConnected()'s own reconnect backoff. A
-persistently failing poll therefore produced continuous per-second
-Experts-log spam ("looping"). This mirrors that same base*2^attempt,
-capped backoff pattern for command polling, HTTP-only -- Socket
-transport is untouched (its own reconnect backoff already governs its
-retry pacing).
+failures. This mirrors that same base*2^attempt, capped backoff pattern
+for command polling. Since ADR-034 Amendment 10 removed native socket
+transport entirely, HTTP is the only transport and this cooldown
+unconditionally gates every poll.
 
 MQL5 cannot be compiled or executed outside MetaEditor/a real MT5
 terminal, so these are source-inspection tests, the same technique
@@ -47,11 +45,11 @@ class TestPollCooldownGate(_EASourceTestCase):
         body = match.group(1)
         self.assertIn("IsPollCooldownElapsed()", body)
 
-    def test_cooldown_gate_only_applies_to_http_not_socket(self):
-        """Explicit constraint: must not change Socket behavior at all --
-        the gate is conditioned on g_effectiveTransport == TRANSPORT_HTTP."""
+    def test_cooldown_gate_is_unconditional(self):
+        """HTTP is the only transport since ADR-034 Amendment 10 -- the
+        cooldown gate no longer needs (or has) a transport conditional."""
         match = re.search(
-            r"if\(g_effectiveTransport == TRANSPORT_HTTP && !IsPollCooldownElapsed\(\)\)",
+            r"if\(!IsPollCooldownElapsed\(\)\)",
             self.source,
         )
         self.assertIsNotNone(match)
@@ -65,13 +63,12 @@ class TestPollCooldownGate(_EASourceTestCase):
 
 
 class TestPollBackoffStateTransitions(_EASourceTestCase):
-    def test_failure_increments_counter_and_is_http_only(self):
+    def test_failure_increments_counter(self):
         match = re.search(r"void PollAndExecuteCommands\(\)\s*\{(.*?)\n  \}", self.source, re.DOTALL)
         body = match.group(1)
         failure_branch = re.search(r'if\(response == ""\)\s*\{(.*?)return; // no successful contact', body, re.DOTALL)
         self.assertIsNotNone(failure_branch, "empty-response failure branch not found")
         failure_body = failure_branch.group(1)
-        self.assertIn("g_effectiveTransport == TRANSPORT_HTTP", failure_body)
         self.assertIn("g_consecutivePollFailures++", failure_body)
 
     def test_success_resets_failure_counter_and_records_last_success(self):
@@ -81,18 +78,15 @@ class TestPollBackoffStateTransitions(_EASourceTestCase):
         self.assertIn("g_lastSuccessfulPollAt = TimeCurrent();", body)
 
     def test_exponential_backoff_formula_matches_spec(self):
-        """base * 2^attempt, capped -- same technique EnsureSocketConnected()
-        already uses for its own reconnect backoff."""
+        """base * 2^attempt, capped -- used once in IsPollCooldownElapsed()
+        and once in PollAndExecuteCommands()'s own failure branch."""
+        matches = re.findall(
+            r"MathMin\(\(double\)PollBackoffBaseDelayMs \* MathPow\(2\.0, cappedAttempt\),\s*"
+            r"\(double\)PollBackoffMaxDelayMs\)",
+            self.source,
+        )
         self.assertEqual(
-            self.source.count(
-                "MathMin((double)PollBackoffBaseDelayMs * MathPow(2.0, cappedAttempt),\n"
-                "                               (double)PollBackoffMaxDelayMs)"
-            )
-            + self.source.count(
-                "MathMin((double)PollBackoffBaseDelayMs * MathPow(2.0, cappedAttempt),\n"
-                "                                     (double)PollBackoffMaxDelayMs)"
-            ),
-            2,
+            len(matches), 2,
             "expected the base*2^attempt/capped formula once in IsPollCooldownElapsed() and once in the failure branch",
         )
 
@@ -115,26 +109,11 @@ class TestPollFailureLoggedOnceNotEveryTick(_EASourceTestCase):
         (skipped ticks never even reach BridgePollCommands()'s own
         TITAN_DIAG ATTEMPT line)."""
         match = re.search(
-            r"if\(g_effectiveTransport == TRANSPORT_HTTP && !IsPollCooldownElapsed\(\)\)\n\s*(return;[^\n]*)\n",
+            r"if\(!IsPollCooldownElapsed\(\)\)\n\s*(return;[^\n]*)\n",
             self.source,
         )
         self.assertIsNotNone(match)
         self.assertTrue(match.group(1).strip().startswith("return;"))
-
-
-class TestSocketBehaviorUnchanged(_EASourceTestCase):
-    def test_ensure_socket_connected_body_has_no_poll_backoff_coupling(self):
-        """Explicit constraint: do not modify socket behavior.
-        EnsureSocketConnected()'s own reconnect-backoff logic must have
-        no reference to any of the new HTTP poll-cooldown state -- the
-        two backoff mechanisms are deliberately independent."""
-        match = re.search(r"bool EnsureSocketConnected\(\)\s*\{(.*?)\n  \}", self.source, re.DOTALL)
-        self.assertIsNotNone(match, "EnsureSocketConnected() not found")
-        body = match.group(1)
-        self.assertNotIn("g_consecutivePollFailures", body)
-        self.assertNotIn("g_lastPollAttemptAt", body)
-        self.assertNotIn("PollBackoffBaseDelayMs", body)
-        self.assertNotIn("PollBackoffMaxDelayMs", body)
 
 
 if __name__ == "__main__":

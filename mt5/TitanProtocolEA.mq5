@@ -16,18 +16,19 @@
 //| normalization, ordering, and freshness logic lives exclusively in |
 //| titan_protocol/market_data_ingestion/, never duplicated in MQL5.  |
 //|                                                                    |
-//| ADR-034: Transport=Socket switches every one of the message types |
-//| above onto a persistent native MQL5 TCP socket (SocketCreate/     |
-//| SocketConnect family) instead of WebRequest()/HTTP -- the same    |
-//| message bodies, the same routes, the same fail-closed semantics,  |
-//| just a different substrate underneath. Transport=Socket (Amendment|
-//| 7 default) bypasses WinINet/WebRequest() entirely -- repeated      |
-//| field evidence showed HTTP failing with undocumented pseudo-status |
-//| codes (1001, GetLastError=5203) even after Amendment 4's fixes,    |
-//| including elapsed times exceeding WebRequest()'s own timeout       |
-//| parameter, consistent with a WinINet-layer problem this substrate  |
-//| doesn't depend on. Transport=Http remains fully supported as an    |
-//| explicit rollback.                                                  |
+//| ADR-034 Amendment 10: native MQL5 socket transport (introduced by |
+//| earlier ADR-034 amendments) has been removed entirely. HTTP via   |
+//| WebRequest() is now the only supported transport, modeled after   |
+//| the original Phantom architecture (a Flask REST API reached over  |
+//| plain WebRequest()) -- this deployment's own field evidence showed |
+//| the native-socket allow-list (Tools>Options>Expert Advisors)      |
+//| persistently failing to take effect on the operator's terminal    |
+//| (GetLastError=4014) despite correct configuration and full        |
+//| terminal restarts, so maintaining two transport implementations   |
+//| no longer had a justification; every reliability improvement      |
+//| built on top of the transport layer (poll backoff, command        |
+//| lifecycle hardening, race-condition fixes) is unaffected and      |
+//| preserved. See ADR-034 Amendment 10 for the full rationale.       |
 //|                                                                    |
 //| Original implementation. No source code from any reference        |
 //| repository was copied -- see docs/research/ for the architectural |
@@ -56,23 +57,6 @@ input bool   DiagnosticMode           = false;                     // Transport-
 input int    PollBackoffBaseDelayMs   = 500;                       // ADR-034 Amendment 5: first HTTP poll cooldown delay after a failure
 input int    PollBackoffMaxDelayMs    = 15000;                      // ADR-034 Amendment 5: HTTP poll cooldown ceiling
 
-//--- ADR-034: transport substrate selection -----------------------------
-enum ENUM_TRANSPORT_MODE
-  {
-   TRANSPORT_HTTP,    // WebRequest()/HTTP -- the explicit rollback path
-   TRANSPORT_SOCKET   // native MQL5 TCP socket -- ADR-034, Amendment 7 default
-  };
-
-input ENUM_TRANSPORT_MODE Transport         = TRANSPORT_SOCKET;    // ADR-034 transport substrate (Amendment 7 default; Http = explicit rollback)
-input string SocketHost                     = "127.0.0.1";         // Bridge socket host (Transport=Socket only)
-input int    SocketPort                     = 8788;                // Bridge socket port -- must match BridgeConfig.socket_port
-input int    SocketConnectTimeoutMs         = 5000;                // SocketConnect() timeout
-input int    SocketReadTimeoutMs            = 5000;                // SocketRead() timeout per response frame
-input int    SocketReconnectBaseDelayMs     = 500;                 // First reconnect backoff delay
-input int    SocketReconnectMaxDelayMs      = 15000;                // Reconnect backoff ceiling
-input int    SocketMaxMessageBytes          = 65536;                // Must match BridgeConfig.socket_max_message_bytes
-input int    SocketFailoverAfterAttempts    = 5;                     // ADR-034 Amendment 3: consecutive failed reconnects before auto-falling back to HTTP (0 = never auto-fallback)
-
 //--- Globals ------------------------------------------------------------
 CTrade   g_trade;
 datetime g_lastSuccessfulContact = 0;
@@ -80,40 +64,14 @@ datetime g_lastHeartbeatSentAt   = 0;
 datetime g_lastTickAt            = 0;
 string   g_allowedSymbols[];
 
-// ADR-034 -- socket transport state. `g_socketSeq` resets to 0 on every
-// fresh connection, deliberately: the Bridge's own replay guard (seq
-// must strictly increase) is scoped per-TCP-connection, so a new
-// connection legitimately starts a new sequence space -- never a
-// duplicate of the previous connection's sequence, since the Bridge
-// never remembers sequence state across connections either.
-int      g_socket               = INVALID_HANDLE;
-long     g_socketSeq            = 0;
-datetime g_lastConnectAttemptAt = 0;
-int      g_reconnectAttempt     = 0;
-
-// ADR-034 Amendment 3 -- the `Transport` input is read-only at runtime
-// (MQL5 inputs cannot be reassigned), so an automatic fallback needs its
-// own runtime-mutable variable. Starts equal to `Transport` (set for
-// real in OnInit() -- this initializer only needs to be a valid enum
-// value before OnInit() runs); once SocketFailoverAfterAttempts
-// consecutive reconnect attempts fail, this (and only this) flips to
-// TRANSPORT_HTTP for the remainder of the run. Every
-// BridgeRequest()/BridgePollCommands() call consults this, never the
-// raw `Transport` input directly.
-ENUM_TRANSPORT_MODE g_effectiveTransport = TRANSPORT_SOCKET;
-bool                g_hasFallenBackToHttp = false;
-
 // Amendment 1 (ADR-023) -- market-data reporting state.
 datetime g_lastBarOpenTime = 0;
 long     g_barSequence     = 0;
 
 // ADR-034 Amendment 5 -- HTTP poll-level exponential backoff state.
-// Mirrors EnsureSocketConnected()'s own reconnect backoff, applied to
-// /bridge/commands/poll instead of connection attempts: without this, a
-// persistently failing poll retried at full intensity every OnTimer tick
-// (once per second) forever -- the continuous per-second Experts-log
-// spam a live deployment reported. Never consulted on the Socket
-// transport, whose own reconnect backoff already governs retry pacing.
+// Without this, a persistently failing poll retried at full intensity
+// every OnTimer tick (once per second) forever -- the continuous
+// per-second Experts-log spam a live deployment reported.
 int      g_consecutivePollFailures = 0;
 datetime g_lastPollAttemptAt       = 0;
 datetime g_lastSuccessfulPollAt    = 0;
@@ -126,10 +84,8 @@ datetime g_lastSuccessfulPollAt    = 0;
 bool g_serverEmergencyStop = false;
 
 const string API_KEY_HEADER = "X-Titan-Protocol-Api-Key";
-// ADR-034 -- must match titan_protocol/bridge/socket_transport.py's
-// _COMMANDS_POLL_ROUTE exactly; the one route name with no 1:1 HTTP
-// POST-path counterpart in _ROUTE_TO_HTTP_PATH (HTTP's form is a GET
-// with a query string, not a POST body).
+// Diagnostic route label only (TITAN_DIAG ATTEMPT lines) -- the actual
+// HTTP request is a GET with a query string, built in BridgePollCommands().
 const string _COMMANDS_POLL_ROUTE = "commands_poll";
 
 //+------------------------------------------------------------------+
@@ -148,20 +104,11 @@ int OnInit()
       Print("TitanProtocolEA: ApiKey is empty -- refusing to run.");
       return(INIT_FAILED);
      }
-   if(Transport == TRANSPORT_SOCKET && SocketHost == "")
-     {
-      Print("TitanProtocolEA: Transport=Socket requires a non-empty SocketHost -- refusing to run.");
-      return(INIT_FAILED);
-     }
    g_trade.SetExpertMagicNumber(MagicNumber);
    g_trade.SetDeviationInPoints(MaxSlippagePoints);
    // Grace period so the very first fail-closed check doesn't fire
    // before the first heartbeat has had a chance to succeed.
    g_lastSuccessfulContact = TimeCurrent();
-   // ADR-034 Amendment 3 -- starts equal to the Transport input; may
-   // fall back to TRANSPORT_HTTP at runtime (see EnsureSocketConnected).
-   g_effectiveTransport = Transport;
-   g_hasFallenBackToHttp = false;
    EventSetTimer(1);
    // Deployment-bug fix (GetLastError=4014 despite the allow-list having
    // been edited): TERMINAL_DATA_PATH/TERMINAL_PATH are real, documented
@@ -170,7 +117,7 @@ int OnInit()
    // this same Experts-log line) an unambiguous answer to "which
    // terminal's Tools>Options>Expert Advisors do I need to check",
    // instead of guessing when more than one MT5 installation exists.
-   Print("TitanProtocolEA initialized. Symbol=", _Symbol, " Magic=", MagicNumber, " Transport=", EnumToString(Transport));
+   Print("TitanProtocolEA initialized. Symbol=", _Symbol, " Magic=", MagicNumber, " Transport=HTTP");
    Print("TitanProtocolEA terminal instance -- TERMINAL_PATH=", TerminalInfoString(TERMINAL_PATH),
          " TERMINAL_DATA_PATH=", TerminalInfoString(TERMINAL_DATA_PATH));
    return(INIT_SUCCEEDED);
@@ -179,11 +126,6 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
-   if(g_socket != INVALID_HANDLE)
-     {
-      SocketClose(g_socket);
-      g_socket = INVALID_HANDLE;
-     }
   }
 
 void OnTick()
@@ -499,49 +441,6 @@ string JsonGetArrayObjectAt(const string json, const string arrayKey, const int 
    return("");
   }
 
-// Bounded brace-matching extraction of a top-level JSON *object* field
-// (as opposed to JsonGetArrayObjectAt's array-of-objects case) -- used
-// by the socket transport to pull the response envelope's "body" object
-// back out for callers, which always expect the *body*, never the
-// outer {"seq":...,"status":...,"body":{...}} envelope. Returns "" if
-// the key is absent or its value is not an object.
-string JsonGetObject(const string json, const string key)
-  {
-   string needle = "\"" + key + "\"";
-   int keyPos = StringFind(json, needle);
-   if(keyPos < 0)
-      return("");
-   int colon = StringFind(json, ":", keyPos);
-   if(colon < 0)
-      return("");
-   int i = colon + 1;
-   while(i < StringLen(json) && StringGetCharacter(json, i) == ' ')
-      i++;
-   if(i >= StringLen(json) || StringGetCharacter(json, i) != '{')
-      return("");
-   int depth = 0;
-   int objStart = i;
-   int pos = i;
-   int length = StringLen(json);
-   while(pos < length)
-     {
-      ushort ch = StringGetCharacter(json, pos);
-      if(ch == '{')
-         depth++;
-      else if(ch == '}')
-        {
-         depth--;
-         if(depth == 0)
-           {
-            pos++;
-            break;
-           }
-        }
-      pos++;
-     }
-   return(StringSubstr(json, objStart, pos - objStart));
-  }
-
 //+------------------------------------------------------------------+
 //| Diagnostics-only helper (DiagnosticMode) -- never called, and     |
 //| costs nothing, unless the input is explicitly turned on. Prints   |
@@ -755,262 +654,28 @@ string HttpGet(const string endpoint, int &statusOut)
    return("");
   }
 
-//+------------------------------------------------------------------+
-//| ADR-034 -- native MQL5 socket transport. Same message bodies, same |
-//| routes, same fail-closed semantics as the HTTP transport above --  |
-//| only the substrate underneath changes. Every function here mirrors|
-//| an HTTP counterpart 1:1: EnsureSocketConnected ~ nothing (HTTP is  |
-//| stateless per-call), SocketRequest ~ HttpPost/HttpGet.             |
-//+------------------------------------------------------------------+
-void LogSocketDiagnostics(const string operation, const bool success, const long detail)
-  {
-   if(!DiagnosticMode)
-      return;
-   Print("======== TITAN SOCKET ========");
-   Print("Operation: ", operation);
-   Print("Success: ", success ? "true" : "false");
-   Print("Detail: ", detail);
-   Print("Connected: ", (g_socket != INVALID_HANDLE && SocketIsConnected(g_socket)) ? "true" : "false");
-   Print("===============================");
-  }
-
-// ADR-034 Amendment 3 -- called after every failed connection attempt.
-// Once SocketFailoverAfterAttempts consecutive attempts have failed,
-// permanently (for the rest of this run) switches g_effectiveTransport
-// to HTTP so BridgeRequest()/BridgePollCommands() stop calling into the
-// socket path at all. SocketFailoverAfterAttempts=0 disables this
-// (never auto-fallback -- keep retrying Socket forever).
-void CheckSocketFailoverThreshold()
-  {
-   if(SocketFailoverAfterAttempts <= 0)
-      return;
-   if(g_hasFallenBackToHttp || g_effectiveTransport != TRANSPORT_SOCKET)
-      return;
-   if(g_reconnectAttempt < SocketFailoverAfterAttempts)
-      return;
-   g_effectiveTransport = TRANSPORT_HTTP;
-   g_hasFallenBackToHttp = true;
-   Print("TitanProtocolEA: Socket transport failed ", g_reconnectAttempt,
-         " consecutive connection attempts -- automatically falling back to HTTP transport "
-         "for the remainder of this run (ADR-034 Amendment 3). To restore Socket transport, "
-         "verify Tools>Options>Expert Advisors permits this EA's socket address, then "
-         "remove and reattach the EA.");
-  }
-
-// Lazily (re)connects the persistent socket, honoring an exponential
-// reconnect backoff (base * 2^attempt, capped) so a down Bridge is
-// retried with increasing patience rather than hammered every OnTimer
-// tick. Returns true only if the socket is connected and usable right
-// now -- callers must never send on a socket this returned false for.
-bool EnsureSocketConnected()
-  {
-   if(g_socket != INVALID_HANDLE && SocketIsConnected(g_socket))
-      return(true);
-
-   if(g_socket != INVALID_HANDLE)
-     {
-      SocketClose(g_socket);
-      g_socket = INVALID_HANDLE;
-     }
-
-   datetime now = TimeCurrent();
-   int cappedAttempt = (g_reconnectAttempt > 10) ? 10 : g_reconnectAttempt;
-   int delayMs = (int)MathMin((double)SocketReconnectBaseDelayMs * MathPow(2.0, cappedAttempt),
-                               (double)SocketReconnectMaxDelayMs);
-   if(g_lastConnectAttemptAt != 0 && ((long)(now - g_lastConnectAttemptAt)) * 1000 < delayMs)
-      return(false); // still backing off -- not yet time to retry
-
-   g_lastConnectAttemptAt = now;
-   g_socket = SocketCreate();
-   if(g_socket == INVALID_HANDLE)
-     {
-      Print("TITAN_DIAG BLOCKED transport=Socket operation=SocketCreate lastError=", GetLastError(),
-            " time=", TimeToIsoString(TimeCurrent()));
-      Print("TitanProtocolEA: SocketCreate failed, GetLastError=", GetLastError());
-      LogSocketDiagnostics("SocketCreate", false, GetLastError());
-      g_reconnectAttempt++;
-      CheckSocketFailoverThreshold();
-      return(false);
-     }
-   if(!SocketConnect(g_socket, SocketHost, (uint)SocketPort, SocketConnectTimeoutMs))
-     {
-      Print("TITAN_DIAG BLOCKED transport=Socket operation=SocketConnect host=", SocketHost,
-            " port=", SocketPort, " lastError=", GetLastError(),
-            " time=", TimeToIsoString(TimeCurrent()));
-      Print("TitanProtocolEA: SocketConnect to ", SocketHost, ":", SocketPort, " failed, GetLastError=", GetLastError(),
-            " (4014 = address not in Tools>Options>Expert Advisors whitelist)");
-      LogSocketDiagnostics("SocketConnect", false, GetLastError());
-      SocketClose(g_socket);
-      g_socket = INVALID_HANDLE;
-      g_reconnectAttempt++;
-      CheckSocketFailoverThreshold();
-      return(false);
-     }
-   Print("TitanProtocolEA: socket connected to ", SocketHost, ":", SocketPort);
-   LogSocketDiagnostics("SocketConnect", true, 0);
-   g_socketSeq = 0;      // fresh connection -- fresh sequence space
-   g_reconnectAttempt = 0;
-   return(true);
-  }
-
-// Sends one length-prefixed frame: a 4-byte big-endian payload length
-// followed by that many bytes of UTF-8 JSON -- the same framing
-// `titan_protocol/bridge/socket_transport.py`'s `encode_frame`/
-// `read_frame` implement, byte for byte.
-bool SocketSendFrame(const string jsonBody)
-  {
-   uchar payload[];
-   int payloadLen = StringToCharArray(jsonBody, payload, 0, WHOLE_ARRAY, CP_UTF8) - 1;
-   ArrayResize(payload, payloadLen);
-
-   uchar frame[];
-   ArrayResize(frame, 4 + payloadLen);
-   frame[0] = (uchar)((payloadLen >> 24) & 0xFF);
-   frame[1] = (uchar)((payloadLen >> 16) & 0xFF);
-   frame[2] = (uchar)((payloadLen >> 8) & 0xFF);
-   frame[3] = (uchar)(payloadLen & 0xFF);
-   ArrayCopy(frame, payload, 4, 0, payloadLen);
-
-   int sent = SocketSend(g_socket, frame, ArraySize(frame));
-   return(sent == ArraySize(frame));
-  }
-
-// Blocking read of exactly `count` bytes, looping across as many
-// SocketRead() calls as needed -- this is what makes a partial-packet
-// response transparent to callers, mirroring the Bridge's own
-// `_recv_exact`. Returns false on timeout, error, or a closed
-// connection; never returns a short buffer.
-bool SocketReadExact(uchar &buffer[], const int count)
-  {
-   ArrayResize(buffer, count);
-   int have = 0;
-   while(have < count)
-     {
-      uchar chunk[];
-      int want = count - have;
-      ArrayResize(chunk, want);
-      int got = SocketRead(g_socket, chunk, want, SocketReadTimeoutMs);
-      if(got <= 0)
-         return(false); // timeout, error, or connection closed
-      ArrayCopy(buffer, chunk, have, 0, got);
-      have += got;
-     }
-   return(true);
-  }
-
-// Reads and returns one complete frame's JSON payload, or "" on any
-// failure (timeout/closed/oversized) -- callers treat "" exactly like
-// HttpPost/HttpGet's own "no successful contact" return. An oversized
-// declared length closes the connection outright (framing trust is
-// broken once a claimed length is refused), mirroring the Bridge's own
-// `FrameTooLargeError` handling.
-string SocketReadFrame()
-  {
-   uchar header[];
-   if(!SocketReadExact(header, 4))
-      return("");
-   long length = ((long)header[0] << 24) | ((long)header[1] << 16) | ((long)header[2] << 8) | (long)header[3];
-   if(length < 0 || length > SocketMaxMessageBytes)
-     {
-      Print("TitanProtocolEA: socket frame declares ", length, " bytes, exceeding SocketMaxMessageBytes -- closing connection.");
-      SocketClose(g_socket);
-      g_socket = INVALID_HANDLE;
-      return("");
-     }
-   uchar body[];
-   if(!SocketReadExact(body, (int)length))
-      return("");
-   return(CharArrayToString(body, 0, WHOLE_ARRAY, CP_UTF8));
-  }
-
-// Sends one {"seq":N,"route":route,"body":bodyJson} envelope and
-// returns the response envelope's "body" object, exactly matching
-// HttpPost/HttpGet's own return contract ("" = no successful contact
-// this cycle). `bodyJson` is the identical JSON object every existing
-// Send*/Report* function already builds for the HTTP transport -- no
-// second body-construction path exists anywhere in this file.
-string SocketRequest(const string route, const string bodyJson, int &statusOut)
-  {
-   statusOut = 0;
-   if(!EnsureSocketConnected())
-      return("");
-
-   g_socketSeq++;
-   string envelope = StringFormat("{\"seq\":%d,\"route\":\"%s\",\"body\":%s}",
-                                   (int)g_socketSeq, route, bodyJson);
-   if(!SocketSendFrame(envelope))
-     {
-      Print("TITAN_DIAG BLOCKED transport=Socket operation=SocketSend route=", route,
-            " lastError=", GetLastError(), " time=", TimeToIsoString(TimeCurrent()));
-      Print("TitanProtocolEA: socket send failed for route ", route, ", GetLastError=", GetLastError());
-      LogSocketDiagnostics("SocketSend:" + route, false, GetLastError());
-      SocketClose(g_socket);
-      g_socket = INVALID_HANDLE;
-      return("");
-     }
-
-   string response = SocketReadFrame();
-   if(response == "")
-     {
-      // Runtime Audit Phase 3 -- distinct from BLOCKED: the frame was
-      // sent successfully (the bytes left this process), but no reply
-      // arrived before the read timeout/connection closed. This does NOT
-      // prove the request never reached the Bridge -- it may have been
-      // received and even processed, with only the response lost -- so
-      // it is deliberately not classified as either "blocked before the
-      // Bridge" or "Bridge responded"; a diagnostic reading this log
-      // must treat it as its own, honestly-labeled case.
-      Print("TITAN_DIAG NO_RESPONSE transport=Socket route=", route,
-            " time=", TimeToIsoString(TimeCurrent()));
-      LogSocketDiagnostics("SocketRead:" + route, false, 0);
-      return("");
-     }
-
-   statusOut = (int)JsonGetLong(response, "status", 0);
-   LogSocketDiagnostics("SocketRequest:" + route, statusOut >= 200 && statusOut < 300, statusOut);
-   if(statusOut >= 200 && statusOut < 300)
-      g_lastSuccessfulContact = TimeCurrent();
-   return(JsonGetObject(response, "body"));
-  }
-
-// Transport-agnostic wrapper -- every Send*/Report* function below
-// calls this instead of HttpPost directly, so Transport=Http and
-// Transport=Socket share one body-construction call site each. Reads
-// g_effectiveTransport (ADR-034 Amendment 3), never the raw Transport
-// input directly -- this is what makes the automatic HTTP fallback
-// actually take effect once triggered.
+// ADR-034 Amendment 10 -- single-transport wrapper: every Send*/Report*
+// function below calls this instead of HttpPost directly, so there is
+// exactly one body-construction call site per message type regardless
+// of transport history. HTTP is now the only substrate.
 string BridgeRequest(const string route, const string httpEndpoint, const string bodyJson, int &statusOut)
   {
    // Runtime Audit Phase 3 -- unconditional (not gated by DiagnosticMode),
    // one line per logical request, printed before any transport-layer
    // call is made. This is the sole evidence that "MT5 attempted this
    // request at all" can ever rest on -- everything after this point
-   // (WebRequest/SocketSend succeeding, failing, or the Bridge's own
-   // response) is a separate, later fact; this line's mere presence or
-   // absence in the Experts log is what tells the two apart.
-   Print("TITAN_DIAG ATTEMPT route=", route, " transport=",
-         (g_effectiveTransport == TRANSPORT_SOCKET ? "Socket" : "HTTP"),
-         " time=", TimeToIsoString(TimeCurrent()));
-   if(g_effectiveTransport == TRANSPORT_SOCKET)
-      return(SocketRequest(route, bodyJson, statusOut));
+   // (WebRequest succeeding, failing, or the Bridge's own response) is a
+   // separate, later fact; this line's mere presence or absence in the
+   // Experts log is what tells the two apart.
+   Print("TITAN_DIAG ATTEMPT route=", route, " transport=HTTP time=", TimeToIsoString(TimeCurrent()));
    return(HttpPost(httpEndpoint, bodyJson, statusOut));
   }
 
-// Transport-agnostic command-poll wrapper -- HTTP's GET-with-query-
-// string becomes a socket request whose body carries the same
-// api_key/magic_number fields the HTTP query string carries today.
 string BridgePollCommands(int &statusOut)
   {
    // Runtime Audit Phase 3 -- see BridgeRequest()'s own comment; same
    // unconditional attempt marker, same reasoning.
-   Print("TITAN_DIAG ATTEMPT route=", _COMMANDS_POLL_ROUTE, " transport=",
-         (g_effectiveTransport == TRANSPORT_SOCKET ? "Socket" : "HTTP"),
-         " time=", TimeToIsoString(TimeCurrent()));
-   if(g_effectiveTransport == TRANSPORT_SOCKET)
-     {
-      string body = StringFormat("{\"api_key\":\"%s\",\"magic_number\":%d}", JsonEscape(ApiKey), (int)MagicNumber);
-      return(SocketRequest(_COMMANDS_POLL_ROUTE, body, statusOut));
-     }
+   Print("TITAN_DIAG ATTEMPT route=", _COMMANDS_POLL_ROUTE, " transport=HTTP time=", TimeToIsoString(TimeCurrent()));
    return(HttpGet("/bridge/commands/poll?magic_number=" + IntegerToString((int)MagicNumber), statusOut));
   }
 
@@ -1524,10 +1189,7 @@ void ExecutePartialClose(const string correlationId, const string positionId, co
 // ADR-034 Amendment 5 -- true once enough time has passed since the last
 // recorded poll failure to try again (base * 2^attempt, capped at
 // PollBackoffMaxDelayMs); true unconditionally once a poll has succeeded
-// (g_consecutivePollFailures reset to 0). Same second-resolution
-// TimeCurrent() comparison technique EnsureSocketConnected() already
-// uses for its own reconnect backoff -- not a new precision this file
-// doesn't already rely on elsewhere.
+// (g_consecutivePollFailures reset to 0).
 bool IsPollCooldownElapsed()
   {
    if(g_consecutivePollFailures == 0)
@@ -1540,10 +1202,9 @@ bool IsPollCooldownElapsed()
 
 void PollAndExecuteCommands()
   {
-   // ADR-034 Amendment 5 -- only gates the HTTP transport: Socket's own
-   // EnsureSocketConnected() reconnect backoff already governs its retry
-   // pacing, and this cooldown must not change Socket behavior at all.
-   if(g_effectiveTransport == TRANSPORT_HTTP && !IsPollCooldownElapsed())
+   // ADR-034 Amendment 5 -- gates the HTTP poll cadence; HTTP is now the
+   // only transport, so this cooldown always applies.
+   if(!IsPollCooldownElapsed())
       return; // still cooling down from a recent poll failure -- skip silently, no Experts-log spam
 
    int status;
@@ -1551,17 +1212,14 @@ void PollAndExecuteCommands()
    g_lastPollAttemptAt = TimeCurrent();
    if(response == "")
      {
-      if(g_effectiveTransport == TRANSPORT_HTTP)
-        {
-         g_consecutivePollFailures++;
-         int cappedAttempt = (g_consecutivePollFailures > 10) ? 10 : g_consecutivePollFailures - 1;
-         int delayMs = (int)MathMin((double)PollBackoffBaseDelayMs * MathPow(2.0, cappedAttempt),
-                                     (double)PollBackoffMaxDelayMs);
-         Print("TitanProtocolEA: /bridge/commands/poll failed -- entering HTTP poll cooldown. ",
-               "consecutivePollFailures=", g_consecutivePollFailures, " cooldownMs=", delayMs,
-               " nextPollAt=", TimeToIsoString(g_lastPollAttemptAt + (delayMs / 1000)),
-               " lastSuccessfulPollAt=", (g_lastSuccessfulPollAt > 0 ? TimeToIsoString(g_lastSuccessfulPollAt) : "never"));
-        }
+      g_consecutivePollFailures++;
+      int cappedAttempt = (g_consecutivePollFailures > 10) ? 10 : g_consecutivePollFailures - 1;
+      int delayMs = (int)MathMin((double)PollBackoffBaseDelayMs * MathPow(2.0, cappedAttempt),
+                                  (double)PollBackoffMaxDelayMs);
+      Print("TitanProtocolEA: /bridge/commands/poll failed -- entering HTTP poll cooldown. ",
+            "consecutivePollFailures=", g_consecutivePollFailures, " cooldownMs=", delayMs,
+            " nextPollAt=", TimeToIsoString(g_lastPollAttemptAt + (delayMs / 1000)),
+            " lastSuccessfulPollAt=", (g_lastSuccessfulPollAt > 0 ? TimeToIsoString(g_lastSuccessfulPollAt) : "never"));
       return; // no successful contact this cycle -- handled by the fail-closed check next tick
      }
    g_consecutivePollFailures = 0;

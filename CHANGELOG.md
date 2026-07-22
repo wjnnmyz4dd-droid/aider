@@ -15,6 +15,55 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-22 (Native socket transport removed entirely — HTTP-only — ADR-034 Amendment 10)
+
+### Removed
+- `titan_protocol/bridge/socket_transport.py` — the entire native MQL5
+  socket server module, deleted outright.
+- `BridgeConfig.transport`, `VALID_TRANSPORTS`, `socket_port`,
+  `socket_max_message_bytes`, `socket_idle_timeout_seconds`,
+  `socket_max_connections` — removed from `titan_protocol/bridge/config.py`.
+- `BridgeMetrics`'s ten `socket_*` counters and `socket_health_snapshot()`.
+- `server.py`'s socket-frame-only rejection labels
+  (`invalid_json_frame`, `missing_or_invalid_seq`,
+  `missing_or_invalid_route`, `missing_or_invalid_body`,
+  `duplicate_or_replayed_seq`).
+- `TitanProtocolEA.mq5`'s entire socket-transport section: the
+  `ENUM_TRANSPORT_MODE` enum, `Transport`/`Socket*` inputs, the
+  runtime-fallback globals, and every socket-transport function
+  (`EnsureSocketConnected()`, `SocketSendFrame()`, `SocketReadFrame()`,
+  `SocketRequest()`, etc). `BridgeRequest()`/`BridgePollCommands()` are
+  now thin HTTP-only wrappers.
+- `deployment_windows/start.py`'s dual-listen (socket primary + HTTP
+  fallback) logic — collapsed to a single `bridge_serve()` call.
+- `deployment_windows/verify_transport_configuration.py` and its test —
+  this tool only ever diagnosed a socket-vs-HTTP mismatch, a condition
+  that cannot occur with one transport.
+- Socket-specific log parsing in `diagnose_communication.py`
+  (`_parse_bridge_rotating_log`, the rotating-log discovery step).
+
+### Changed
+- `deployment_windows/config_loader.py`, `install.py`,
+  `install_mt5_files.py`, `health_check.py` — all transport-selection
+  and socket-specific personalization/verification logic removed; HTTP
+  is now the sole, unconditional path.
+- `WINDOWS_OPERATOR_GUIDE.md` — allow-list instructions simplified to
+  WebRequest-only; socket allow-list steps removed.
+- `docs/adr/ADR-034-mt5-bridge-transport-hardening.md` — Amendment 10
+  documents the full rationale, including this deployment's own
+  evidence that HTTP independently fails on this VPS (WinINet-layer
+  `pseudoStatus=1001`/`5203`), and that this was the operator's explicit
+  decision made with full knowledge of that evidence, not a code fix for
+  the underlying WinINet problem.
+
+### Preserved (unaffected by this change)
+- HTTP poll-level exponential backoff, the atomic Delivered/Abandoned
+  in-flight command lifecycle, position-confirmation timeout and
+  restart-safe persistence (Amendments 8/9), replay protection, health
+  monitoring — none of these were transport-specific.
+- All trading logic, Compliance Engine, AI/research packages, and risk
+  management — untouched.
+
 ## 2026-07-21 (Position-confirmation timeout + restart-safe in-flight persistence — ADR-034 Amendments 8/9)
 
 ### Added

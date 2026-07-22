@@ -45,7 +45,6 @@ from .models import (
     TradeTransactionReport,
 )
 from .server import make_handler, registered_routes, serve
-from .socket_transport import serve_socket
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -69,7 +68,6 @@ __all__ = [
     "BridgeMetrics",
     "make_handler",
     "serve",
-    "serve_socket",
     "registered_routes",
     "log_heartbeat",
     "log_account_state",
