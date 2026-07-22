@@ -15,6 +15,32 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-22 (WinINet proxy/WPAD diagnostic for `WebRequest()` failures)
+
+### Added
+- `deployment_windows/diagnose_wininet.py` — diagnoses the WinINet-layer
+  `WebRequest()` instability documented as still-open in `KNOWN_GAPS.md`
+  section 11 (and now section 12). Reads the operator's proxy registry
+  state (`ProxyEnable`/`ProxyServer`/`ProxyOverride`/`AutoConfigURL`) and
+  times a request to the Bridge's `/bridge/heartbeat` twice — once
+  proxy-aware, once with the proxy explicitly bypassed — to give the
+  operator a measured timing delta as evidence rather than a guess.
+  `--fix` adds `127.0.0.1`/`<local>` to `ProxyOverride` so loopback
+  traffic skips proxy resolution, then re-times the request to prove the
+  change helped; it never touches `ProxyEnable`/`ProxyServer` since the
+  deployment may still need the real proxy for external news-provider
+  calls. Explicitly documents its one limitation: it cannot evaluate a
+  PAC script the way WinINet does, since `urllib` does not execute
+  JScript.
+
+### Changed
+- `WINDOWS_OPERATOR_GUIDE.md` — added "7. If `WebRequest()` still fails
+  after the allow-list is confirmed", documenting how to run the new
+  diagnostic and what `--fix` will and will not change.
+- `KNOWN_GAPS.md` — added section 12 describing the new tool and its
+  scope; the underlying WinINet instability itself remains OPEN, as an
+  environment property of the operator's VPS, not a code defect.
+
 ## 2026-07-22 (Native socket transport removed entirely — HTTP-only — ADR-034 Amendment 10)
 
 ### Removed

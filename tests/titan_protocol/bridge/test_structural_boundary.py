@@ -225,6 +225,13 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # helpers rather than duplicating them) plus its test file.
             "deployment_windows/verify_transport_configuration.py",
             "tests/deployment_windows/test_verify_transport_configuration.py",
+            # WinINet proxy/WPAD diagnostic for the still-open
+            # `pseudoStatus=1001`/`5203` WebRequest() failure signature
+            # (KNOWN_GAPS.md section 12): a new, additive diagnostic script
+            # plus its test file. WINDOWS_OPERATOR_GUIDE.md/KNOWN_GAPS.md/
+            # CHANGELOG.md are already covered above.
+            "deployment_windows/diagnose_wininet.py",
+            "tests/deployment_windows/test_diagnose_wininet.py",
         )
 
         def is_allowed(path: str) -> bool:

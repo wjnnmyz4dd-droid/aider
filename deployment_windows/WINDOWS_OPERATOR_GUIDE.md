@@ -196,6 +196,51 @@ Also check the "Experts" tab in MT5's Terminal window (bottom panel)
 for the EA's own log lines confirming successful Bridge calls. If you
 see repeated `WebRequest` errors, re-check step 5's allow-list.
 
+### 7. If `WebRequest()` still fails after the allow-list is confirmed
+
+`WebRequest()` goes through Windows' WinINet stack — the same layer
+governed by Internet Explorer's "Internet Options" (proxy configuration,
+automatic proxy detection/WPAD, PAC scripts). This applies even to
+`127.0.0.1` calls unless loopback is explicitly exempted. If the EA logs
+a failure like `pseudoStatus=1001` or `GetLastError=5203` (or any
+`WebRequest` timeout) even though step 5's allow-list is confirmed
+correct, this is the next thing to check — a common cause is "Automatically
+detect settings" (WPAD) or a configured proxy delaying or blocking every
+request, including ones to your own machine.
+
+Run the diagnostic (Bridge does not need to be stopped):
+
+```
+python diagnose_wininet.py
+```
+
+It reads the operator's proxy registry settings and times a request to
+the Bridge's `/bridge/heartbeat` endpoint twice — once the way WinINet
+would resolve it (proxy-aware) and once with the proxy explicitly
+bypassed. A large gap between the two timings is direct evidence the
+proxy/WPAD path is adding delay to Bridge calls.
+
+If it finds a problem, re-run with `--fix`:
+
+```
+python diagnose_wininet.py --fix
+```
+
+This adds `127.0.0.1` and `<local>` to the proxy bypass list
+(`ProxyOverride`) so loopback traffic skips proxy resolution entirely.
+It deliberately does **not** disable the proxy itself or change
+`ProxyServer` — the deployment may still need the real proxy for
+external calls (Trading Economics/Forex Factory news providers), so
+`--fix` only exempts loopback. The script re-times the request
+afterward to prove the fix actually reduced latency rather than just
+asserting it.
+
+One honest limitation: the diagnostic can inspect registry-configured
+proxy settings but cannot evaluate a PAC (Proxy Auto-Config) script the
+way WinINet itself does — Python's `urllib` doesn't run JScript. If
+`AutoConfigURL` is set, the script flags this so you know to inspect the
+PAC script itself or add an explicit bypass instead.
+
 ## Day-to-day operation
 
 Once installed, normal operation is just:

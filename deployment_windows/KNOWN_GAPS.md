@@ -507,6 +507,51 @@ it — it only removes the Socket transport that had been mitigating it.
 Continuing to operate on this VPS with HTTP as the sole transport is the
 operator's own accepted risk, made with full knowledge of this history.
 
+## 12. WinINet proxy/WPAD diagnostic for `WebRequest()` failures — new tool, underlying issue remains OPEN (operator-side, VPS environment)
+
+**What this adds:** section 11 above states the WinINet-layer
+`WebRequest()` instability (`pseudoStatus=1001`/`5203`) is an environment
+property, not a code bug, and that removing Socket transport does not
+fix it. `deployment_windows/diagnose_wininet.py` gives the operator a
+concrete way to actually diagnose and, in the common case, fix it,
+rather than leaving it as an unexplained dead end.
+
+**What it does:** `WebRequest()` resolves through Windows' WinINet
+stack — the same layer governed by Internet Explorer's "Internet
+Options" (proxy configuration, WPAD auto-detection, PAC scripts). This
+applies to `127.0.0.1` calls unless loopback is explicitly exempted from
+proxy resolution. A well-documented cause of exactly this failure
+signature is "Automatically detect settings" (WPAD) or a configured
+proxy adding multi-second delay (or an outright failure) to every
+WinINet request, including calls to the operator's own machine. The
+script reads the operator's proxy registry state
+(`ProxyEnable`/`ProxyServer`/`ProxyOverride`/`AutoConfigURL`) and times a
+request to the Bridge's `/bridge/heartbeat` twice — once proxy-aware,
+once with the proxy explicitly bypassed — so the operator gets a
+measured timing delta as evidence, not a guess.
+
+**What `--fix` does and does not do:** if run with `--fix`, it adds
+`127.0.0.1` and `<local>` to `ProxyOverride` so loopback traffic skips
+proxy resolution, then re-times the request to prove the change actually
+helped. It never touches `ProxyEnable` or `ProxyServer` — the deployment
+may still need the real proxy for its own external calls (Trading
+Economics/Forex Factory), so the fix is scoped to loopback exemption
+only, never a blanket proxy disable.
+
+**Known limitation, stated up front rather than silently:** the script
+can read registry-configured proxy settings but cannot evaluate a PAC
+(Proxy Auto-Config) script the way WinINet itself does — Python's
+`urllib` does not execute JScript. If `AutoConfigURL` is set, the script
+flags this explicitly so the operator knows to inspect the PAC script or
+add an explicit bypass instead of trusting the tool's own coverage.
+
+**Still open:** this is a diagnostic and a narrowly-scoped fix for the
+single most common cause (proxy/WPAD adding delay to loopback traffic).
+It does not guarantee resolution of every possible WinINet failure mode
+on every VPS — the operator must run it on the actual Windows machine
+and report back what it finds, since this cannot be exercised
+end-to-end outside that environment.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access
