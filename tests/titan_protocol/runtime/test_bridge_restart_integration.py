@@ -144,8 +144,8 @@ class TestRestartAfterDeliveryBeforeExecutionReport(_RestartTestCase):
         # fresh queue is fail-closed False for an unknown id, so this is
         # the plain age-based reconcile() branch, not is_abandoned()).
         long_after = T0 + timedelta(seconds=_IN_FLIGHT_TTL_SECONDS + 1)
-        dropped = post_registry.reconcile(long_after, post_bridge_engine.command_resolved)
-        self.assertEqual(dropped, 1)
+        outcome = post_registry.reconcile(long_after, post_bridge_engine.command_resolved)
+        self.assertEqual(outcome.dropped_count, 1)
         self.assertFalse(post_registry.has_unresolved("EURUSD", long_after))
 
 
@@ -162,8 +162,8 @@ class TestRestartAfterExecutionReport(_RestartTestCase):
             error_code=None, reported_at=T0 + timedelta(seconds=2),
         )
         self.assertTrue(bridge_engine.handle_execution_report(report))
-        resolved_count = registry.reconcile(T0 + timedelta(seconds=2), bridge_engine.command_resolved)
-        self.assertEqual(resolved_count, 1)
+        outcome = registry.reconcile(T0 + timedelta(seconds=2), bridge_engine.command_resolved)
+        self.assertEqual(outcome.dropped_count, 1)
         self.assertTrue(registry.is_awaiting_position_confirmation("GBPUSD"))
         store.save(registry.snapshot_for_persistence())  # persisted as "awaiting_position_confirmation"
 
@@ -178,7 +178,7 @@ class TestRestartAfterExecutionReport(_RestartTestCase):
         # ORIGINAL resolution time (T0+2s, not the restart time), confirms
         # and releases it -- exactly as it would with no restart at all.
         confirmed = post_registry.confirm_position_report(T0 + timedelta(seconds=6))
-        self.assertEqual(confirmed, 1)
+        self.assertEqual(len(confirmed), 1)
         self.assertFalse(post_registry.has_unresolved("GBPUSD", restart_time))
 
 

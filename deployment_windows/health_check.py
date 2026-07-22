@@ -102,6 +102,7 @@ def _print_run_status_panel(run_status: Optional[dict]) -> None:
     print(f"  In-flight command count   : {run_status.get('in_flight_command_count')}")
     print(f"  Awaiting position confirm : {run_status.get('awaiting_position_confirmation_count')}")
     print(f"  Position confirm timeouts : {run_status.get('position_confirmation_timeout_count')} (cumulative)")
+    print(f"  Pending Risk reservations : {run_status.get('pending_reservation_count')} ({run_status.get('pending_reservation_total_r')} R total)")
     print(f"  Open positions per pair   : {run_status.get('open_positions_per_pair') or {}}")
     print(f"  Configured max/pair       : {run_status.get('configured_max_positions_per_pair')}")
     account_state_fresh = run_status.get("account_state_fresh")

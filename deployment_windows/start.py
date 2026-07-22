@@ -409,6 +409,7 @@ def _write_health_snapshot(
     in_flight_commands: Optional[InFlightCommandRegistry] = None,
     configured_max_positions_per_pair: Optional[int] = None,
     configured_max_account_state_age_seconds: Optional[float] = None,
+    risk_engine: Optional[RiskEngine] = None,
 ) -> None:
     now = _utc_now()
     snapshot = reliability.evaluate_health(now)
@@ -463,6 +464,14 @@ def _write_health_snapshot(
         "compliance_block_reason": live_cycle["compliance_lock_reason"],
         "last_submitted_correlation_id": live_cycle["last_submitted_correlation_id"],
         "pairs": live_cycle["pair_status"],
+        # Reservation-lifecycle diagnostics (closes the reservation-leak
+        # defect): a count/total that only ever grows across a
+        # long-running process indicates the release wiring in
+        # _live_cycle_loop has a gap -- see
+        # titan_protocol/risk_engine/reservation.py and
+        # RuntimeOrchestrator.run_cycle_for_pair()'s release points.
+        "pending_reservation_count": risk_engine.pending_reservation_count() if risk_engine is not None else None,
+        "pending_reservation_total_r": risk_engine.pending_reservation_total_r() if risk_engine is not None else None,
     }
     payload = {
         "generated_at": now.isoformat(),
@@ -504,6 +513,7 @@ def _heartbeat_loop(
     in_flight_commands: Optional[InFlightCommandRegistry] = None,
     configured_max_positions_per_pair: Optional[int] = None,
     configured_max_account_state_age_seconds: Optional[float] = None,
+    risk_engine: Optional[RiskEngine] = None,
 ) -> None:
     logger = logging.getLogger("titan_protocol.deploy.heartbeat")
     while not _shutdown_event.is_set():
@@ -531,6 +541,7 @@ def _heartbeat_loop(
                 connection_health=connection_health, in_flight_commands=in_flight_commands,
                 configured_max_positions_per_pair=configured_max_positions_per_pair,
                 configured_max_account_state_age_seconds=configured_max_account_state_age_seconds,
+                risk_engine=risk_engine,
             )
         except Exception:  # noqa: BLE001
             logger.exception("failed to write health.json")
@@ -787,20 +798,43 @@ def _live_cycle_loop(
         # release it, closing the window where an ExecutionReport arrives
         # before the position it opened is visible in the next
         # /bridge/positions snapshot.
-        resolved_count = orchestrator.in_flight_commands.reconcile(
+        reconcile_outcome = orchestrator.in_flight_commands.reconcile(
             now, bridge_engine.command_resolved,
             lambda correlation_id: bridge_engine.command_abandoned(correlation_id, now),
+            bridge_engine.execution_succeeded,
         )
-        confirmed_count = orchestrator.in_flight_commands.confirm_position_report(latest_positions_snapshot_at)
+        resolved_count = reconcile_outcome.dropped_count
+        # Release every Risk Engine reservation whose ownership ended
+        # this cycle (rejected execution, abandonment, or plain TTL
+        # expiry -- see InFlightCommandRegistry.reconcile()'s own
+        # docstring for exactly which case is which). release_reservation()
+        # is idempotent, so this is safe even if called with an id
+        # already released or restored from a pre-restart snapshot into
+        # an empty ledger.
+        for _reservation_id in reconcile_outcome.released_reservation_ids:
+            orchestrator.risk_engine.release_reservation(_reservation_id)
+        confirmed_reservation_ids = orchestrator.in_flight_commands.confirm_position_report(latest_positions_snapshot_at)
+        # Release point ADR-027 itself specifies: PortfolioState has now
+        # been proven (via a fresh /bridge/positions snapshot) to
+        # reflect this pair's real, executed exposure.
+        for _reservation_id in confirmed_reservation_ids:
+            if _reservation_id is not None:
+                orchestrator.risk_engine.release_reservation(_reservation_id)
+        confirmed_count = len(confirmed_reservation_ids)
         # Bounded position-confirmation wait (ADR-034 Amendment 8):
         # releases fail-safe any pair still awaiting a confirming
         # /bridge/positions snapshot longer than
         # position_confirmation_timeout_seconds -- see
         # InFlightCommandRegistry's own docstring for why this cannot
         # weaken capital preservation (Compliance's live position-limit
-        # check remains the actual duplicate-position guard).
+        # check remains the actual duplicate-position guard). The
+        # reservation released alongside is not a new, independent TTL --
+        # it reuses this already-accepted fail-safe timeout rather than
+        # adding a second release mechanism.
         timed_out_confirmations = orchestrator.in_flight_commands.expire_stale_position_confirmations(now)
-        for _pair, _correlation_id, _waited_seconds in timed_out_confirmations:
+        for _pair, _correlation_id, _reservation_id, _waited_seconds in timed_out_confirmations:
+            if _reservation_id is not None:
+                orchestrator.risk_engine.release_reservation(_reservation_id)
             logger.warning(
                 "position_confirmation_timeout_released",
                 extra={
@@ -824,6 +858,8 @@ def _live_cycle_loop(
                 "confirmed_this_cycle": confirmed_count,
                 "position_confirmation_timeout_count": orchestrator.in_flight_commands.position_confirmation_timeout_count(),
                 "timed_out_this_cycle": len(timed_out_confirmations),
+                "pending_reservation_count": orchestrator.risk_engine.pending_reservation_count(),
+                "pending_reservation_total_r": orchestrator.risk_engine.pending_reservation_total_r(),
             },
         )
         # Persist the now-fully-reconciled snapshot for restart-safety
@@ -1037,6 +1073,7 @@ def run_foreground(config_path: Path) -> int:
             "connection_health": connection_health, "in_flight_commands": in_flight_commands,
             "configured_max_positions_per_pair": configured_max_positions_per_pair,
             "configured_max_account_state_age_seconds": configured_max_account_state_age_seconds,
+            "risk_engine": risk_engine,
         },
         name="titan_protocol-reliability-heartbeat", daemon=True,
     )

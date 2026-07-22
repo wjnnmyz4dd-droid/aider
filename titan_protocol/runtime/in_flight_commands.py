@@ -110,19 +110,76 @@ permanent, unrecoverable deadlock when telemetry alone has stalled.
 
 Restart-safe persistence (production-readiness hardening):
 `snapshot_for_persistence()`/`restore()` let a caller (see
-`titan_protocol.runtime.in_flight_store`) save and reload only the four
-fields needed to recover a pair-level block across a Bridge process
-restart -- correlation_id, pair, state, and the entry's *original*
-timestamp. Restoring never touches `CommandQueue` (which has no
-memory of a pre-restart `TradeCommand` either) and never itself submits
-anything; it only re-establishes `has_unresolved()`/
-`is_awaiting_position_confirmation()` returning `True` for whatever was
-still open at shutdown, using each entry's original timestamp so its
-existing TTL/timeout window keeps counting from when it actually
-happened rather than resetting on every restart. An entry already past
-its own TTL/timeout as of the restore time is not restored at all --
-restoring an already-expired block just to immediately re-expire it
-would serve no purpose.
+`titan_protocol.runtime.in_flight_store`) save and reload the fields
+needed to recover a pair-level block across a Bridge process restart --
+correlation_id, pair, state, the entry's *original* timestamp, and (see
+below) its associated Risk Engine `reservation_id`. Restoring never
+touches `CommandQueue` (which has no memory of a pre-restart
+`TradeCommand` either) and never itself submits anything; it only
+re-establishes `has_unresolved()`/`is_awaiting_position_confirmation()`
+returning `True` for whatever was still open at shutdown, using each
+entry's original timestamp so its existing TTL/timeout window keeps
+counting from when it actually happened rather than resetting on every
+restart. An entry already past its own TTL/timeout as of the restore
+time is not restored at all -- restoring an already-expired block just
+to immediately re-expire it would serve no purpose.
+
+Reservation lifecycle (closes the leak documented as a defect: Risk
+Engine's `ReservationLedger` entries were created on every approval but
+never released -- see ADR-027's own `release_reservation()`, which
+existed but had no caller). Rather than build a second, independent
+state machine for reservations, this registry is extended to carry each
+pair's `reservation_id` alongside its `correlation_id` on the exact same
+tracked entry -- one authoritative ownership model, not two parallel
+ones:
+
+- `record_submission()` accepts an optional `reservation_id`, present
+  whenever `RuntimeOrchestrator` actually hands a command off to the
+  Bridge (the point Risk Engine's reservation ownership transfers from
+  a local `RiskSnapshot` value to this registry's persistent entry).
+- `reconcile()` now also accepts an optional `execution_succeeded`
+  callable (`BridgeEngine.execution_succeeded`) -- `is_resolved()`/
+  `CommandQueue.is_executed()` alone cannot distinguish a successful
+  execution from a rejected one (both are "terminal"), and that
+  distinction is exactly what determines whether the reservation must
+  be released now (rejected -- no exposure was ever created) or held
+  until a fresh position report proves real exposure exists (succeeded).
+  Reservations released this way (rejection, abandonment, or plain TTL
+  expiry) are returned in `ReconcileOutcome.released_reservation_ids`
+  for the caller to pass to `RiskEngine.release_reservation()` --
+  release itself always happens one layer up, in Risk Engine; this
+  module only ever decides *when* a reservation's ownership ends, never
+  performs the release itself (no dependency on `titan_protocol.risk_engine`
+  is introduced here, matching this module's existing zero-dependency-
+  on-bridge design).
+- A plain-TTL expiry (no `ExecutionReport` ever arrived at all) cannot
+  distinguish "never reached the EA" from "executed with no report
+  ever arriving" -- the current event model has no signal for that
+  case. Releasing the reservation here is the same pragmatic,
+  already-established choice this ledger makes everywhere else
+  (under-count is the safe direction): if the command did silently
+  execute, Compliance's own live position-limit check (fed by real
+  `/bridge/positions` reports, entirely independent of Risk Engine's
+  reservation ledger) remains the actual duplicate-position guard
+  regardless.
+- `confirm_position_report()` releases the reservation for every pair
+  it confirms -- the exact moment real exposure is proven to exist in
+  `PortfolioState`, matching ADR-027's own stated release condition.
+- `expire_stale_position_confirmations()` releases the reservation
+  alongside the pair-block it already releases fail-safe -- reusing the
+  existing, already-accepted timeout for that state rather than adding
+  a second, independent TTL as the primary reservation-release
+  mechanism.
+- On restart: a restored entry's `reservation_id` refers to a
+  `Reservation` that no longer exists (`ReservationLedger` starts empty
+  after every restart, by its own existing, deliberate design -- see
+  `reservation.py`). Calling `release_reservation()` with it is a
+  harmless, correct no-op (idempotent release returns `False` for an
+  unknown id) -- there is nothing left to release, since nothing was
+  ever restored into the fresh ledger either. The field is still
+  persisted and restored for traceability and so a resolution event
+  arriving after restart can still attempt the (no-op) release without
+  a caller needing a special case.
 """
 
 from __future__ import annotations
@@ -137,26 +194,47 @@ from typing import Callable, Dict, Optional, Tuple
 class _InFlightEntry:
     correlation_id: str
     submitted_at: datetime
+    reservation_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class _AwaitingConfirmationEntry:
     correlation_id: str
     resolved_at: datetime
+    reservation_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class InFlightSnapshotEntry:
     """The minimal, restart-persistable shape of one tracked entry --
-    exactly the four fields `titan_protocol.runtime.in_flight_store`
+    exactly the fields `titan_protocol.runtime.in_flight_store`
     persists. `state` is `"in_flight"` (still in `_by_pair`) or
     `"awaiting_position_confirmation"`; `timestamp` is that entry's
-    original `submitted_at`/`resolved_at`, never a restore-time value."""
+    original `submitted_at`/`resolved_at`, never a restore-time value.
+    `reservation_id` is optional/backward-compatible -- a snapshot saved
+    before this field existed simply has `None` here on load."""
 
     pair: str
     correlation_id: str
     state: str
     timestamp: datetime
+    reservation_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ReconcileOutcome:
+    """`reconcile()`'s result: how many entries were dropped this call
+    (unchanged meaning from before this reservation-lifecycle change),
+    plus every reservation_id whose ownership ended this call (rejected
+    execution, abandonment, or plain TTL expiry) -- the caller passes
+    each to `RiskEngine.release_reservation()`. A pair moved into
+    `_awaiting_position_confirmation` (successful execution, still
+    awaiting proof of real exposure) never appears here -- see
+    `confirm_position_report()`/`expire_stale_position_confirmations()`
+    for where that reservation is eventually released instead."""
+
+    dropped_count: int
+    released_reservation_ids: Tuple[str, ...]
 
 
 #: Default position-confirmation timeout: comfortably many multiples of
@@ -207,9 +285,13 @@ class InFlightCommandRegistry:
                 return True
             return pair in self._awaiting_position_confirmation
 
-    def record_submission(self, pair: str, correlation_id: str, now: datetime) -> None:
+    def record_submission(
+        self, pair: str, correlation_id: str, now: datetime, reservation_id: Optional[str] = None,
+    ) -> None:
         with self._lock:
-            self._by_pair[pair] = _InFlightEntry(correlation_id=correlation_id, submitted_at=now)
+            self._by_pair[pair] = _InFlightEntry(
+                correlation_id=correlation_id, submitted_at=now, reservation_id=reservation_id,
+            )
             self._awaiting_position_confirmation.pop(pair, None)
 
     def reconcile(
@@ -217,7 +299,8 @@ class InFlightCommandRegistry:
         now: datetime,
         is_resolved: Callable[[str], bool],
         is_abandoned: Optional[Callable[[str], bool]] = None,
-    ) -> int:
+        execution_succeeded: Optional[Callable[[str], Optional[bool]]] = None,
+    ) -> ReconcileOutcome:
         """Drops every tracked entry that has either resolved (per
         `is_resolved(correlation_id)`, a caller-supplied query -- this
         module never assumes how resolution is determined), been
@@ -225,54 +308,94 @@ class InFlightCommandRegistry:
         module's own docstring for why the abandonment decision must be
         one atomic callable, not composed here from separate delivery/age
         reads -- only checked when `is_abandoned` is supplied), or
-        expired past `ttl_seconds`. A resolved (not expired, not
-        abandoned) pair moves into `_awaiting_position_confirmation`
-        rather than being fully cleared -- `has_unresolved()` keeps
-        blocking it until `confirm_position_report()` releases it. An
-        abandoned or plain-expired entry is dropped outright: nothing
-        executed, so there is no position report to await. Returns the
-        number of entries dropped this call, for logging. Call once per
-        live cycle, before checking `has_unresolved()` for that cycle's
-        pairs."""
+        expired past `ttl_seconds`.
+
+        A resolved pair's fate depends on `execution_succeeded` (when
+        supplied -- e.g. `BridgeEngine.execution_succeeded`), since
+        `is_resolved` alone cannot distinguish a successful execution
+        from a rejected one:
+          - succeeded (or `execution_succeeded` not supplied, preserving
+            prior behavior for any caller that hasn't opted in): moves
+            into `_awaiting_position_confirmation` rather than being
+            fully cleared -- `has_unresolved()` keeps blocking it until
+            `confirm_position_report()` releases both the pair-block and
+            its reservation.
+          - explicitly rejected (`execution_succeeded` returns `False`):
+            dropped outright and its `reservation_id` (if any) is
+            returned in `released_reservation_ids` -- no exposure was
+            ever created, so there is nothing to await.
+
+        An abandoned or plain-TTL-expired entry is also dropped outright
+        with its reservation released the same way: nothing executed (or,
+        for plain TTL expiry, no report ever arrived either way -- see
+        this module's own docstring for why releasing here is still the
+        correct, already-established under-count-is-safe choice).
+
+        Call once per live cycle, before checking `has_unresolved()` for
+        that cycle's pairs."""
         with self._lock:
             to_drop = []
+            released_reservation_ids = []
             for pair, entry in self._by_pair.items():
                 if is_resolved(entry.correlation_id):
+                    succeeded = execution_succeeded(entry.correlation_id) if execution_succeeded is not None else True
                     to_drop.append(pair)
-                    self._awaiting_position_confirmation[pair] = _AwaitingConfirmationEntry(
-                        correlation_id=entry.correlation_id, resolved_at=now,
-                    )
+                    if succeeded is False:
+                        if entry.reservation_id is not None:
+                            released_reservation_ids.append(entry.reservation_id)
+                    else:
+                        self._awaiting_position_confirmation[pair] = _AwaitingConfirmationEntry(
+                            correlation_id=entry.correlation_id, resolved_at=now,
+                            reservation_id=entry.reservation_id,
+                        )
                     continue
                 if is_abandoned is not None and is_abandoned(entry.correlation_id):
                     to_drop.append(pair)
+                    if entry.reservation_id is not None:
+                        released_reservation_ids.append(entry.reservation_id)
                     continue
                 if (now - entry.submitted_at).total_seconds() > self._ttl_seconds:
                     to_drop.append(pair)
+                    if entry.reservation_id is not None:
+                        released_reservation_ids.append(entry.reservation_id)
             for pair in to_drop:
                 del self._by_pair[pair]
-            return len(to_drop)
+            return ReconcileOutcome(dropped_count=len(to_drop), released_reservation_ids=tuple(released_reservation_ids))
 
-    def confirm_position_report(self, positions_snapshot_at: Optional[datetime]) -> int:
+    def confirm_position_report(self, positions_snapshot_at: Optional[datetime]) -> Tuple[Optional[str], ...]:
         """Call once per live cycle with `BridgeEngine.
         last_positions_received_at`. Releases every pair in
         `_awaiting_position_confirmation` whose resolution happened at or
         before that snapshot -- proof `PortfolioState` this cycle
         reflects the post-execution reality, not a stale pre-execution
-        one. A `None` snapshot (Bridge has never received a positions
-        report at all) confirms nothing -- fail-closed. Returns the
-        number of pairs newly released, for logging."""
+        one -- exactly the moment ADR-027 specifies a reservation may be
+        released. A `None` snapshot (Bridge has never received a
+        positions report at all) confirms nothing -- fail-closed.
+        Returns one entry per pair confirmed this call -- `len()` of the
+        result is the confirmed-pair count (matching this method's
+        pre-existing count semantics). An entry is the pair's
+        `reservation_id`, or `None` for a pair with none (e.g. restored
+        from a pre-this-change persisted snapshot, or a caller/test that
+        never passed one to `record_submission()`) -- callers must guard
+        `is not None` before passing an entry to `RiskEngine.
+        release_reservation()`, exactly as `expire_stale_position_
+        confirmations()`'s own `Optional[str]` reservation_id already
+        requires."""
         if positions_snapshot_at is None:
-            return 0
+            return ()
         with self._lock:
             confirmed = [
                 pair for pair, awaiting in self._awaiting_position_confirmation.items()
                 if awaiting.resolved_at <= positions_snapshot_at
             ]
+            released_reservation_ids = tuple(
+                self._awaiting_position_confirmation[pair].reservation_id for pair in confirmed
+            )
             for pair in confirmed:
                 del self._awaiting_position_confirmation[pair]
-            return len(confirmed)
+            return released_reservation_ids
 
-    def expire_stale_position_confirmations(self, now: datetime) -> Tuple[Tuple[str, str, float], ...]:
+    def expire_stale_position_confirmations(self, now: datetime) -> Tuple[Tuple[str, str, Optional[str], float], ...]:
         """Call once per live cycle, alongside `confirm_position_report()`
         (order between the two does not matter -- they touch disjoint
         pairs on any given call). Fail-safe release: a pair still in
@@ -280,12 +403,17 @@ class InFlightCommandRegistry:
         `position_confirmation_timeout_seconds` is released outright, so
         a permanent stall in `/bridge/positions` reporting can never
         block a pair forever (see class docstring for why this preserves
-        capital preservation rather than weakening it). Returns one
-        `(pair, correlation_id, waited_seconds)` tuple per pair released
-        this call -- deliberately returned, not logged here, so the
-        caller (which already owns the logger) can log/alert with full
-        context; this module stays free of logging concerns, matching
-        every other method here. Also increments the cumulative
+        capital preservation rather than weakening it). Its Risk Engine
+        reservation is released alongside the pair-block itself --
+        reusing this existing, already-accepted timeout rather than
+        adding a second, independent TTL as the primary reservation-
+        release mechanism. Returns one `(pair, correlation_id,
+        reservation_id, waited_seconds)` tuple per pair released this
+        call -- deliberately returned, not logged here, so the caller
+        (which already owns the logger) can log/alert with full context
+        and pass `reservation_id` to `RiskEngine.release_reservation()`;
+        this module stays free of logging and Risk Engine concerns,
+        matching every other method here. Also increments the cumulative
         `position_confirmation_timeout_count()` counter by the number
         released."""
         with self._lock:
@@ -294,7 +422,7 @@ class InFlightCommandRegistry:
             for pair, awaiting in list(self._awaiting_position_confirmation.items()):
                 waited_seconds = (now - awaiting.resolved_at).total_seconds()
                 if waited_seconds > timeout:
-                    released.append((pair, awaiting.correlation_id, waited_seconds))
+                    released.append((pair, awaiting.correlation_id, awaiting.reservation_id, waited_seconds))
                     del self._awaiting_position_confirmation[pair]
             if released:
                 self._position_confirmation_timeout_count += len(released)
@@ -330,24 +458,34 @@ class InFlightCommandRegistry:
 
     def snapshot_for_persistence(self) -> Tuple[InFlightSnapshotEntry, ...]:
         """Everything a caller (`titan_protocol.runtime.in_flight_store`)
-        needs to persist to survive a Bridge restart -- exactly the four
-        minimal fields, nothing more (in particular, never the original
+        needs to persist to survive a Bridge restart -- the minimal
+        fields, nothing more (in particular, never the original
         `TradeCommand`; `CommandQueue` is not persisted, so a restored
         entry can only ever be released by its own TTL/timeout, never by
         a late-arriving `ExecutionReport` for a correlation_id
         `CommandQueue` no longer has any memory of -- see module
-        docstring). An abandoned or plain-expired pair is already removed
-        from `_by_pair` by `reconcile()` before this is ever called
-        (once per cycle, after reconcile()), so it is structurally
-        impossible for this snapshot to ever include one -- persistence
-        cannot resurrect what reconcile() has already dropped."""
+        docstring). `reservation_id` is carried through for traceability
+        only -- see module docstring for why restoring it into a fresh
+        (necessarily empty) `ReservationLedger` after restart is neither
+        needed nor meaningful, not an oversight. An abandoned or
+        plain-expired pair is already removed from `_by_pair` by
+        `reconcile()` before this is ever called (once per cycle, after
+        reconcile()), so it is structurally impossible for this snapshot
+        to ever include one -- persistence cannot resurrect what
+        reconcile() has already dropped."""
         with self._lock:
             in_flight_entries = tuple(
-                InFlightSnapshotEntry(pair=pair, correlation_id=entry.correlation_id, state="in_flight", timestamp=entry.submitted_at)
+                InFlightSnapshotEntry(
+                    pair=pair, correlation_id=entry.correlation_id, state="in_flight",
+                    timestamp=entry.submitted_at, reservation_id=entry.reservation_id,
+                )
                 for pair, entry in self._by_pair.items()
             )
             awaiting_entries = tuple(
-                InFlightSnapshotEntry(pair=pair, correlation_id=awaiting.correlation_id, state="awaiting_position_confirmation", timestamp=awaiting.resolved_at)
+                InFlightSnapshotEntry(
+                    pair=pair, correlation_id=awaiting.correlation_id, state="awaiting_position_confirmation",
+                    timestamp=awaiting.resolved_at, reservation_id=awaiting.reservation_id,
+                )
                 for pair, awaiting in self._awaiting_position_confirmation.items()
             )
             return in_flight_entries + awaiting_entries
@@ -381,13 +519,17 @@ class InFlightCommandRegistry:
                 if entry.state == "in_flight":
                     if age_seconds > self._ttl_seconds:
                         continue
-                    self._by_pair[entry.pair] = _InFlightEntry(correlation_id=entry.correlation_id, submitted_at=entry.timestamp)
+                    self._by_pair[entry.pair] = _InFlightEntry(
+                        correlation_id=entry.correlation_id, submitted_at=entry.timestamp,
+                        reservation_id=entry.reservation_id,
+                    )
                     restored += 1
                 elif entry.state == "awaiting_position_confirmation":
                     if age_seconds > self._position_confirmation_timeout_seconds:
                         continue
                     self._awaiting_position_confirmation[entry.pair] = _AwaitingConfirmationEntry(
                         correlation_id=entry.correlation_id, resolved_at=entry.timestamp,
+                        reservation_id=entry.reservation_id,
                     )
                     restored += 1
                 # An unrecognized `state` value (e.g. a future schema this
@@ -397,4 +539,4 @@ class InFlightCommandRegistry:
             return restored
 
 
-__all__ = ["InFlightCommandRegistry", "InFlightSnapshotEntry"]
+__all__ = ["InFlightCommandRegistry", "InFlightSnapshotEntry", "ReconcileOutcome"]

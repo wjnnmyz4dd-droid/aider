@@ -47,8 +47,8 @@ class TestReconcile(unittest.TestCase):
     def test_reconcile_drops_resolved_entries(self):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
-        dropped = registry.reconcile(_NOW, is_resolved=lambda cid: cid == "corr-1")
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(_NOW, is_resolved=lambda cid: cid == "corr-1")
+        self.assertEqual(outcome.dropped_count, 1)
         # Resolved, but has_unresolved() keeps blocking until a positions
         # snapshot confirms the post-execution state -- see
         # TestPostResolutionPositionConfirmation for that mechanism.
@@ -59,23 +59,23 @@ class TestReconcile(unittest.TestCase):
     def test_reconcile_keeps_unresolved_entries(self):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
-        dropped = registry.reconcile(_NOW, is_resolved=lambda cid: False)
-        self.assertEqual(dropped, 0)
+        outcome = registry.reconcile(_NOW, is_resolved=lambda cid: False)
+        self.assertEqual(outcome.dropped_count, 0)
         self.assertTrue(registry.has_unresolved("EURUSD", _NOW))
 
     def test_reconcile_drops_expired_entries_even_if_unresolved(self):
         registry = InFlightCommandRegistry(ttl_seconds=60.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=61)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False)
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(later, is_resolved=lambda cid: False)
+        self.assertEqual(outcome.dropped_count, 1)
 
     def test_reconcile_only_drops_matching_entries(self):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         registry.record_submission("GBPUSD", "corr-2", _NOW)
-        dropped = registry.reconcile(_NOW, is_resolved=lambda cid: cid == "corr-1")
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(_NOW, is_resolved=lambda cid: cid == "corr-1")
+        self.assertEqual(outcome.dropped_count, 1)
         self.assertTrue(registry.has_unresolved("EURUSD", _NOW))  # awaiting position confirmation
         self.assertTrue(registry.has_unresolved("GBPUSD", _NOW))  # still genuinely in flight
         self.assertEqual(registry.in_flight_count(), 1)
@@ -115,8 +115,8 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
     def test_resolved_pair_still_blocked_until_position_report_confirms(self):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
-        dropped = registry.reconcile(_NOW, is_resolved=lambda cid: True)
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(_NOW, is_resolved=lambda cid: True)
+        self.assertEqual(outcome.dropped_count, 1)
         # Resolved, but no positions snapshot confirmed yet -- still blocked.
         self.assertTrue(registry.has_unresolved("EURUSD", _NOW))
         self.assertTrue(registry.is_awaiting_position_confirmation("EURUSD"))
@@ -128,7 +128,7 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
         registry.reconcile(_NOW, is_resolved=lambda cid: True)
         stale_snapshot_at = _NOW - timedelta(seconds=5)  # taken before resolution
         confirmed = registry.confirm_position_report(stale_snapshot_at)
-        self.assertEqual(confirmed, 0)
+        self.assertEqual(confirmed, ())
         self.assertTrue(registry.has_unresolved("EURUSD", _NOW))
 
     def test_fresh_snapshot_at_or_after_resolution_confirms_and_unblocks(self):
@@ -137,7 +137,7 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
         registry.reconcile(_NOW, is_resolved=lambda cid: True)
         fresh_snapshot_at = _NOW + timedelta(seconds=5)
         confirmed = registry.confirm_position_report(fresh_snapshot_at)
-        self.assertEqual(confirmed, 1)
+        self.assertEqual(len(confirmed), 1)
         self.assertFalse(registry.has_unresolved("EURUSD", _NOW))
         self.assertFalse(registry.is_awaiting_position_confirmation("EURUSD"))
 
@@ -146,7 +146,7 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
         registry.record_submission("EURUSD", "corr-1", _NOW)
         registry.reconcile(_NOW, is_resolved=lambda cid: True)
         confirmed = registry.confirm_position_report(None)
-        self.assertEqual(confirmed, 0)
+        self.assertEqual(confirmed, ())
         self.assertTrue(registry.has_unresolved("EURUSD", _NOW))
 
     def test_ttl_expiry_never_enters_awaiting_confirmation(self):
@@ -157,8 +157,8 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
         registry = InFlightCommandRegistry(ttl_seconds=60.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=61)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False)
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(later, is_resolved=lambda cid: False)
+        self.assertEqual(outcome.dropped_count, 1)
         self.assertFalse(registry.has_unresolved("EURUSD", later))
         self.assertFalse(registry.is_awaiting_position_confirmation("EURUSD"))
 
@@ -180,7 +180,7 @@ class TestPostResolutionPositionConfirmation(unittest.TestCase):
         registry.reconcile(_NOW, is_resolved=lambda cid: True)
         self.assertEqual(registry.awaiting_position_confirmation_count(), 2)
         confirmed = registry.confirm_position_report(_NOW + timedelta(seconds=1))
-        self.assertEqual(confirmed, 2)
+        self.assertEqual(len(confirmed), 2)
         self.assertFalse(registry.has_unresolved("EURUSD", _NOW))
         self.assertFalse(registry.has_unresolved("GBPUSD", _NOW))
 
@@ -202,7 +202,7 @@ class TestExpireStalePositionConfirmations(unittest.TestCase):
         registry.record_submission("EURUSD", "corr-1", _NOW)
         registry.reconcile(_NOW, is_resolved=lambda cid: True)
         confirmed = registry.confirm_position_report(_NOW + timedelta(seconds=2))
-        self.assertEqual(confirmed, 1)
+        self.assertEqual(len(confirmed), 1)
         timed_out = registry.expire_stale_position_confirmations(_NOW + timedelta(seconds=3))
         self.assertEqual(timed_out, ())
         self.assertEqual(registry.position_confirmation_timeout_count(), 0)
@@ -219,7 +219,7 @@ class TestExpireStalePositionConfirmations(unittest.TestCase):
         self.assertTrue(registry.is_awaiting_position_confirmation("EURUSD"))
         # The snapshot then arrives, just in time.
         confirmed = registry.confirm_position_report(just_before_timeout)
-        self.assertEqual(confirmed, 1)
+        self.assertEqual(len(confirmed), 1)
         self.assertFalse(registry.has_unresolved("EURUSD", just_before_timeout))
 
     def test_exactly_at_timeout_boundary_is_not_yet_released(self):
@@ -245,12 +245,12 @@ class TestExpireStalePositionConfirmations(unittest.TestCase):
         registry.reconcile(_NOW, is_resolved=lambda cid: True)
         past_timeout = _NOW + timedelta(seconds=120.001)
         timed_out = registry.expire_stale_position_confirmations(past_timeout)
-        self.assertEqual(timed_out, (("EURUSD", "corr-1", 120.001),))
+        self.assertEqual(timed_out, (("EURUSD", "corr-1", None, 120.001),))
         self.assertFalse(registry.is_awaiting_position_confirmation("EURUSD"))
         self.assertFalse(registry.has_unresolved("EURUSD", past_timeout))
         # A very late snapshot no longer has anything to confirm for this pair.
         confirmed = registry.confirm_position_report(past_timeout + timedelta(seconds=1))
-        self.assertEqual(confirmed, 0)
+        self.assertEqual(confirmed, ())
 
     def test_permanent_loss_of_position_reporting_eventually_releases_the_pair(self):
         """Simulates /bridge/positions reporting having stopped entirely:
@@ -417,8 +417,8 @@ class TestUndeliveredCommandAbandonment(unittest.TestCase):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)  # nowhere near the 300s ttl
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_abandoned=lambda cid: True)
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(later, is_resolved=lambda cid: False, is_abandoned=lambda cid: True)
+        self.assertEqual(outcome.dropped_count, 1)
         self.assertFalse(registry.has_unresolved("EURUSD", later))
         self.assertFalse(registry.is_awaiting_position_confirmation("EURUSD"))
 
@@ -429,8 +429,8 @@ class TestUndeliveredCommandAbandonment(unittest.TestCase):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False, is_abandoned=lambda cid: False)
-        self.assertEqual(dropped, 0)
+        outcome = registry.reconcile(later, is_resolved=lambda cid: False, is_abandoned=lambda cid: False)
+        self.assertEqual(outcome.dropped_count, 0)
         self.assertTrue(registry.has_unresolved("EURUSD", later))
 
     def test_resolved_entry_takes_priority_over_abandonment(self):
@@ -441,8 +441,8 @@ class TestUndeliveredCommandAbandonment(unittest.TestCase):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: True, is_abandoned=lambda cid: True)
-        self.assertEqual(dropped, 1)
+        outcome = registry.reconcile(later, is_resolved=lambda cid: True, is_abandoned=lambda cid: True)
+        self.assertEqual(outcome.dropped_count, 1)
         self.assertTrue(registry.is_awaiting_position_confirmation("EURUSD"))
 
     def test_feature_disabled_by_default_preserves_prior_behavior(self):
@@ -452,8 +452,8 @@ class TestUndeliveredCommandAbandonment(unittest.TestCase):
         registry = InFlightCommandRegistry(ttl_seconds=300.0)
         registry.record_submission("EURUSD", "corr-1", _NOW)
         later = _NOW + timedelta(seconds=16)
-        dropped = registry.reconcile(later, is_resolved=lambda cid: False)
-        self.assertEqual(dropped, 0)
+        outcome = registry.reconcile(later, is_resolved=lambda cid: False)
+        self.assertEqual(outcome.dropped_count, 0)
         self.assertTrue(registry.has_unresolved("EURUSD", later))
 
 

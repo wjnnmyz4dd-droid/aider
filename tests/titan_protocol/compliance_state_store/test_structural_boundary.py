@@ -128,6 +128,15 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         # touched.
         "titan_protocol/runtime/config.py",
         "titan_protocol/runtime/in_flight_store.py",
+        # Reservation-lifecycle leak fix (later, separately-authorized):
+        # RiskEngine.release_reservation() previously had no caller;
+        # RuntimeOrchestrator's InFlightCommandRegistry now carries each
+        # trade's reservation_id through the existing command lifecycle
+        # and releases it at every terminal/confirmed state. Additive
+        # only (two new health-diagnostic passthrough methods plus an
+        # extended docstring on the pre-existing release_reservation()) --
+        # no compliance_state_store behavior touched.
+        "titan_protocol/risk_engine/engine.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_change(self):

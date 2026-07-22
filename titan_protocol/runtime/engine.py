@@ -125,6 +125,16 @@ class RuntimeOrchestrator:
         started_at = now
         stage_timings: List[StageTiming] = []
         last_stage: Optional[CycleStage] = None
+        # Exception-safety guarantee: `risk` (so a reservation-release
+        # attempt in the `except` block below never raises
+        # UnboundLocalError if an exception occurs before Risk Engine
+        # ever runs) and `reservation_owned_by_registry` (so that same
+        # attempt never double-releases a reservation whose ownership
+        # already transferred to InFlightCommandRegistry via
+        # record_submission() -- see the `except` block for why this
+        # distinction is required, not optional).
+        risk = None
+        reservation_owned_by_registry = False
 
         def _record(
             outcome: CycleOutcome,
@@ -250,6 +260,20 @@ class RuntimeOrchestrator:
             stage_timings.append(StageTiming(CycleStage.COMPLIANCE, (time.monotonic() - stage_start) * 1000.0))
 
             if compliance.decision is ComplianceDecision.REJECT:
+                # Risk Engine reserved this candidate's risk_r before
+                # Compliance ever ran (ReservationLedger.reserve_if(),
+                # ADR-027 Hard Rule 5); Compliance's rejection means no
+                # command will ever be built for it, so its reservation
+                # must be released here -- otherwise it leaks
+                # permanently (the exact defect this release call
+                # closes; see risk_engine/reservation.py). Compliance
+                # never touches Risk Engine's reservation_id itself
+                # (ADR-028 Hard Rule 6: ComplianceEngine holds no
+                # mutable state and no dependency on risk_engine's
+                # internals) -- release ownership belongs to Runtime,
+                # the only caller that holds both engines.
+                if risk.reservation_id is not None:
+                    self.risk_engine.release_reservation(risk.reservation_id)
                 return _record(
                     CycleOutcome.COMPLIANCE_REJECTED, CycleStage.COMPLIANCE, evidence_id=evidence_id,
                     selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
@@ -268,6 +292,17 @@ class RuntimeOrchestrator:
                 self.in_flight_commands is not None and self.in_flight_commands.is_awaiting_position_confirmation(pair)
             )
             if in_flight_blocked:
+                # Risk/Compliance already ran and reserved this cycle's
+                # candidate risk_r before this in-flight check -- a
+                # previously-submitted command for this pair is still
+                # unresolved, so this cycle's decision is discarded
+                # without ever reaching the Bridge. Without this
+                # release, a blocked pair would re-reserve every single
+                # cycle it stays blocked (not once per real trade) --
+                # the single largest contributor to the reservation leak
+                # this release call closes.
+                if risk.reservation_id is not None:
+                    self.risk_engine.release_reservation(risk.reservation_id)
                 _logger.info(
                     "in_flight_command_pending",
                     extra={
@@ -280,8 +315,35 @@ class RuntimeOrchestrator:
             elif self.bridge_submit is not None and compliance.ready_for_bridge:
                 command = build_trade_command(pair, strategy, risk, compliance, cycle_id, now, self.config)
                 bridge_error = self.bridge_submit(command, now)
-                if bridge_error is None and self.in_flight_commands is not None:
-                    self.in_flight_commands.record_submission(pair, command.correlation_id, now)
+                if bridge_error is None:
+                    # Ownership handoff: from this point on the
+                    # reservation belongs to InFlightCommandRegistry, not
+                    # to this local `risk` snapshot -- it is released
+                    # from there (execution rejection, abandonment, TTL
+                    # expiry) or, for a genuine success, only once
+                    # confirm_position_report() proves real exposure
+                    # exists. If in_flight_commands is None (not wired,
+                    # e.g. some tests), there is no persistent lifecycle
+                    # object to hand off to -- release immediately rather
+                    # than leak, since nothing will ever track it.
+                    if self.in_flight_commands is not None:
+                        self.in_flight_commands.record_submission(
+                            pair, command.correlation_id, now, reservation_id=risk.reservation_id,
+                        )
+                        reservation_owned_by_registry = True
+                    elif risk.reservation_id is not None:
+                        self.risk_engine.release_reservation(risk.reservation_id)
+            else:
+                # Neither branch above ran: either no bridge_submit is
+                # wired at all, or compliance.ready_for_bridge is False
+                # (reachable when a REDUCE decision's graduated sizing
+                # floors approved_size_r to zero -- see
+                # ComplianceSnapshot.ready_for_bridge). Either way no
+                # command will ever be built for this cycle's
+                # reservation -- release it here rather than let it
+                # leak silently.
+                if risk.reservation_id is not None:
+                    self.risk_engine.release_reservation(risk.reservation_id)
             stage_timings.append(StageTiming(CycleStage.BRIDGE, (time.monotonic() - stage_start) * 1000.0))
             bridge_correlation_id = command.correlation_id if command is not None else None
 
@@ -301,6 +363,16 @@ class RuntimeOrchestrator:
                 )
 
             if bridge_error is not None:
+                # Command was built (compliance approved, ready_for_bridge
+                # was True) but Bridge/CommandQueue itself rejected it
+                # (validation.py's transport-integrity checks, or
+                # CommandQueue.enqueue() refusing while not is_ready) --
+                # record_submission() is only ever called when
+                # bridge_error is None (see the elif branch above), so
+                # ownership never transferred to InFlightCommandRegistry
+                # here; release unconditionally.
+                if risk.reservation_id is not None:
+                    self.risk_engine.release_reservation(risk.reservation_id)
                 return _record(
                     CycleOutcome.BRIDGE_ERROR, CycleStage.BRIDGE, evidence_id=evidence_id,
                     selected_strategy=strategy.winning_strategy.strategy_id, trade_intent=strategy.trade_intent,
@@ -318,6 +390,19 @@ class RuntimeOrchestrator:
                 bridge_correlation_id=bridge_correlation_id,
             )
         except Exception as exc:  # noqa: BLE001 -- fail closed, never propagate a partial cycle
+            # Guaranteed cleanup path (no orphan window between
+            # reservation creation and ownership handoff): if Risk
+            # Engine already reserved this candidate's risk_r (`risk` is
+            # bound and carries a reservation_id) but the cycle failed
+            # before that ownership ever transferred to
+            # InFlightCommandRegistry (`reservation_owned_by_registry`
+            # still False), release it here -- otherwise an exception
+            # anywhere between Risk Engine's evaluate() and the handoff
+            # point (Compliance, command construction, bridge_submit,
+            # or _record()/logging itself) would leak the reservation
+            # exactly like the defect this whole change closes.
+            if risk is not None and risk.reservation_id is not None and not reservation_owned_by_registry:
+                self.risk_engine.release_reservation(risk.reservation_id)
             if self.metrics is not None:
                 self.metrics.record_failure()
             return _record(CycleOutcome.FAILED, last_stage, reasons=(repr(exc),))

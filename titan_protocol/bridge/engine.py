@@ -254,6 +254,18 @@ class BridgeEngine:
         already delivered is never abandoned, no matter how old."""
         return self._queue.is_abandoned(correlation_id, now)
 
+    def execution_succeeded(self, correlation_id: str) -> Optional[bool]:
+        """Read-only passthrough exposing the recorded ExecutionReport's
+        own `success` flag -- lets Runtime's InFlightCommandRegistry
+        distinguish "executed successfully, must wait for a confirming
+        position report before releasing its Risk Engine reservation"
+        from "executed and rejected, safe to release immediately."
+        command_resolved()/CommandQueue.is_executed() alone cannot make
+        this distinction (it is True for either outcome). Returns None
+        if no result has been recorded yet for this correlation_id."""
+        result = self._queue.result_for(correlation_id)
+        return result.success if result is not None else None
+
     @property
     def latest_account_state(self) -> Optional[AccountState]:
         return self._latest_account_state

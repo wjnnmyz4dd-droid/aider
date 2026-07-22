@@ -133,12 +133,27 @@ class RecordingStub:
         self._method_name = method_name
         self.call_count = 0
         self.calls: List[tuple] = []
+        self.released_reservation_ids: List[str] = []
         setattr(self, method_name, self._call)
 
     def _call(self, *args, **kwargs):
         self.call_count += 1
         self.calls.append((args, kwargs))
         return self._snapshot
+
+    def release_reservation(self, reservation_id) -> bool:
+        """Harmless stand-in for `RiskEngine.release_reservation()`'s
+        idempotent contract -- lets `RuntimeOrchestrator`'s release call
+        sites succeed against a stubbed risk engine that holds no real
+        `ReservationLedger`."""
+        self.released_reservation_ids.append(reservation_id)
+        return True
+
+    def pending_reservation_count(self) -> int:
+        return 0
+
+    def pending_reservation_total_r(self) -> float:
+        return 0.0
 
 
 def make_stub_evidence_engine(snapshot=None):

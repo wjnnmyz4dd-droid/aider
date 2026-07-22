@@ -177,9 +177,28 @@ class RiskEngine:
         """Releases a pending reservation -- call this once a
         downstream stage rejects the trade, or once `PortfolioState`
         has been updated to reflect the position as genuinely open (so
-        it is never counted twice)."""
+        it is never counted twice). Idempotent: releasing an
+        already-released or unknown reservation_id is a harmless no-op
+        (returns `False`), never an error -- callers (Runtime's
+        InFlightCommandRegistry-driven release points) never need to
+        track whether they already released a given id."""
 
         return self._ledger.release(reservation_id)
+
+    def pending_reservation_count(self) -> int:
+        """Health-diagnostic passthrough -- the number of reservations
+        currently held open (approved trades whose ownership has not
+        yet transferred to a resolved/released state). A number that
+        only ever grows across a long-running process indicates the
+        release wiring has a gap -- see health_check.py's RUN STATUS
+        panel."""
+        return len(self._ledger)
+
+    def pending_reservation_total_r(self) -> float:
+        """Health-diagnostic passthrough -- the total R currently held
+        in open reservations, the same value every `evaluate()` call's
+        own exposure check already sees via `pending_total_r()`."""
+        return self._ledger.pending_total_r()
 
     def evaluate_batch(
         self,
