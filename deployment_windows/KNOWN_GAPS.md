@@ -552,6 +552,51 @@ on every VPS — the operator must run it on the actual Windows machine
 and report back what it finds, since this cannot be exercised
 end-to-end outside that environment.
 
+## 13. Risk Engine reservation-ledger leak — CLOSED; positions-staleness observability — new diagnostic, underlying gap remains OPEN
+
+**Reservation-ledger leak (CLOSED):** `RiskEngine.ReservationLedger`
+reservations were created on every approved trade (`reserve_if()`) but
+`release_reservation()` had no production caller — reservations leaked
+permanently, until the portfolio-heat gate began falsely rejecting
+legitimate trades (quantified against this repo's own config defaults:
+5–60 approved trades to saturation, depending on confidence-tier
+sizing). `InFlightCommandRegistry` now carries each trade's
+`reservation_id` through its existing lifecycle (one authoritative
+ownership model, not a second state machine) and releases it at every
+terminal/confirmed state: compliance rejection, an already-in-flight
+pair re-reserving every blocked cycle, bridge submission failure,
+execution rejection, abandonment, plain TTL expiry, and — only once
+real exposure is proven — position confirmation or its fail-safe
+timeout. A guaranteed exception-safety cleanup path in
+`RuntimeOrchestrator` releases the reservation if a failure occurs
+before ownership transfers to the registry. `pending_reservation_count`/
+`pending_reservation_total_r` are now surfaced in `health.json`'s
+`run_status` block and `health_check.py`'s RUN STATUS panel. Verified
+by 14 deterministic tests covering every release point, restart
+behavior, exposure double-counting, repeated-release idempotency, and a
+regression test reproducing the original false-rejection defect —
+Integration Verified; not yet runtime- or production-observed.
+
+**Positions-staleness observability (new tool, underlying gap
+remains OPEN):** section 3 above already notes that
+`positions_are_live` (heartbeat health) is a proxy for positions
+freshness, not a proof — `/bridge/positions` can fail specifically
+while `/bridge/heartbeat` keeps succeeding, since the EA sends them as
+two independent `WebRequest()` calls (confirmed against
+`mt5/TitanProtocolEA.mq5`'s `OnTimer()`/`SendHeartbeat()`/
+`SendPositions()`). A new structured log,
+`positions_stale_despite_healthy_heartbeat`, now fires exactly when
+heartbeat is healthy and the last successful positions refresh exceeds
+`BridgeConfig.heartbeat_timeout_seconds` — edge-triggered with
+periodic-repeat rate-limiting (no log flooding during a sustained
+outage) and wrapped in a dedicated fault-containment guarantee
+(`_safe_log_exception()`) so the diagnostic itself can never crash the
+live-cycle loop. This is observability only — no trade
+acceptance/rejection behavior changed. The underlying lifecycle
+question (whether/how to react once this condition is confirmed to
+actually occur) remains open, deferred pending the real runtime
+evidence this signal is now positioned to collect.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access
