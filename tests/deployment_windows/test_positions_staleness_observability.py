@@ -20,6 +20,7 @@ assert -- these functions have no such effect."""
 
 from __future__ import annotations
 
+import logging
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -29,6 +30,17 @@ import start
 
 _NOW = datetime(2026, 7, 23, tzinfo=timezone.utc)
 _THRESHOLD = 30.0
+
+
+class _BrokenLogger:
+    """A logger stand-in whose .exception() itself raises -- simulates
+    the Fault Containment & Diagnostic Safety Doctrine's hypothetical
+    future failure (a colliding extra={} key, a custom Filter/Handler
+    that raises) without needing to actually break this process's real
+    logging configuration."""
+
+    def exception(self, message):
+        raise RuntimeError("simulated logging failure")
 
 
 class TestPositionsAreStale(unittest.TestCase):
@@ -126,6 +138,31 @@ class TestPositionsStalenessEvent(unittest.TestCase):
             now=_NOW, repeat_log_interval_seconds=_THRESHOLD,
         )
         self.assertEqual(event, "repeat")
+
+
+class TestSafeLogException(unittest.TestCase):
+    """Titan Protocol Fault Containment & Diagnostic Safety Doctrine --
+    Preventive Reliability Hardening: _safe_log_exception() is the last
+    line of defense inside the positions-staleness diagnostic's
+    fault-containment `except` block. Proves it never raises, even when
+    the logger it wraps is itself broken -- the exact hypothetical this
+    hardening exists to close."""
+
+    def test_normal_logger_logs_without_raising(self):
+        logger = logging.getLogger("titan_protocol.deploy.test_safe_log_exception")
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            start._safe_log_exception(logger, "test message")  # must not raise
+
+    def test_broken_logger_does_not_propagate(self):
+        """The core assertion: even a logger whose .exception() itself
+        raises must never allow that exception to escape."""
+        broken_logger = _BrokenLogger()
+        try:
+            start._safe_log_exception(broken_logger, "test message")
+        except Exception as exc:  # noqa: BLE001
+            self.fail(f"_safe_log_exception() must never raise, but raised: {exc!r}")
 
 
 if __name__ == "__main__":

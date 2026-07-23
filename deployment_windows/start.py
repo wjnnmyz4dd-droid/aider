@@ -652,6 +652,33 @@ def _map_bridge_positions_to_open_positions(
     return tuple(mapped)
 
 
+def _safe_log_exception(logger: logging.Logger, message: str) -> None:
+    """Titan Protocol Fault Containment & Diagnostic Safety Doctrine --
+    Preventive Reliability Hardening (no known defect exists in this
+    codebase's actual logging configuration today; this closes a class
+    of *future* ones). This is the last line of defense inside a
+    fault-containment `except` block (see `_live_cycle_loop()`'s
+    positions-staleness diagnostic) -- the one call standing between a
+    diagnostic failure and that exception escaping to crash the
+    live-cycle loop thread. `logger.exception()` cannot fail today: this
+    codebase's actual root-logger configuration (`_setup_logging()`) uses
+    only stock `logging.StreamHandler`/`logging.handlers.
+    RotatingFileHandler` with no custom `Filter`, no custom `Handler`
+    subclass, and this call passes no `extra={}` (so no reserved-
+    LogRecord-attribute collision is possible in `Logger.makeRecord()`
+    either). But that is an implicit convention, not a structural
+    guarantee -- a future edit could add a colliding `extra={}` key here,
+    swap in a custom handler, or introduce a filter, silently reopening
+    exactly the crash-the-loop risk the outer `except` exists to close.
+    This function makes the guarantee structural instead: it never
+    raises, under any circumstance, regardless of what future code runs
+    inside it."""
+    try:
+        logger.exception(message)
+    except Exception:  # noqa: BLE001 -- intentionally unconditional, see docstring
+        pass
+
+
 def _positions_are_stale(
     positions_are_live: bool,
     position_report_age_seconds: Optional[float],
@@ -910,7 +937,7 @@ def _live_cycle_loop(
                 )
             positions_stale_last_cycle = positions_stale_now
         except Exception:  # noqa: BLE001 -- this diagnostic must never crash the live-cycle loop
-            logger.exception("positions staleness observability check failed")
+            _safe_log_exception(logger, "positions staleness observability check failed")
         logger.info(
             "portfolio_state_source",
             extra={
