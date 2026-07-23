@@ -232,6 +232,14 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # CHANGELOG.md are already covered above.
             "deployment_windows/diagnose_wininet.py",
             "tests/deployment_windows/test_diagnose_wininet.py",
+            # Positions-staleness observability signal (Titan Protocol
+            # Independent Verification, Partially Verified finding):
+            # a new, pure, directly-testable logging-only function in
+            # start.py (_log_positions_staleness_if_stale()) plus its
+            # test file -- no trade acceptance/rejection behavior
+            # changed, reuses BridgeConfig's existing
+            # heartbeat_timeout_seconds as the log threshold.
+            "tests/deployment_windows/test_positions_staleness_observability.py",
         )
 
         def is_allowed(path: str) -> bool:

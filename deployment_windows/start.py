@@ -652,6 +652,62 @@ def _map_bridge_positions_to_open_positions(
     return tuple(mapped)
 
 
+def _log_positions_staleness_if_stale(
+    logger: logging.Logger,
+    positions_are_live: bool,
+    position_report_age_seconds: Optional[float],
+    latest_positions_snapshot_at: Optional[datetime],
+    staleness_threshold_seconds: float,
+) -> bool:
+    """Observability-only (Titan Protocol Independent Verification --
+    positions-staleness finding, currently Partially Verified, not
+    confirmed): logs a structured warning exactly when the
+    heartbeat-based `positions_are_live` proxy (see
+    `_live_cycle_loop()`'s own comment on this documented, known gap --
+    "a healthy heartbeat is treated as grounds to trust latest_positions
+    as current... this is a proxy, not a proof") is masking a stale
+    `/bridge/positions` snapshot: heartbeat healthy AND the last
+    successful positions refresh is older than
+    `staleness_threshold_seconds`.
+
+    Never changes `portfolio_state`, never gates trade acceptance or
+    rejection, never introduces a new fallback path -- this is purely a
+    diagnostic signal so a future lifecycle fix (if ever justified) has
+    real runtime evidence of the trigger condition instead of the
+    currently-unproven one this finding rests on. `positions_are_live is
+    False` (heartbeat itself unhealthy) or `position_report_age_seconds
+    is None` (positions never reported at all -- a different condition,
+    already covered by `position_source_state == "absent"` in the
+    existing `portfolio_state_source` log) both correctly produce no
+    signal here -- this only ever fires for the one specific,
+    previously-undetectable case. Returns `True` iff it logged, so this
+    is directly testable without running the live-cycle loop or a
+    background thread."""
+    is_stale = (
+        positions_are_live
+        and position_report_age_seconds is not None
+        and position_report_age_seconds > staleness_threshold_seconds
+    )
+    if is_stale:
+        logger.warning(
+            "positions_stale_despite_healthy_heartbeat",
+            extra={
+                "position_report_age_seconds": position_report_age_seconds,
+                "last_positions_received_at": (
+                    latest_positions_snapshot_at.isoformat() if latest_positions_snapshot_at else None
+                ),
+                "heartbeat_status": "healthy",
+                "staleness_threshold_seconds": staleness_threshold_seconds,
+                "affected_execution_path": (
+                    "risk_engine exposure/correlation/safety-limit checks and "
+                    "compliance_engine position-limit checks for every pair evaluated this cycle "
+                    "(portfolio_state built from this stale /bridge/positions snapshot)"
+                ),
+            },
+        )
+    return is_stale
+
+
 def _live_cycle_loop(
     orchestrator: RuntimeOrchestrator,
     market_data_engine: MarketDataIngestionEngine,
@@ -774,6 +830,18 @@ def _live_cycle_loop(
         latest_positions_snapshot_at = bridge_engine.last_positions_received_at
         position_report_age_seconds = (
             (now - latest_positions_snapshot_at).total_seconds() if latest_positions_snapshot_at else None
+        )
+        # Positions-staleness finding (Titan Protocol Independent
+        # Verification, Partially Verified -- see
+        # _log_positions_staleness_if_stale()'s own docstring):
+        # observability only, reusing BridgeConfig's existing
+        # heartbeat_timeout_seconds as the staleness threshold (the same
+        # window `ConnectionHealth.is_ready()` already uses to decide
+        # `positions_are_live` above) rather than inventing a new,
+        # unrelated config surface for a diagnostic-only signal.
+        _log_positions_staleness_if_stale(
+            logger, positions_are_live, position_report_age_seconds,
+            latest_positions_snapshot_at, bridge_engine.config.heartbeat_timeout_seconds,
         )
         logger.info(
             "portfolio_state_source",
