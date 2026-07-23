@@ -652,60 +652,75 @@ def _map_bridge_positions_to_open_positions(
     return tuple(mapped)
 
 
-def _log_positions_staleness_if_stale(
-    logger: logging.Logger,
+def _positions_are_stale(
     positions_are_live: bool,
     position_report_age_seconds: Optional[float],
-    latest_positions_snapshot_at: Optional[datetime],
     staleness_threshold_seconds: float,
 ) -> bool:
-    """Observability-only (Titan Protocol Independent Verification --
-    positions-staleness finding, currently Partially Verified, not
-    confirmed): logs a structured warning exactly when the
-    heartbeat-based `positions_are_live` proxy (see
+    """Titan Protocol Independent Verification -- positions-staleness
+    finding, currently Partially Verified, not confirmed: True exactly
+    when the heartbeat-based `positions_are_live` proxy (see
     `_live_cycle_loop()`'s own comment on this documented, known gap --
     "a healthy heartbeat is treated as grounds to trust latest_positions
     as current... this is a proxy, not a proof") is masking a stale
     `/bridge/positions` snapshot: heartbeat healthy AND the last
     successful positions refresh is older than
-    `staleness_threshold_seconds`.
-
-    Never changes `portfolio_state`, never gates trade acceptance or
-    rejection, never introduces a new fallback path -- this is purely a
-    diagnostic signal so a future lifecycle fix (if ever justified) has
-    real runtime evidence of the trigger condition instead of the
-    currently-unproven one this finding rests on. `positions_are_live is
-    False` (heartbeat itself unhealthy) or `position_report_age_seconds
-    is None` (positions never reported at all -- a different condition,
+    `staleness_threshold_seconds`. `positions_are_live is False`
+    (heartbeat itself unhealthy) or `position_report_age_seconds is
+    None` (positions never reported at all -- a different condition,
     already covered by `position_source_state == "absent"` in the
-    existing `portfolio_state_source` log) both correctly produce no
-    signal here -- this only ever fires for the one specific,
-    previously-undetectable case. Returns `True` iff it logged, so this
-    is directly testable without running the live-cycle loop or a
-    background thread."""
-    is_stale = (
+    existing `portfolio_state_source` log) both correctly evaluate to
+    `False` here -- this only ever answers the one specific,
+    previously-undetectable case. Read-only; never touches
+    `portfolio_state`, never gates trade acceptance/rejection."""
+    return (
         positions_are_live
         and position_report_age_seconds is not None
         and position_report_age_seconds > staleness_threshold_seconds
     )
-    if is_stale:
-        logger.warning(
-            "positions_stale_despite_healthy_heartbeat",
-            extra={
-                "position_report_age_seconds": position_report_age_seconds,
-                "last_positions_received_at": (
-                    latest_positions_snapshot_at.isoformat() if latest_positions_snapshot_at else None
-                ),
-                "heartbeat_status": "healthy",
-                "staleness_threshold_seconds": staleness_threshold_seconds,
-                "affected_execution_path": (
-                    "risk_engine exposure/correlation/safety-limit checks and "
-                    "compliance_engine position-limit checks for every pair evaluated this cycle "
-                    "(portfolio_state built from this stale /bridge/positions snapshot)"
-                ),
-            },
-        )
-    return is_stale
+
+
+def _positions_staleness_event(
+    is_stale_now: bool,
+    was_stale_last_cycle: bool,
+    last_logged_at: Optional[datetime],
+    now: datetime,
+    repeat_log_interval_seconds: float,
+) -> Optional[str]:
+    """Edge-triggered + periodic-repeat classification -- prevents log
+    flooding on sustained staleness. `_live_cycle_loop()` runs every
+    `_LIVE_CYCLE_INTERVAL_SECONDS` (15s); an earlier version of this
+    signal logged unconditionally on every stale cycle, which would
+    produce one WARNING line every 15s for the entire duration of a
+    real outage (e.g. ~240 lines over one hour) -- a real log-flooding
+    defect caught by independent red-team review of this instrumentation
+    itself, not a hypothetical.
+
+    Returns exactly one of:
+      - `"entered"`: stale this cycle, was not stale last cycle --
+        always logged immediately, the first and most important signal.
+      - `"repeat"`: still stale, `repeat_log_interval_seconds` has
+        elapsed since the last log -- a periodic reminder during a
+        sustained outage, never a per-cycle flood.
+      - `"recovered"`: not stale this cycle, was stale last cycle --
+        always logged immediately so operators know when it self-healed
+        (and so a fresh future episode is correctly re-classified as
+        `"entered"`, not silently suppressed as a continuation).
+      - `None`: nothing worth logging this cycle.
+
+    Pure and stateless itself -- `_live_cycle_loop()` owns and threads
+    `was_stale_last_cycle`/`last_logged_at` across iterations, exactly
+    like its own existing `last_news_fetch_at`/`news_trusted` loop-local
+    state (same established pattern, not a new one)."""
+    if is_stale_now and not was_stale_last_cycle:
+        return "entered"
+    if is_stale_now and was_stale_last_cycle:
+        if last_logged_at is None or (now - last_logged_at).total_seconds() >= repeat_log_interval_seconds:
+            return "repeat"
+        return None
+    if not is_stale_now and was_stale_last_cycle:
+        return "recovered"
+    return None
 
 
 def _live_cycle_loop(
@@ -760,6 +775,8 @@ def _live_cycle_loop(
     news_trusted = True
     last_news_fetch_at: Optional[datetime] = None
     persisted_compliance_state: Optional[PersistedComplianceState] = None
+    positions_stale_last_cycle = False
+    positions_staleness_last_logged_at: Optional[datetime] = None
     while not _shutdown_event.is_set():
         now = _utc_now()
         cycle_number += 1
@@ -833,16 +850,67 @@ def _live_cycle_loop(
         )
         # Positions-staleness finding (Titan Protocol Independent
         # Verification, Partially Verified -- see
-        # _log_positions_staleness_if_stale()'s own docstring):
-        # observability only, reusing BridgeConfig's existing
-        # heartbeat_timeout_seconds as the staleness threshold (the same
-        # window `ConnectionHealth.is_ready()` already uses to decide
-        # `positions_are_live` above) rather than inventing a new,
-        # unrelated config surface for a diagnostic-only signal.
-        _log_positions_staleness_if_stale(
-            logger, positions_are_live, position_report_age_seconds,
-            latest_positions_snapshot_at, bridge_engine.config.heartbeat_timeout_seconds,
-        )
+        # _positions_are_stale()/_positions_staleness_event()'s own
+        # docstrings): observability only, reusing BridgeConfig's
+        # existing heartbeat_timeout_seconds both as the staleness
+        # threshold (the same window ConnectionHealth.is_ready() already
+        # uses to decide positions_are_live above) and as the repeat-log
+        # interval once stale ("log again after another whole window of
+        # continued staleness") -- deliberately reusing the one existing
+        # number rather than inventing two new, unrelated config knobs
+        # for a diagnostic-only signal. Note this does couple two
+        # conceptually distinct concerns (connection-health timeout vs.
+        # a single data stream's staleness) -- acceptable for
+        # observability, but anyone later retuning heartbeat_timeout_
+        # seconds for connection-health reasons should know it also
+        # retunes this signal's sensitivity as a side effect.
+        #
+        # Wrapped in its own try/except: this is a new diagnostic in an
+        # otherwise-unguarded stretch of the loop body -- an exception
+        # here must never be allowed to kill the live-cycle loop thread
+        # (which would silently stop all future trade evaluation, the
+        # opposite of "no behavior change").
+        try:
+            heartbeat_timeout_seconds = bridge_engine.config.heartbeat_timeout_seconds
+            positions_stale_now = _positions_are_stale(
+                positions_are_live, position_report_age_seconds, heartbeat_timeout_seconds,
+            )
+            staleness_event = _positions_staleness_event(
+                positions_stale_now, positions_stale_last_cycle, positions_staleness_last_logged_at,
+                now, heartbeat_timeout_seconds,
+            )
+            if staleness_event in ("entered", "repeat"):
+                logger.warning(
+                    "positions_stale_despite_healthy_heartbeat",
+                    extra={
+                        "event": staleness_event,
+                        "position_report_age_seconds": position_report_age_seconds,
+                        "last_positions_received_at": (
+                            latest_positions_snapshot_at.isoformat() if latest_positions_snapshot_at else None
+                        ),
+                        "heartbeat_status": "healthy",
+                        "staleness_threshold_seconds": heartbeat_timeout_seconds,
+                        "affected_execution_path": (
+                            "risk_engine exposure/correlation/safety-limit checks and "
+                            "compliance_engine position-limit checks for every pair evaluated this cycle "
+                            "(portfolio_state built from this stale /bridge/positions snapshot)"
+                        ),
+                    },
+                )
+                positions_staleness_last_logged_at = now
+            elif staleness_event == "recovered":
+                logger.info(
+                    "positions_staleness_recovered",
+                    extra={
+                        "last_positions_received_at": (
+                            latest_positions_snapshot_at.isoformat() if latest_positions_snapshot_at else None
+                        ),
+                        "position_report_age_seconds": position_report_age_seconds,
+                    },
+                )
+            positions_stale_last_cycle = positions_stale_now
+        except Exception:  # noqa: BLE001 -- this diagnostic must never crash the live-cycle loop
+            logger.exception("positions staleness observability check failed")
         logger.info(
             "portfolio_state_source",
             extra={
