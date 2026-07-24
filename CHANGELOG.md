@@ -15,6 +15,52 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-24 (Phase 3C end-to-end ingestion integration tests — ADR-033)
+
+### Added
+- `tests/titan_protocol/runtime/test_phase_3c_ingestion_integration.py` —
+  the ADR-033 SS7 end-to-end suite that had not yet been written: every
+  other Phase 3C test proves `market_data_ingestion`/`news_ingestion` in
+  isolation, but none drove a real `RuntimeOrchestrator.run_cycle_for_pair()`
+  call with data that actually passed through both ingestion engines.
+  Four tests: (1) bars fed through `MarketDataIngestionEngine.ingest_bar()`
+  (validation, ordering, warmup, retention buffer) reach the real
+  Evidence -> Strategy -> Risk -> Compliance -> Bridge chain and produce
+  a genuine `SUBMITTED` `TrendContinuation` trade, not just a "didn't
+  crash" smoke test; (2) a high-impact event produced by
+  `NewsIngestionEngine.fetch_events()` (through the real failover engine
+  and `adapter.to_market_intelligence_event()`) reaches
+  `MarketIntelligenceEngine`'s real blackout logic inside that same
+  cycle, observed via a thin recording spy since `RuntimeAuditRecord`
+  only carries a rendered summary string, not the structured snapshot;
+  (3) both news providers failing closed still yields
+  `(events=(), trusted=False)` through the real seam, documenting the
+  caller-side gate contract ADR-033 SS4.2 requires (Runtime itself has
+  no `news_feed_trusted` passthrough); (4) the distinct `backfill()`
+  startup code path also produces pipeline-compatible output, not just
+  the live `ingest_bar()` loop.
+
+### Verified
+- `market_data_ingestion` (44 tests) and `news_ingestion` (52 tests) test
+  suites, already present from earlier Phase 3C work, both still pass in
+  full — closing tasks #275/#277 which the task tracker had left marked
+  in-progress/pending despite the suites already existing and passing.
+- Full repository suite: 3007 tests, only the three pre-existing,
+  environment-only `flask`-import failures (unrelated to this or any
+  prior phase, per ADR-033 SS8's own stated exclusion).
+- `git diff --stat` against `titan_protocol/evidence_engine/`,
+  `market_intelligence/`, `strategy_engine/`, `risk_engine/`,
+  `compliance_engine/`, `runtime/`, `bridge/`, `reliability/` — zero
+  output. This change is a new test file only; no frozen package was
+  touched (ADR-033 SS8 acceptance criterion).
+- `deployment_windows/start.py` was already wiring both ingestion engines
+  into the live-cycle loop (confirmed by direct read, not assumed) —
+  ADR-033 SS0's own forward reference to "SS9" for this wiring points at
+  a section that does not exist in the ADR document; the wiring itself
+  is real and tested, only the ADR's internal cross-reference is stale.
+  Left as-is (a documentation-only inconsistency, out of scope for a
+  test-only change per the Minimal Change Engineer philosophy).
+
 ## 2026-07-22 (WinINet proxy/WPAD diagnostic for `WebRequest()` failures)
 
 ### Added
