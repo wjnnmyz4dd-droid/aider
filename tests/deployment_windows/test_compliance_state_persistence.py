@@ -54,11 +54,20 @@ class TestDailyResetHourUtcConfigParsing(unittest.TestCase):
 
 
 class _FakeBridgeEngine:
-    def __init__(self, balance, received_at=None):
+    def __init__(self, balance, received_at=None, equity=None, positions=()):
+        """`equity` defaults to `balance` (no floating P&L) and
+        `positions` defaults to empty -- i.e. "flat" -- so every
+        pre-existing test below that doesn't pass them keeps exercising
+        exactly the behavior it always has (KNOWN_GAPS.md #9's
+        bootstrap-verification gate is satisfied by default)."""
         self.latest_account_state = (
-            SimpleNamespace(balance=balance, received_at=received_at or _utc(2026, 7, 14, 7, 59, 0))
+            SimpleNamespace(
+                balance=balance, equity=balance if equity is None else equity,
+                received_at=received_at or _utc(2026, 7, 14, 7, 59, 0),
+            )
             if balance is not None else None
         )
+        self.latest_positions = tuple(positions)
 
 
 class TestBuildComplianceAccountStateWiring(unittest.TestCase):
@@ -112,6 +121,61 @@ class TestBuildComplianceAccountStateWiring(unittest.TestCase):
             bridge, restarted_store, None, _utc(2026, 7, 14, 9, 0, 0),
         )
         self.assertEqual(account_state.daily_starting_balance, 10_000.0)
+
+
+class TestBootstrapVerificationWiring(unittest.TestCase):
+    """KNOWN_GAPS.md #9 at the real `start.py` wiring level: an open
+    position or floating P&L on a fresh install must skip the cycle
+    rather than bootstrap from a possibly-contaminated balance; a flat
+    account (the common case) must bootstrap exactly as before."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmpdir.name)
+        self.addCleanup(self._tmpdir.cleanup)
+        self.store = ComplianceStateStore(
+            ComplianceStateStoreConfig(state_file=self.tmp_path / "compliance_state.json", daily_reset_hour_utc=0)
+        )
+
+    def test_open_position_on_fresh_install_skips_the_cycle(self):
+        bridge = _FakeBridgeEngine(balance=10_000.0, positions=(SimpleNamespace(position_id="P1"),))
+        account_state, persisted = start_module._build_compliance_account_state(
+            bridge, self.store, None, _utc(2026, 7, 14, 8, 0, 0),
+        )
+        self.assertIsNone(account_state)
+        self.assertIsNone(persisted)
+        self.assertFalse((self.tmp_path / "compliance_state.json").exists())
+
+    def test_floating_pnl_on_fresh_install_skips_the_cycle(self):
+        bridge = _FakeBridgeEngine(balance=10_000.0, equity=10_500.0)
+        account_state, persisted = start_module._build_compliance_account_state(
+            bridge, self.store, None, _utc(2026, 7, 14, 8, 0, 0),
+        )
+        self.assertIsNone(account_state)
+        self.assertIsNone(persisted)
+
+    def test_flat_account_on_fresh_install_bootstraps_normally(self):
+        bridge = _FakeBridgeEngine(balance=10_000.0, equity=10_000.0, positions=())
+        account_state, persisted = start_module._build_compliance_account_state(
+            bridge, self.store, None, _utc(2026, 7, 14, 8, 0, 0),
+        )
+        self.assertIsNotNone(account_state)
+        self.assertEqual(account_state.daily_starting_balance, 10_000.0)
+        self.assertIsNotNone(persisted)
+
+    def test_operator_override_bootstraps_despite_open_position(self):
+        store = ComplianceStateStore(
+            ComplianceStateStoreConfig(
+                state_file=self.tmp_path / "compliance_state.json", daily_reset_hour_utc=0,
+                day_start_balance_override=7_777.0,
+            )
+        )
+        bridge = _FakeBridgeEngine(balance=10_000.0, equity=11_000.0, positions=(SimpleNamespace(position_id="P1"),))
+        account_state, persisted = start_module._build_compliance_account_state(
+            bridge, store, None, _utc(2026, 7, 14, 8, 0, 0),
+        )
+        self.assertIsNotNone(account_state)
+        self.assertEqual(account_state.daily_starting_balance, 7_777.0)
 
 
 if __name__ == "__main__":

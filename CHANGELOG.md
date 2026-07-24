@@ -15,6 +15,64 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-24 (Compliance day-one bootstrap verification — KNOWN_GAPS.md #9)
+
+### Added
+- `titan_protocol/compliance_state_store/bootstrap.py` --
+  `is_account_verified_flat()`/`resolve_bootstrap_balance()`, pure
+  functions deciding whether a fresh install's first-ever reported
+  balance may be trusted as `daily_starting_balance`. Verified flat
+  means no open positions and `balance == equity` within
+  `flat_account_equity_tolerance` (default 0.01) -- the strongest signal
+  wire data alone can give that the balance wasn't already contaminated
+  by trading activity in progress.
+- `ComplianceStateStoreConfig.day_start_balance_override` (optional) --
+  an operator-confirmed day-start balance that bypasses verification
+  entirely and is used immediately. `ComplianceStateStoreConfig.
+  flat_account_equity_tolerance` (default 0.01) -- the balance/equity
+  comparison tolerance.
+- `compliance.day_start_balance_override` /
+  `compliance.flat_account_equity_tolerance` in
+  `deployment_windows/config_loader.py` and the shipped example config,
+  both fail-closed at startup for a non-positive value.
+- Tests: `tests/titan_protocol/compliance_state_store/
+  test_bootstrap_verification.py` (20 tests -- pure functions plus
+  `ComplianceStateStore.load_or_bootstrap()` integration: flat bootstrap,
+  open-positions/floating-P&L blocks bootstrap, override bypass, config
+  validation), plus new cases in `tests/deployment_windows/
+  test_config_loader.py` and `tests/deployment_windows/
+  test_compliance_state_persistence.py` covering the real `start.py`
+  wiring.
+
+### Changed
+- `ComplianceStateStore.load_or_bootstrap()` now takes optional
+  `current_equity`/`has_open_positions` (defaulting to "flat", so every
+  pre-existing caller is unaffected) and returns `Optional[
+  PersistedComplianceState]` -- `None` when a fresh install's account
+  isn't yet verified flat and no override is configured, meaning the
+  caller must skip the cycle rather than bootstrap from a possibly-
+  contaminated balance.
+- `deployment_windows/start.py`'s `_build_compliance_account_state()`
+  now passes the EA-reported `equity` and `bridge_engine.latest_positions`
+  through to the gate above, and returns `(None, None)` (same fail-closed
+  convention as "no account state reported yet") while bootstrap
+  verification is pending.
+- `KNOWN_GAPS.md` section 9: OPEN -> CLOSED, with the fix documented and
+  the one residual limitation this can't close (a trade opened and
+  closed the same day, before Titan ever received a report, still
+  contaminates `balance` in a way no wire field reveals -- the
+  override exists for that case).
+
+### Validation
+- Full repository suite: 3038 tests; only the three pre-existing,
+  environment-only `flask`-import failures (unrelated).
+- `compileall` clean across `titan_protocol/`, `tests/`,
+  `deployment_windows/`, `scripts/`.
+- Zero regression: every pre-existing `compliance_state_store`/
+  `config_loader`/`start.py` test continued passing unchanged, since the
+  new parameters default to the exact behavior those tests already
+  relied on.
+
 ## 2026-07-24 (Phase 3C end-to-end ingestion integration tests — ADR-033)
 
 ### Added

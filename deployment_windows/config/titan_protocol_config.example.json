@@ -77,7 +77,11 @@
     "_max_account_state_age_seconds_note": "Fail-closed freshness bound on the EA-reported account balance daily-loss/drawdown/profit-protection are evaluated against. If the last successful /bridge/account report is older than this, every new entry is rejected with ACCOUNT_STATE_STALE (existing position management is never affected) until a fresh report arrives. Defaults to 30s, matching the EA's own FailClosedTimeoutSeconds. Must be > 0; startup fails closed otherwise.",
     "max_account_state_age_seconds": 30.0,
     "_daily_reset_hour_utc_note": "The broker/prop-firm's authoritative trading-day boundary, as an hour-of-day in UTC (0-23). Persisted compliance state (daily starting balance, compliance lock) only resets when this boundary is crossed -- never merely because Runtime/Python/MT5/the VPS restarted. Not DST-aware -- update this value if your broker's own UTC offset changes with DST. See KNOWN_GAPS.md.",
-    "daily_reset_hour_utc": 0
+    "daily_reset_hour_utc": 0,
+    "_day_start_balance_override_note": "KNOWN_GAPS.md #9. Absent (null) by default: on a fresh install, Titan verifies the account is flat (no open positions, balance == equity) before trusting the first reported balance as daily_starting_balance -- rather than trusting whatever balance happens to arrive first, which could already reflect trading activity in progress. Set this to a real, operator-confirmed day-start balance to bypass that verification entirely and use it immediately -- the deterministic escape hatch for the one case wire data can never reveal (a trade opened and closed earlier the same day, before Titan ever received a report). Must be > 0 if set.",
+    "day_start_balance_override": null,
+    "_flat_account_equity_tolerance_note": "KNOWN_GAPS.md #9. Tolerance (account-currency units) for treating balance == equity when verifying the account is flat before a fresh-install bootstrap -- accounts for broker rounding to the smallest currency unit. Defaults to 0.01 (one cent). Must be >= 0.",
+    "flat_account_equity_tolerance": 0.01
   },
 
   "news": {

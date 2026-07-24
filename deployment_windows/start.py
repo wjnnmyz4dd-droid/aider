@@ -565,7 +565,12 @@ def _build_compliance_account_state(
     Returns `(None, persisted_state)` (caller skips the cycle) if the
     EA has not reported account state yet -- day-state is only ever
     bootstrapped or reconciled once a real balance is available, never
-    guessed.
+    guessed. Also returns `(None, None)` on a fresh install (no
+    persisted state file yet) until the reported account is verified
+    flat -- no open positions, `balance` == `equity` -- or an operator
+    has configured `day_start_balance_override` (KNOWN_GAPS.md #9): the
+    very first balance ever reported is never trusted unconditionally,
+    since it may already reflect trading activity in progress.
 
     Also threads `account_report_age_seconds` (seconds since `latest`
     was received) onto the returned `AccountState`, so
@@ -578,7 +583,18 @@ def _build_compliance_account_state(
     if latest is None:
         return None, persisted_state
     if persisted_state is None:
-        persisted_state = compliance_state_store.load_or_bootstrap(now, latest.balance)
+        persisted_state = compliance_state_store.load_or_bootstrap(
+            now, latest.balance, current_equity=latest.equity,
+            has_open_positions=bool(bridge_engine.latest_positions),
+        )
+        if persisted_state is None:
+            # KNOWN_GAPS.md #9: bootstrap verification pending -- the
+            # account isn't yet confirmed flat (no open positions,
+            # balance == equity) and no day_start_balance_override is
+            # configured. Skip this cycle rather than bootstrap from a
+            # possibly-contaminated balance; same fail-closed convention
+            # as "no account state reported yet" above.
+            return None, None
     persisted_state = compliance_state_store.reconcile(persisted_state, now, latest.balance)
     account_report_age_seconds = (now - latest.received_at).total_seconds()
     account_state = _compliance_state_to_account_state(
@@ -1190,6 +1206,8 @@ def run_foreground(config_path: Path) -> int:
         ComplianceStateStoreConfig(
             state_file=settings.state_dir / "compliance_state.json",
             daily_reset_hour_utc=settings.compliance_daily_reset_hour_utc,
+            day_start_balance_override=settings.compliance_day_start_balance_override,
+            flat_account_equity_tolerance=settings.compliance_flat_account_equity_tolerance,
         )
     )
 

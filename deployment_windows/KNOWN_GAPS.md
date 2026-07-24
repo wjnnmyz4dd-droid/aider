@@ -358,32 +358,48 @@ through (the field defaults to `None`) keeps its prior, unaffected
 behavior -- the gate only ever fires when a real age is supplied, which
 `deployment_windows/start.py` always does in production.
 
-## 9. Compliance day-one bootstrap can use a non-representative balance — OPEN (distinct from section 8)
+## 9. Compliance day-one bootstrap can use a non-representative balance — CLOSED
 
-`ComplianceStateStore.load_or_bootstrap()` sets `daily_starting_balance`
-and `peak_balance` from whichever balance the *first-ever successful*
-`/bridge/account` report carries -- only when the persisted state file
-doesn't exist yet (i.e. a fresh install, or state deliberately cleared).
-If that first success is delayed (by WebRequest instability, a slow
-first attach, etc.) until after the real trading day has already
-started, and the account already has floating P&L or trades by then,
-the daily-loss baseline is bootstrapped from a balance that doesn't
-represent the true start-of-day value. After that one bootstrap,
-day-rollover is wall-clock-based (`trading_day_id_for()`, independent
-of report timing) and unaffected by this gap.
+**Closed by:** `titan_protocol/compliance_state_store/bootstrap.py`
+(`is_account_verified_flat()`, `resolve_bootstrap_balance()`), wired
+into `ComplianceStateStore.load_or_bootstrap()` and
+`deployment_windows/start.py`'s `_build_compliance_account_state()`.
 
-This is a one-time, day-one-of-a-fresh-install risk, not an ongoing one
--- section 8's `ACCOUNT_STATE_STALE` gate does not close it, since the
-bootstrap uses whatever balance is available at that moment regardless
-of its age (there is no prior persisted state to compare it against
-yet). Not fixed here: doing so would require either delaying bootstrap
-until a balance is confirmed to predate any trading activity (unverifiable
-from this wire message alone) or accepting an operator-supplied
-day-start balance, both of which are scope beyond this fix. Operators
-installing fresh should confirm the EA successfully reports account
-state before the trading day's balance has moved, or manually correct
-`state/compliance_state.json`'s `daily_starting_balance` once if it
-bootstrapped from a stale snapshot.
+Previously, `load_or_bootstrap()` set `daily_starting_balance` and
+`peak_balance` from whichever balance the *first-ever successful*
+`/bridge/account` report carried -- unconditionally, only when the
+persisted state file didn't exist yet (i.e. a fresh install, or state
+deliberately cleared). If that first success was delayed (by WebRequest
+instability, a slow first attach, etc.) until after the real trading day
+had already started, and the account already had floating P&L or open
+positions by then, the daily-loss baseline was bootstrapped from a
+balance that didn't represent the true start-of-day value.
+
+Fixed: bootstrap now proceeds only once the account is *verified flat*
+-- no open positions (`bridge_engine.latest_positions` is empty) and
+`balance` == `equity` within `flat_account_equity_tolerance` (default
+0.01) -- the strongest signal available from wire data alone that the
+reported balance hasn't been contaminated by trading activity already in
+progress. Until that condition holds, `load_or_bootstrap()` returns
+`None` and the caller skips the cycle entirely (the same fail-closed
+convention already used for "no account state reported yet"), never
+bootstrapping from a guess. An operator-supplied
+`compliance.day_start_balance_override` (JSON config) bypasses
+verification entirely and is used immediately and deterministically --
+the escape hatch for the one contamination case wire data can never
+reveal (see residual limitation below). Once a state file exists,
+bootstrap verification is never re-evaluated -- restarts (before or
+after trading, any time of day) behave exactly as before this fix.
+
+**Residual limitation:** this closes the *open-position/floating-P&L*
+contamination case, not a *closed*-trade one -- a trade opened and
+closed earlier the same day, before Titan ever received a report, has
+already changed `balance` permanently with no wire field to reveal it.
+That case remains undetectable from wire data alone; an operator who
+knows this happened should set `day_start_balance_override` for that
+one bootstrap, or manually correct
+`state/compliance_state.json`'s `daily_starting_balance` if it already
+bootstrapped from such a snapshot.
 
 ## 10. HTTP poll had no backoff + undelivered commands blocked a pair for 20x longer than necessary — CLOSED
 

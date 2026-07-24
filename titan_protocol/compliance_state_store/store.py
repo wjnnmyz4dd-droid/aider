@@ -36,6 +36,7 @@ from typing import Optional
 from titan_protocol.compliance_engine.lock import apply_daily_reset
 from titan_protocol.compliance_engine.models import AccountState, ComplianceLockState, LockRecommendation
 
+from .bootstrap import resolve_bootstrap_balance
 from .config import ComplianceStateStoreConfig
 from .models import SCHEMA_VERSION, CorruptStateError, PersistedComplianceState
 from .trading_day import trading_day_id_for
@@ -100,18 +101,41 @@ class ComplianceStateStore:
     def __init__(self, config: ComplianceStateStoreConfig) -> None:
         self.config = config
 
-    def load_or_bootstrap(self, now: datetime, current_balance: float) -> PersistedComplianceState:
+    def load_or_bootstrap(
+        self, now: datetime, current_balance: float,
+        current_equity: Optional[float] = None,
+        has_open_positions: bool = False,
+    ) -> Optional[PersistedComplianceState]:
         """Loads existing persisted state, or -- only when the file has
-        never existed -- bootstraps fresh day-one state from the
-        currently-reported balance."""
+        never existed -- bootstraps fresh day-one state from a verified
+        day-start balance (KNOWN_GAPS.md #9).
 
+        `current_equity`/`has_open_positions` default to "the account is
+        flat" (equity == balance, no open positions), preserving the
+        exact behavior every existing caller that doesn't pass them
+        already relies on. The real production caller
+        (`deployment_windows/start.py`) always supplies the real
+        EA-reported values.
+
+        Returns `None` when the file doesn't exist yet, no
+        `day_start_balance_override` is configured, and the account is
+        not yet verified flat -- the caller must skip this cycle, never
+        substitute a guess (see `bootstrap.resolve_bootstrap_balance()`)."""
+
+        current_equity = current_balance if current_equity is None else current_equity
         path = self.config.state_file
         if not path.exists():
+            bootstrap_balance = resolve_bootstrap_balance(
+                current_balance, current_equity, has_open_positions,
+                self.config.flat_account_equity_tolerance, self.config.day_start_balance_override,
+            )
+            if bootstrap_balance is None:
+                return None
             state = PersistedComplianceState(
                 schema_version=SCHEMA_VERSION,
                 trading_day_id=trading_day_id_for(now, self.config.daily_reset_hour_utc),
-                daily_starting_balance=current_balance,
-                peak_balance=current_balance,
+                daily_starting_balance=bootstrap_balance,
+                peak_balance=bootstrap_balance,
                 compliance_lock=ComplianceLockState(),
                 trading_days_count=1,
                 last_reset_at=now,

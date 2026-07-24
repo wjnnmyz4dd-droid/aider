@@ -96,6 +96,8 @@ class DeploymentSettings:
     compliance_config: ComplianceEngineConfig
     compliance_rule_profile_name: str
     compliance_daily_reset_hour_utc: int
+    compliance_day_start_balance_override: Optional[float]
+    compliance_flat_account_equity_tolerance: float
     news_config: MarketIntelligenceConfig
     news_feed_trusted: bool
     news_provider_settings: NewsProviderSettings
@@ -417,6 +419,29 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         raise ConfigError(
             f"compliance.daily_reset_hour_utc must be between 0 and 23, got {compliance_daily_reset_hour_utc}"
         )
+    # Day-one bootstrap verification (KNOWN_GAPS.md #9). Absent by
+    # default -- the store then requires the account to be verified flat
+    # before trusting a fresh install's first reported balance. Setting
+    # this is an explicit operator override that bypasses that
+    # verification entirely, so it must be a real positive balance, not
+    # a typo'd zero/negative value silently accepted.
+    _day_start_balance_override_raw = compliance_section.get("day_start_balance_override")
+    compliance_day_start_balance_override: Optional[float] = None
+    if _day_start_balance_override_raw is not None:
+        compliance_day_start_balance_override = float(_day_start_balance_override_raw)
+        if compliance_day_start_balance_override <= 0:
+            raise ConfigError(
+                "compliance.day_start_balance_override must be > 0 if set, got "
+                f"{compliance_day_start_balance_override}"
+            )
+    compliance_flat_account_equity_tolerance = _get_float(
+        compliance_section, "flat_account_equity_tolerance", 0.01
+    )
+    if compliance_flat_account_equity_tolerance < 0:
+        raise ConfigError(
+            "compliance.flat_account_equity_tolerance must be >= 0, got "
+            f"{compliance_flat_account_equity_tolerance}"
+        )
 
     news_section = _section(data, "news")
     news_config = MarketIntelligenceConfig(
@@ -476,6 +501,8 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         risk_config=risk_config, compliance_config=compliance_config,
         compliance_rule_profile_name=compliance_rule_profile_name,
         compliance_daily_reset_hour_utc=compliance_daily_reset_hour_utc,
+        compliance_day_start_balance_override=compliance_day_start_balance_override,
+        compliance_flat_account_equity_tolerance=compliance_flat_account_equity_tolerance,
         news_config=news_config, news_feed_trusted=news_feed_trusted,
         news_provider_settings=news_provider_settings,
         reliability_config=reliability_config,

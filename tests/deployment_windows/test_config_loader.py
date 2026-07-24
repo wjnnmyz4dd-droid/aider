@@ -106,5 +106,60 @@ class TestMaxAccountStateAgeSecondsConfigurability(unittest.TestCase):
                 load_settings(config_path)
 
 
+class TestDayStartBalanceOverrideConfigurability(unittest.TestCase):
+    """KNOWN_GAPS.md #9: operator-supplied day-start balance override --
+    absent by default (None), configurable, and fails closed at startup
+    for a non-positive value rather than silently accepting a typo."""
+
+    def test_defaults_to_none_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+            settings = load_settings(config_path)
+            self.assertIsNone(settings.compliance_day_start_balance_override)
+
+    def test_explicit_value_is_honored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"day_start_balance_override": 25_000.0})
+            settings = load_settings(config_path)
+            self.assertEqual(settings.compliance_day_start_balance_override, 25_000.0)
+
+    def test_zero_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"day_start_balance_override": 0})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_negative_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"day_start_balance_override": -100.0})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+
+class TestFlatAccountEquityToleranceConfigurability(unittest.TestCase):
+    """KNOWN_GAPS.md #9: the balance/equity comparison tolerance used to
+    verify an account is flat before trusting its first-ever reported
+    balance -- defaults to 0.01, configurable, fails closed for a
+    negative value."""
+
+    def test_defaults_to_one_cent_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+            settings = load_settings(config_path)
+            self.assertEqual(settings.compliance_flat_account_equity_tolerance, 0.01)
+
+    def test_explicit_value_is_honored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"flat_account_equity_tolerance": 1.0})
+            settings = load_settings(config_path)
+            self.assertEqual(settings.compliance_flat_account_equity_tolerance, 1.0)
+
+    def test_negative_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), compliance_overrides={"flat_account_equity_tolerance": -0.5})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+
 if __name__ == "__main__":
     unittest.main()
