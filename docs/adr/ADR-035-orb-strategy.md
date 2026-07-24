@@ -171,16 +171,35 @@ sibling change to this ADR, not implemented here):
 
 ```
 OpeningRangeState:
-    session: SessionName          # which session-open this range anchors to
+    session: SessionName          # descriptive only -- which broad session-open window this anchor falls within. NOT the identifying key (see "Identification" below).
     range_start: datetime          # first bar's open time in the window
     range_end: datetime            # window close time (range_start + duration)
+    range_start_index: int         # first included bar's position in Evidence Engine's own bar sequence for this evaluation
+    range_end_index: int           # exclusive upper bound of included bars, directly comparable to FairValueGap.start_index/end_index (see §5/§9)
     range_high: float
     range_low: float
     range_midpoint: float
     is_formed: bool                # True only once range_end has fully elapsed
-    is_valid: bool                 # False if a gap/missing bar was detected inside the window
+    is_valid: bool                 # False if a temporal gap or an insufficient bar count was detected inside the window
 ```
 
+- **Identification (corrects a finding from independent Acceptance
+  Review):** `session: SessionName` is descriptive metadata only, never
+  the field used to pick one `OpeningRangeState` out of the plural
+  `opening_ranges` tuple. §13's `orb_session_anchors` config is a list —
+  nothing about `SessionName` (5 coarse values) guarantees two
+  configured anchors are distinguishable by session alone (e.g., two
+  different anchors could both fall within `LONDON`). The identifying
+  key is instead the anchor's own `range_start`/`range_end` window,
+  which is unique per anchor **once startup validation rejects any two
+  configured anchors whose windows would coincide or overlap** (§13, new
+  cross-field check) — the same class of fail-closed startup
+  `ConfigError` this codebase already uses for other threshold
+  violations, not a new validation mechanism. With that guarantee in
+  place, selecting "whichever configured range is currently relevant"
+  (§12, §15) means comparing the evaluation cycle's `now` against each
+  `OpeningRangeState.range_start`/`range_end` directly — never matching
+  by `session`, which remains purely descriptive.
 - **Opening range start:** a configured hour+minute in UTC per named
   session-open (e.g., London open, New York open) — not derived from
   `SessionName`'s existing broad hour-boundary logic, which is too
@@ -205,20 +224,37 @@ OpeningRangeState:
   low of every **closed** bar (never a forming bar — mirrors
   `market_data_ingestion`'s own closed-bar-only retention rule) whose
   `bar_open_time` falls within `[range_start, range_end)`.
-  `range_midpoint = (range_high + range_low) / 2`.
+  `range_midpoint = (range_high + range_low) / 2`. `range_start_index`/
+  `range_end_index` are the positions of that same bar subset within the
+  bar sequence Evidence Engine already holds internally while computing
+  the rest of an `EvidenceSnapshot` (structure, FVGs, candlesticks) —
+  no second bar source, just two additional integer offsets recorded
+  alongside the datetime bounds already described above.
 - **Multiple session support:** the proposed model is computed
   independently per configured session-open (e.g., both a London-open
   range and a New York-open range could be configured simultaneously) —
   `EvidenceSnapshot.opening_ranges: Tuple[OpeningRangeState, ...]`
   (plural), not a single value, so ORB can qualify against whichever
-  configured range is currently relevant to the evaluation cycle's
-  session.
-- **Fail-closed:** `is_valid=False` (and therefore `NOT_QUALIFIED` for
-  ORB, never a best-effort range) if any closed bar inside the window is
-  missing (detected via the same gap-detection `market_data_ingestion`
-  already performs, ADR-033) or if fewer than a configured minimum bar
-  count formed the range (protects against a range built from too few
-  candles to be meaningful, e.g. after a Bridge reconnect mid-window).
+  configured range's window (per "Identification" above) is currently
+  relevant to the evaluation cycle.
+- **Fail-closed (corrects a finding from independent Acceptance
+  Review):** `is_valid=False` (and therefore `NOT_QUALIFIED` for ORB,
+  never a best-effort range) if fewer than a configured minimum bar
+  count formed the range, **or if Evidence Engine's own check of
+  `bar_open_time` spacing across the closed bars in `[range_start,
+  range_end)` finds a gap against a newly-introduced "expected bar
+  interval" value** (a config concept Evidence Engine does not have
+  today and this amendment must introduce — see §17 Phase 0). This is
+  an independent computation inside Evidence Engine, not a reuse of
+  `market_data_ingestion`'s own gap flag: that flag is surfaced only
+  through `market_data_ingestion`'s own `IngestionResult`/health
+  snapshot and is never attached to the `Bar` objects Evidence Engine
+  actually receives, so it cannot be "reused" at this layer. Evidence
+  Engine already receives every closed bar's `timestamp`
+  (`Bar.timestamp`), which is sufficient to detect a temporal gap on
+  its own once it knows the expected interval — the same kind of
+  self-contained fact-derivation Evidence Engine already performs for
+  structure, FVGs, and support/resistance from bars alone.
 
 ---
 
@@ -243,13 +279,17 @@ not restated at each use below.
   with how `SessionBreakoutStrategy` already gates on
   `volatility.volatility_score`/`is_expansion` rather than a fixed
   distance.
-- **Body size / wick tolerance:** the breakout bar's body
-  (`abs(close - open)`) must be at least `orb_min_body_to_range_ratio *
-  (range_high - range_low)` of the *breakout bar's own range* — rejects
-  a breakout bar that is mostly wick (indecision), a standard candlestick
-  quality check already precedented by Evidence Engine's own
-  `candlesticks.py` pattern matching (reused as a *concept*, not a
-  second implementation — see §6, ORB reuses `evidence.candlesticks`
+- **Body size / wick tolerance (formula corrected per independent
+  Acceptance Review — prose and formula previously referenced two
+  different quantities):** the breakout bar's body (`abs(close - open)`)
+  must be at least `orb_min_body_to_range_ratio * (bar.high - bar.low)`
+  — the ratio applies to **the breakout bar's own high-low span**, never
+  the opening range's width (`range_high`/`range_low` elsewhere in this
+  document always mean the opening range's boundaries, not any single
+  bar's). Rejects a breakout bar that is mostly wick (indecision), a
+  standard candlestick quality check already precedented by Evidence
+  Engine's own `candlesticks.py` pattern matching (reused as a *concept*,
+  not a second implementation — see §6, ORB reuses `evidence.candlesticks`
   directly rather than reimplementing wick-ratio logic).
 - **Momentum:** `evidence.volatility.is_expansion` must be `True` —
   identical field `SessionBreakoutStrategy` already requires; a
@@ -280,11 +320,21 @@ hard gate.
 
 - **Reuses `evidence.fair_value_gaps` directly** — no second FVG
   detector (§0).
+- **Temporal comparison (corrects a finding from independent Acceptance
+  Review):** `FairValueGap.start_index`/`end_index` are bar-sequence
+  indices, not timestamps, and `EvidenceSnapshot` does not expose the
+  raw bar sequence a strategy could use to convert an index to a time.
+  "Formed at or after `range_start`" is therefore evaluated as **`gap.
+  start_index >= opening_range.range_start_index`** — comparing two
+  integers Evidence Engine already computes from the same internal bar
+  sequence (§3), never a datetime-to-index conversion inside the
+  strategy. This is the one, decided mechanism; no alternative is left
+  open.
 - **Bullish FVG:** required to be same-direction as a bullish breakout
   candidate (`FairValueGap.direction` matching `StructureDirection` up),
-  unfilled (`not gap.filled`), and formed at or after `range_start` (an
-  FVG from before the range formed is unrelated context, not
-  confirmation of *this* breakout).
+  unfilled (`not gap.filled`), and formed at or after `range_start` per
+  the index comparison above (an FVG from before the range formed is
+  unrelated context, not confirmation of *this* breakout).
 - **Bearish FVG:** the mirror.
 - **Maximum age:** configurable `orb_fvg_max_age_bars` — an FVG many
   bars stale is weak confirmation of a fresh breakout.
@@ -506,6 +556,23 @@ value (mirrors `config_loader.py`'s existing `ConfigError` pattern for
 every other threshold) — not implemented here, specified for the
 implementation phase.
 
+**Cross-field validation (required, per independent Acceptance
+Review):** in addition to each field's own range check, config loading
+must fail closed if:
+
+- Any two entries in `orb_session_anchors` would produce coincident or
+  overlapping `[range_start, range_end)` windows on the same trading day
+  — this is what makes §3's identification rule (matching by window,
+  not by `SessionName`) unambiguous; without this check, two anchors
+  could collide.
+- `orb_min_range_bars` is infeasible for the configured
+  `orb_range_duration_minutes` given the bar timeframe Evidence Engine
+  is actually configured for (e.g., a 3-bar minimum cannot be satisfied
+  by a 30-minute window if the configured timeframe means only one bar
+  forms in that time).
+- The weighted-scoring components in §5 (`orb_fvg_score_weight` and any
+  sibling weights in the same weighted sum) do not sum to ≤ 1.
+
 ---
 
 ## 14. Fail-closed behavior
@@ -547,11 +614,11 @@ value — ADR-026 Hard Rules 3-4, unchanged) whenever any of:
 | Case | Handling |
 |---|---|
 | Gap open (price opens far from prior close) | If the gap occurs *before* `range_start`, irrelevant to range formation. If a bar is missing *inside* the range window, `is_valid=False` (§3) — never bridged/interpolated. |
-| Missing candles | Same `is_valid=False` path — reuses `market_data_ingestion`'s existing gap-detection signal (ADR-033), not a second gap detector. |
+| Missing candles | Same `is_valid=False` path — detected by Evidence Engine's own `bar_open_time`-spacing check against the expected bar interval (§3), independent of `market_data_ingestion`'s own gap flag, which does not propagate to this layer (§3). |
 | Session reconnect (Bridge/EA restart mid-range) | If bars were missed during the outage, `is_valid=False`. If no bars were missed (a fast reconnect), the range forms normally — no ORB-specific reconnect logic needed since it operates on already-validated bars, not on the connection's own state. |
 | DST transitions | Explicitly not handled automatically (§3) — operator updates the UTC anchor hour twice yearly, an already-precedented limitation, not a new one. |
 | Holiday sessions | `MarketSafetyInputs.holidays`/`market_closed` — NOT_QUALIFIED, never locally inferred (§2). |
-| Multiple ranges (e.g. London open + New York open configured together) | `EvidenceSnapshot.opening_ranges` is plural (§3) — ORB's `qualify()` selects whichever configured range's session matches the current evaluation session; if none matches, NOT_QUALIFIED (no ambiguity, no "closest" guess). |
+| Multiple ranges (e.g. London open + New York open configured together) | `EvidenceSnapshot.opening_ranges` is plural (§3) — ORB's `qualify()` selects whichever configured range's `range_start`/`range_end` window is currently relevant, per §3's "Identification" rule (never by `session` alone, which cannot disambiguate two anchors sharing a `SessionName`); if none matches, NOT_QUALIFIED (no ambiguity, no "closest" guess). Startup validation (§13) rejects any two configured anchors whose windows would coincide or overlap, so at most one match is ever possible. |
 | Broker time differences | All range anchors are UTC-only (§3) — a broker whose own server time differs from UTC is already normalized upstream by however bar timestamps are supplied (`market_data_ingestion`'s existing `broker_timestamp`/`source_timestamp` clock-skew validation, ADR-033, unchanged); ORB does not add a second time-normalization layer. |
 | Partial trading days (early close, e.g. holiday-adjacent half day) | Covered by `MarketSafetyInputs.early_closes` (existing, ADR-025) — if the configured range window falls after an early close, no further bars exist to complete `is_formed`, so the range simply never forms (fails closed by absence of data, not a special case to code for). |
 
@@ -576,29 +643,50 @@ No violation identified.
 
 ## 17. Implementation roadmap (proposed — not started)
 
+**Each phase below includes its own implementation, unit tests, and
+validation as part of that phase — none defers testing to a later phase
+(corrects a wording issue from independent Acceptance Review: this
+project's own established practice, visible throughout its history,
+always pairs an "Implement X" step with a "Write X test suite" step
+immediately after, never batched at the end; the phase ordering itself
+is unchanged, only this clarification is added).**
+
 - **Phase 0 — ADR-024 Amendment 2 (Evidence Engine):** add
-  `OpeningRangeState` model + `opening_range.py` computation +
-  `EvidenceSnapshot.opening_ranges` field. Requires its own Accepted
-  status before Phase 1 begins (CLAUDE.md §1.10).
+  `OpeningRangeState` model (including `range_start_index`/
+  `range_end_index`, §3) + `opening_range.py` computation (including the
+  independent temporal-gap check against a newly-introduced expected-bar-
+  interval concept, §3) + `EvidenceSnapshot.opening_ranges` field, with
+  its own unit tests (range calculation, `is_formed`/`is_valid`
+  transitions, the gap check, index/datetime consistency). Requires its
+  own Accepted status before Phase 1 begins (CLAUDE.md §1.10).
 - **Phase 1 — Core ORB detection:** consume `opening_ranges` inside a
   new `OrbBreakoutStrategy` (naming to match `StrategyId.
-  OPENING_RANGE_BREAKOUT`); range-formed/valid checks only, no
-  qualification scoring yet.
+  OPENING_RANGE_BREAKOUT`); range-formed/valid checks and the §6
+  session-lockout only, no qualification scoring yet — with its own unit
+  tests for exactly that scope.
 - **Phase 2 — Breakout qualification:** §4's objective rules (close
-  beyond range, ATR-relative distance, body/wick ratio, momentum,
-  confirmation-candle count).
-- **Phase 3 — FVG confirmation:** §5's weighted scoring addition.
+  beyond range, ATR-relative distance, corrected body/wick ratio,
+  momentum, confirmation-candle count), with unit tests for each rule
+  individually and each fail-closed path.
+- **Phase 3 — FVG confirmation:** §5's weighted scoring addition,
+  including the corrected index-based temporal comparison, with unit
+  tests covering direction matching, age, size, overlap, and expiration.
 - **Phase 4 — Market Intelligence/eligibility integration:** session
-  anchor matching, news/liquidity/holiday gates, eligibility hard gate.
+  anchor matching (using §3's corrected identification rule), news/
+  liquidity/holiday gates, eligibility hard gate, with unit tests for
+  each gate.
 - **Phase 5 — Configuration:** §13's fields wired through
   `StrategyEngineConfig`, `config_loader.py`, and the example config,
-  each with startup fail-closed validation.
-- **Phase 6 — Testing:** unit (range calculation, breakout rules, FVG
-  filter, all fail-closed paths individually), integration (real
+  each with startup fail-closed validation and the cross-field checks
+  named in §13 (duplicate/overlapping anchors, bar-count feasibility,
+  weight-sum bound), with unit tests for every validation path.
+- **Phase 6 — Full-suite validation:** integration (real
   five-plus-ORB `StrategyEngine` competing in the real selection
   cascade), regression (existing five strategies' behavior unchanged —
   `git diff --stat` showing zero change to any of them), exception
-  safety, and edge cases (§15) each with a dedicated test.
+  safety, and every edge case in §15 — the cross-phase pass that only
+  full end-to-end wiring makes possible, not the first point at which
+  any test exists.
 
 Each phase requires its own review before the next begins, per this
 project's established RPI (Research → Plan → Implement) workflow
