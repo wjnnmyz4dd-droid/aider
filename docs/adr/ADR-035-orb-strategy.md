@@ -149,6 +149,23 @@ position or sets a price-level stop/target (§0's disclosed boundary).
 
 ## 3. Opening range (requires an Evidence Engine amendment)
 
+**`OpeningRangeState` is generic market evidence, not ORB-specific
+logic.** It belongs in Evidence Engine for exactly the same reason
+`FairValueGap` and `SupportResistanceContext.session_high`/`session_low`
+already do: it is a fact about price action within a configured time
+window, independent of any one strategy's qualification rules. ORB is
+its first consumer, not its only intended one. Once this amendment
+exists, any future strategy can read `EvidenceSnapshot.opening_ranges`
+the same way `BosFvgStrategy` already reads `fair_value_gaps` — without
+a further Evidence Engine change. Plausible future consumers (not
+proposed or designed here, named only to justify why this belongs in
+Evidence Engine rather than inside ORB's own strategy file): an Initial
+Balance strategy, a London Breakout variant with different session
+anchors than ORB's own configuration, a Session Reversal strategy that
+qualifies on a *failure* to break the range, a VWAP Opening Drive
+strategy, or a Mean Reversion strategy trading *back toward*
+`range_midpoint` instead of away from it.
+
 **Proposed new Evidence Engine model** (ADR-024 Amendment 2, a
 sibling change to this ADR, not implemented here):
 
@@ -208,7 +225,10 @@ OpeningRangeState:
 ## 4. Breakout qualification
 
 Objective, deterministic rules — every threshold named in config
-(§13), none hardcoded:
+(§13), none hardcoded. Throughout §§4-9, **`range_boundary`** means
+`range_high` when evaluating a bullish (BUY) breakout candidate and
+`range_low` when evaluating a bearish (SELL) one — defined once here,
+not restated at each use below.
 
 - **Range must be formed and valid** (`is_formed and is_valid`) before
   any breakout logic runs — otherwise NOT_QUALIFIED (`"range not yet
@@ -388,7 +408,7 @@ other; they may never create duplicate signals or bypass guards"
 
 ---
 
-## 11. Phantom / Evidence Engine integration
+## 11. Evidence Engine integration
 
 ORB does **not** generate a raw signal independently of Evidence
 Engine, and does not compute its own score outside the qualification
@@ -590,34 +610,85 @@ Phase 0 is Accepted.
 
 ## 18. Open design decisions
 
-These require explicit approval before implementation begins — this
-ADR deliberately does not resolve them unilaterally:
+None of the items below block **Acceptance** of this ADR — they are
+implementation-detail decisions the phased roadmap (§17) resolves at
+the appropriate gate, not architectural objections. They are split
+accordingly.
+
+### 18.A Required before implementation
+
+These must be resolved before the phase that depends on them starts —
+Phase 0 and Phase 1 specifically (§17) — but do not block this
+document's own architectural approval:
 
 1. **Should `OpeningRangeState` live in `support_resistance.py` (the
    nearest existing analog) or as a new sibling module
-   `opening_range.py`?** This document assumes a new sibling module
-   (cleaner separation, mirrors `session.py` being separate from
-   `support_resistance.py` despite conceptual overlap), but either is
-   architecturally valid.
+   `opening_range.py`?** Must be settled before Phase 0 begins. This
+   document assumes a new sibling module (cleaner separation, mirrors
+   `session.py` being separate from `support_resistance.py` despite
+   conceptual overlap), but either is architecturally valid.
 2. **Should `orb_max_qualifications_per_range`'s in-memory lockout
-   state survive a process restart?** This document assumes not (an
-   explicit, narrow, documented exception to Strategy Engine statelessness,
-   never persisted) — but if a restart mid-range should not allow a
-   second qualification, that requires either a persisted store (a
-   new, small addition analogous to `compliance_state_store`) or an
-   explicit decision to accept the restart-reopens-the-window behavior.
+   state survive a process restart?** Must be settled before Phase 1
+   begins, since the answer determines whether Phase 1 needs a
+   persisted store (a new, small addition analogous to
+   `compliance_state_store`) or not. This document assumes not (an
+   explicit, narrow, documented exception to Strategy Engine
+   statelessness, never persisted) — that assumption should be
+   explicitly confirmed, not silently carried forward, if a restart
+   mid-range allowing a fresh qualification is judged unacceptable.
+
+### 18.B Future design considerations
+
+These do not block any implementation phase and may be revisited at or
+after the phase noted, without requiring a return to this ADR:
+
 3. **Exact default values in §13** are proposed, reasonable starting
    points, not empirically validated — real backtesting/forward-testing
    (Validation Engine, ADR-030, existing) should inform final defaults
-   before Phase 5.
+   before Phase 5, not before.
 4. **Should ORB be limited to major pairs only at first
    (`orb_approved_pairs` empty by default, fail-closed until an operator
-   configures it), or ship with a starter default list?** This document
-   proposes empty-by-default (safest, forces deliberate operator choice)
-   but the Strategy Router/Portfolio-level implications of a stronger
-   default deserve explicit sign-off.
+   configures it), or ship with a starter default list?** A Phase 5
+   configuration question, not a Phase 0-4 blocker. This document
+   proposes empty-by-default (safest, forces deliberate operator choice).
 5. **Whether a genuinely separate Strategy Router (beyond the existing
    `selection.py` cascade) is still on the roadmap at all**, given §12's
-   finding that the cascade already fulfills that role today — if a more
-   sophisticated router is still desired, that is its own ADR, not a
-   prerequisite for ORB.
+   finding that the cascade already fulfills that role today. This is
+   independent of ORB entirely — if a more sophisticated router is still
+   desired, that is its own ADR, not a prerequisite or blocker for ORB
+   at any phase.
+
+---
+
+## 19. Acceptance criteria
+
+This ADR may be marked **Accepted** once, and only once, all of the
+following hold:
+
+- The architecture described in §§0-16 is approved as sound by
+  independent review (this document's own §0 self-audit is not a
+  substitute for that review).
+- The companion Evidence Engine amendment (§3, proposed as ADR-024
+  Amendment 2) is itself approved — this ADR's Phase 1 cannot begin
+  without it, so its approval is a precondition of this ADR's
+  Acceptance, not a separate, independently-timed decision.
+- No conflict is found with ADR-024 (Evidence Engine), ADR-025 (Market
+  Intelligence), or ADR-026 (Strategy Engine) — verified, not assumed
+  (§0 performed this check against current code; independent review
+  should re-verify against whatever code state exists at review time).
+- No violation of the Engineering Charter (CLAUDE.md) is found,
+  including but not limited to: no duplicate logic (§0's FVG/ATR/session
+  reuse), no position sizing or price-level stop/target introduced into
+  Strategy Engine (§7-9), and fail-closed behavior on every ambiguous or
+  incomplete condition (§14).
+- §18.A's two required-before-implementation decisions are explicitly
+  resolved (not silently defaulted) before Phase 0 and Phase 1 begin,
+  respectively.
+
+**Acceptance of this ADR authorizes design approval only.**
+Implementation may begin solely through the phased roadmap (§17), one
+phase at a time, each phase gated by its own RPI Plan artifact and
+review — Acceptance of this document is not itself authorization to
+implement every phase at once. Every phase remains subject to this
+project's normal RPI governance (`.claude/agents/TEAM.md` §9)
+regardless of this ADR's own status.
