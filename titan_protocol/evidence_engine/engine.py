@@ -26,6 +26,7 @@ from .liquidity import analyze_liquidity
 from .logging_sink import log_evidence_report
 from .metrics import EvidenceEngineMetrics
 from .models import Bar, EvidenceReport, EvidenceSnapshot, PairRanking, PatternContext, SwingType
+from .opening_range import compute_opening_ranges
 from .ranking import rank_pairs
 from .scoring import compute_component_scores, compute_evidence_score
 from .session import analyze_session
@@ -81,9 +82,10 @@ class EvidenceEngine:
         )
         evidence_score = compute_evidence_score(components)
         fair_value_gaps = detect_fair_value_gaps(bars)
+        opening_ranges = compute_opening_ranges(bars, now, self.config)
         return (
             structure_result, liquidity_result, candlestick_matches, volatility_state, session_state,
-            evidence_score, fair_value_gaps,
+            evidence_score, fair_value_gaps, opening_ranges,
         )
 
     def evaluate(self, symbol: str, bars: Sequence[Bar], now: Optional[datetime] = None) -> EvidenceReport:
@@ -91,7 +93,7 @@ class EvidenceEngine:
             raise ValueError("evaluate() requires at least one bar")
         now = now or bars[-1].timestamp
 
-        _structure, _liquidity, _candlesticks, _volatility, _session, evidence_score, _fvgs = self._analyze(bars, now)
+        _structure, _liquidity, _candlesticks, _volatility, _session, evidence_score, _fvgs, _opening_ranges = self._analyze(bars, now)
         report = build_evidence_report(symbol, now, evidence_score)
 
         log_evidence_report(report)
@@ -109,7 +111,7 @@ class EvidenceEngine:
             raise ValueError("evaluate_snapshot() requires at least one bar")
         now = now or bars[-1].timestamp
 
-        structure, liquidity, candlesticks, volatility, session_state, evidence_score, fair_value_gaps = self._analyze(bars, now)
+        structure, liquidity, candlesticks, volatility, session_state, evidence_score, fair_value_gaps, opening_ranges = self._analyze(bars, now)
         report = build_evidence_report(symbol, now, evidence_score)
         support_resistance = build_support_resistance_context(bars, now, structure, liquidity, volatility, self.config)
 
@@ -126,6 +128,7 @@ class EvidenceEngine:
             session=session_state,
             support_resistance=support_resistance,
             fair_value_gaps=fair_value_gaps,
+            opening_ranges=opening_ranges,
         )
 
     def evaluate_batch(

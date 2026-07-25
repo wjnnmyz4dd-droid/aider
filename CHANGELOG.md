@@ -15,6 +15,50 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-25 (ADR-035 Phase 0 — Evidence Engine amendment: OpeningRangeState)
+
+### Added
+- `titan_protocol/evidence_engine/models.py` -- `OpeningRangeState`, a
+  frozen dataclass describing a fixed-width price range anchored to a
+  configured session-open time (`range_start`/`range_end`,
+  `range_start_index`/`range_end_index` in the same index space as
+  `FairValueGap.start_index`/`end_index`, `range_high`/`range_low`/
+  `range_midpoint`, `is_formed`, `is_valid`). `session` is descriptive
+  only -- the identifying key is the instance's own window.
+- `EvidenceSnapshot.opening_ranges: Tuple[OpeningRangeState, ...] = ()`
+  -- additive, defaulted, computed by the same `_analyze()` pass behind
+  both `evaluate()` and `evaluate_snapshot()`.
+- `titan_protocol/evidence_engine/opening_range.py` (new module) --
+  `compute_opening_ranges()`, plus an independent temporal-gap check
+  against `Bar.timestamp` alone (never a reuse of
+  `market_data_ingestion`'s own gap flag, which never reaches this
+  package's `Bar` objects).
+- `EvidenceEngineConfig` fields: `opening_range_anchors` (empty by
+  default -- fail closed until configured), `opening_range_duration_minutes`
+  (30), `opening_range_min_bars` (3), `expected_bar_interval_seconds`
+  (300) -- plus startup `ValueError` validation for invalid duration/min
+  bars/interval and for any two anchors whose windows would coincide or
+  overlap.
+- `tests/titan_protocol/evidence_engine/test_opening_range.py` -- unit,
+  boundary, negative, model-integrity, and snapshot-integration coverage
+  (22 tests).
+
+### Why
+Phase 0 of ADR-035 (Opening Range Breakout strategy, Accepted): every
+later phase depends on this fact existing on `EvidenceSnapshot` before
+any Strategy Engine code can be written. Strictly an Evidence Engine
+capability addition -- introduces no strategy, no qualification logic,
+no new package. Implements the approved Phase 0 RPI Plan
+(`docs/plans/adr-035-phase0-evidence-engine-amendment.md`) exactly.
+
+### Changed
+- `tests/titan_protocol/compliance_state_store/test_structural_boundary.py`,
+  `tests/titan_protocol/news_ingestion/test_structural_boundary.py` --
+  extended `_LATER_AUTHORIZED_EXCEPTIONS` for the five
+  `titan_protocol/evidence_engine/` files this phase touches (the
+  established pattern already used for every prior later-authorized
+  change to a "frozen" package in these two files).
+
 ## 2026-07-24 (Compliance day-one bootstrap verification — KNOWN_GAPS.md #9)
 
 ### Added

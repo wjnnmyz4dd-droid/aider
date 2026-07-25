@@ -335,6 +335,26 @@ class FairValueGap:
 
 
 @dataclass(frozen=True)
+class OpeningRangeState:
+    """(ADR-035 §3, Phase 0 -- ADR-024 Amendment 2) A fixed-width price
+    range anchored to a configured session-open time. `session` is
+    descriptive only -- the identifying key is this instance's own
+    `range_start`/`range_end` window, never `session` alone (two
+    configured anchors can share a `SessionName`)."""
+
+    session: SessionName
+    range_start: datetime
+    range_end: datetime
+    range_start_index: int  # first included bar's position in the `bars` sequence `_analyze()` received
+    range_end_index: int  # exclusive upper bound, same index space as FairValueGap.start_index/end_index
+    range_high: float
+    range_low: float
+    range_midpoint: float
+    is_formed: bool  # True once range_end has fully elapsed relative to `now`
+    is_valid: bool  # False on insufficient bar count or a detected temporal gap
+
+
+@dataclass(frozen=True)
 class EvidenceSnapshot:
     """(Amendment 1) The raw facts behind an `EvidenceReport` -- every
     intermediate analysis result `evaluate()` already computes
@@ -351,6 +371,7 @@ class EvidenceSnapshot:
     session: SessionState
     support_resistance: SupportResistanceContext
     fair_value_gaps: Tuple[FairValueGap, ...] = ()
+    opening_ranges: Tuple[OpeningRangeState, ...] = ()
 
 
 __all__ = [
@@ -383,5 +404,6 @@ __all__ = [
     "ConfluenceZone",
     "SupportResistanceContext",
     "FairValueGap",
+    "OpeningRangeState",
     "EvidenceSnapshot",
 ]

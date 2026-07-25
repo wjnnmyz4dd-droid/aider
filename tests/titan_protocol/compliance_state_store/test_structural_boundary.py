@@ -137,6 +137,16 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         # extended docstring on the pre-existing release_reservation()) --
         # no compliance_state_store behavior touched.
         "titan_protocol/risk_engine/engine.py",
+        # ADR-035 Phase 0 (later, separately-authorized): Evidence Engine
+        # amendment adding OpeningRangeState / EvidenceSnapshot.opening_ranges
+        # -- additive only (new model, new opening_range.py module, one new
+        # _analyze() call, new defaulted config fields), no
+        # compliance_state_store behavior touched.
+        "titan_protocol/evidence_engine/__init__.py",
+        "titan_protocol/evidence_engine/config.py",
+        "titan_protocol/evidence_engine/engine.py",
+        "titan_protocol/evidence_engine/models.py",
+        "titan_protocol/evidence_engine/opening_range.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_change(self):

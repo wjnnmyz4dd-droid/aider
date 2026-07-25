@@ -40,6 +40,7 @@ from .models import (
     LiquidityResult,
     LiquiditySweep,
     MarketStructureResult,
+    OpeningRangeState,
     PairRanking,
     PatternContext,
     PriceLevel,
@@ -55,6 +56,7 @@ from .models import (
     TrendClassification,
     VolatilityState,
 )
+from .opening_range import compute_opening_ranges
 from .ranking import rank_pairs
 from .scoring import compute_component_scores, compute_evidence_score
 from .session import analyze_session, session_for_hour
@@ -103,9 +105,11 @@ __all__ = [
     "ConfluenceZone",
     "SupportResistanceContext",
     "FairValueGap",
+    "OpeningRangeState",
     "EvidenceSnapshot",
     "build_support_resistance_context",
     "detect_fair_value_gaps",
+    "compute_opening_ranges",
     "RESERVED_FUTURE_INDICATOR_NAMES",
     "Indicator",
     "DuplicateIndicatorError",

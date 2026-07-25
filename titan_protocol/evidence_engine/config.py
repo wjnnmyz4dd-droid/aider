@@ -7,6 +7,9 @@ Every threshold and weight used anywhere in this package is named here
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Tuple
+
+from .models import SessionName
 
 EVIDENCE_ENGINE_VERSION = "1.0.0-phase2a"
 
@@ -69,6 +72,21 @@ class EvidenceEngineConfig:
     false_break_probability_trap: float = 0.8  # most recent sweep was classified a trap
     false_break_probability_confirmed: float = 0.15  # most recent sweep had genuine displacement follow-through
 
+    # -- Opening range (ADR-035 §3, Phase 0 -- ADR-024 Amendment 2) --
+    #: (session, start_hour_utc, start_minute_utc) per configured anchor.
+    #: () = none configured -- fail closed until an operator configures one.
+    opening_range_anchors: Tuple[Tuple[SessionName, int, int], ...] = ()
+    opening_range_duration_minutes: int = 30
+    opening_range_min_bars: int = 3
+    #: Expected spacing between consecutive closed bars, for this
+    #: package's own independent temporal-gap check (ADR-035 §3) -- never
+    #: imported from `market_data_ingestion`'s `Timeframe`/`TIMEFRAME_SECONDS`,
+    #: since Evidence Engine has no existing dependency on that package.
+    #: Not empirically validated against real market data yet (ADR-035
+    #: §18.B) -- an operator must configure this to match the actual bar
+    #: timeframe Evidence Engine is fed.
+    expected_bar_interval_seconds: int = 300
+
     def __post_init__(self) -> None:
         total = (
             self.structure_weight
@@ -81,6 +99,39 @@ class EvidenceEngineConfig:
         )
         if abs(total - 1.0) > 1e-9:
             raise ValueError(f"Evidence score component weights must sum to 1.0, got {total}")
+        if not (0 < self.opening_range_duration_minutes <= 1440):
+            raise ValueError(
+                f"opening_range_duration_minutes must be within (0, 1440], got {self.opening_range_duration_minutes}"
+            )
+        if self.opening_range_min_bars < 1:
+            raise ValueError(f"opening_range_min_bars must be >= 1, got {self.opening_range_min_bars}")
+        if self.expected_bar_interval_seconds <= 0:
+            raise ValueError(
+                f"expected_bar_interval_seconds must be > 0, got {self.expected_bar_interval_seconds}"
+            )
+        _validate_no_overlapping_anchors(self.opening_range_anchors, self.opening_range_duration_minutes)
+
+
+def _validate_no_overlapping_anchors(
+    anchors: Tuple[Tuple[SessionName, int, int], ...], duration_minutes: int
+) -> None:
+    """Rejects any two configured anchors whose `[range_start, range_end)`
+    windows would coincide or overlap (ADR-035 §3's "Identification"
+    rule requires this for `OpeningRangeState` to be disambiguated by its
+    own window rather than by `session` alone)."""
+    windows = []
+    for hour, minute in ((a[1], a[2]) for a in anchors):
+        start = hour * 60 + minute
+        windows.append((start, start + duration_minutes))
+    for i in range(len(windows)):
+        start_i, end_i = windows[i]
+        for j in range(i + 1, len(windows)):
+            start_j, end_j = windows[j]
+            if start_i < end_j and start_j < end_i:
+                raise ValueError(
+                    f"opening_range_anchors[{i}] and opening_range_anchors[{j}] "
+                    "produce coincident or overlapping windows"
+                )
 
 
 __all__ = ["EVIDENCE_ENGINE_VERSION", "EvidenceEngineConfig"]
