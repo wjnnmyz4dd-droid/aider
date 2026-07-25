@@ -29,15 +29,26 @@ Touched components (if/when unblocked): `titan_protocol/strategy_engine/` only
 > (Opening Range Breakout strategy, Accepted)") — none of which is
 > repository ground truth for the ADR document itself.
 >
-> **Blocker B — ADR-035 §18.A item 2, lockout persistence, unresolved.**
-> ADR-035 itself: *"Should `orb_max_qualifications_per_range`'s
-> in-memory lockout state survive a process restart? Must be settled
-> before Phase 1 begins... that assumption should be explicitly
-> confirmed, not silently carried forward, if a restart mid-range
-> allowing a fresh qualification is judged unacceptable."* A
-> repository-wide search (`docs/`, `CHANGELOG.md`, `deployment_windows/KNOWN_GAPS.md`)
-> for `orb_max_qualifications_per_range` finds only ADR-035's own three
-> occurrences — no resolution exists anywhere.
+> **Blocker B — ADR-035 §18.A item 2, lockout persistence, unresolved
+> (evidence now sharpened, answer still not chosen).** A subsequent
+> governance investigation traced every existing duplicate-control
+> mechanism (`ReservationLedger`, `InFlightCommandRegistry`,
+> `max_positions_per_pair`) directly and confirmed: **none of them
+> retains any memory of "this pair already had an ORB trade for this
+> opening range" once that trade has closed** — all three reset once
+> the position/command lifecycle completes, and a repository-wide
+> search confirms zero file under `risk_engine/`, `compliance_engine/`,
+> or `runtime/` has any concept of opening-range identity at all. The
+> concrete restart-reentry failure sequence is therefore classified
+> **POSSIBLE**, not "already prevented" — full analysis now recorded in
+> ADR-035 §18.A item 2 itself. This sharpens the evidence considerably
+> but does **not** resolve the question: whether a bounded,
+> restart-triggered duplicate trade is acceptable remains a
+> risk-tolerance judgment for ADR-035's own owner, and if persistence is
+> chosen, Strategy Engine owns no persistence mechanism of its own today
+> — a new, small, Strategy-Engine-owned store would itself need its own
+> review before Phase 1 could implement it. See ADR-035 §18.A item 2
+> for the full, current text.
 >
 > Everything below this point is genuine, repository-grounded Research
 > and Plan content, complete and internally consistent **except** where
@@ -393,19 +404,24 @@ be misleading self-declaration otherwise).
   step 2).
 - **Exactly one entry** → that is the relevant range for Phase 1's
   purposes; check `is_formed`/`is_valid` on it directly.
-- **More than one entry** → Phase 1 has no Phase-4 anchor-reconciliation
-  logic (session/eligibility matching, §17 Phase 4) to disambiguate
-  "which configured range is currently relevant to this evaluation
-  cycle" the way ADR-035 §3/§15 describe for the full design. This
-  Plan's proposed, conservative answer: **`NOT_QUALIFIED` on ambiguity**
-  ("multiple opening ranges configured, cannot disambiguate before
-  Phase 4"), consistent with ADR-035 §14's own "no ambiguity, no
-  closest guess" principle for the equivalent full-design scenario —
-  **flagged explicitly as an open design decision for independent
-  review**, not asserted as ADR-035's own explicit text (it is this
-  Plan's synthesis from the ADR's stated principles, applied to a
-  mechanical detail the ADR did not spell out for the pre-Phase-4
-  state).
+- **More than one entry — resolved this revision, VALID PLAN-LEVEL
+  DETAIL (not a contradiction of ADR-035, not a decision requiring
+  independent confirmation):** ADR-035 §17 Phase 4 ("Market
+  Intelligence/eligibility integration: session anchor matching, using
+  §3's corrected identification rule") is the ADR's own, explicit home
+  for the real "which configured range is currently relevant to `now`"
+  deterministic-matching mechanism — that logic does not exist yet and
+  is out of Phase 1's scope by the ADR's own roadmap, not by this Plan's
+  choice. Because Phase 1's `qualify()` never produces `QUALIFIED` under
+  any input (§9 — every path returns `NOT_QUALIFIED`, by design, since
+  no breakout-qualification rule exists until Phase 2), the exact
+  `NOT_QUALIFIED` reason string reported when `opening_ranges` has more
+  than one entry is **cosmetic at this phase, not a behavioral
+  decision** — this Plan's proposed reason ("multiple opening ranges
+  configured, cannot disambiguate before Phase 4") is consistent with
+  ADR-035 §14's own "no ambiguity, no closest guess" principle and does
+  not foreclose or pre-empt Phase 4's own real matching mechanism, which
+  will replace this stopgap outright when it lands.
 - **Index fields (`range_start_index`/`range_end_index`)**: **no Phase 1
   behavior depends on them** — they exist for a future consumer (ADR-035
   §5/§9, Phase 3's FVG temporal comparison), not Phase 1's range-formed/
@@ -434,8 +450,8 @@ implementation decision.**
   as the per-anchor identity, consistent with §10's per-instance
   `OpeningRangeState.range_start` field.
 - **Lifecycle:** one `OrbBreakoutStrategy` instance is constructed once
-  (wherever it is registered, §11 of this Plan's own registration
-  question, not `build_default_registry()` in Phase 1 per §12) and
+  (not `build_default_registry()` in Phase 1, §12's own registration
+  answer) and
   reused across every pair/cycle for the process's lifetime — confirmed
   safe for the single-threaded, sequential live-cycle loop (§7); no
   intra-process concurrency risk. **Process restart is exactly where
@@ -454,14 +470,22 @@ implementation decision.**
 
 ## 12. Registration / Composition Plan
 
-**Proposed answer (flagged for independent confirmation, not asserted
-as ADR-035's own explicit instruction):** Phase 1 does **not** add
-`OrbBreakoutStrategy` to the production `build_default_registry()`.
+**Resolved this revision: Phase 1 does not add `OrbBreakoutStrategy` to
+the production `build_default_registry()`; production registration is
+authorized no earlier than Phase 6.** ADR-035 §17's own roadmap text
+was re-checked line by line for every phase 1-5: none of them contains
+the word "register" or otherwise describes adding `OrbBreakoutStrategy`
+to the production registry — the *first* point at which the ADR's own
+words describe a registered, competing ORB is Phase 6: *"integration
+(real five-plus-ORB `StrategyEngine` competing in the real selection
+cascade)."* This is as close to an explicit answer as ADR-035's text
+provides, and this Plan treats it as settled for Phase 1's own purposes
+(Phase 1 definitely does not register ORB) while leaving open, for
+whichever future phase's own RPI Plan reaches that point, whether
+Phase 4 or Phase 5 might reasonably register it earlier than Phase 6 —
+that is not a question Phase 1 needs to answer.
 
-Evidence supporting this:
-- ADR-035 §17 Phase 6: *"integration (real five-plus-ORB `StrategyEngine`
-  competing in the real selection cascade)"* — the six-strategy
-  competing registry is framed as a Phase 6 milestone.
+Evidence supporting non-registration at Phase 1 specifically:
 - `test_regression.py::test_default_fixture_always_rejects` hardcodes
   `len(snapshot.all_qualifications) == 5` (§2) — registering ORB now
   breaks this anchor for zero functional benefit, since Phase 1's
@@ -470,12 +494,10 @@ Evidence supporting this:
   and call `.qualify()` on it — no production registration is needed to
   test Phase 1's own scope.
 
-**What later phase activates it:** not settled by this Plan (out of
-Phase 1's own scope to decide) — plausibly Phase 4 (once eligibility/MI
-integration exists, making a real `QUALIFIED` outcome possible) or
-Phase 6 (explicit "five-plus-ORB competing" integration milestone,
-matching ADR-035's own words most directly). This Plan does not choose
-between them; it only establishes that Phase 1 itself does not need to.
+**What later phase activates it:** not settled by this Plan, deliberately
+— no earlier than Phase 6 per the ADR's own text above; this Plan only
+establishes that Phase 1 itself does not register ORB and does not need
+to decide exactly which later phase does.
 
 **If this proposed answer is rejected by independent review** (i.e., if
 ORB should be registered in production starting at Phase 1), the direct
@@ -695,23 +717,24 @@ resolved.)*
 - [ ] `git diff --stat` confined to §8/§9/§11's files plus the new test
       file.
 - [ ] CHANGELOG entry drafted.
-- [ ] Independent review confirms §12's registration-timing answer
-      (or overrides it with a documented reason).
 
 ## 22. Final Readiness Assessment
 
 This Plan is grounded entirely in code and documents read directly
-this session (`ADR-035-orb-strategy.md`, `ADR-036-orb-strategy-consolidation.md`,
-every relevant `titan_protocol/strategy_engine/` and
-`titan_protocol/evidence_engine/` file, the full Strategy Engine and
-relevant Runtime test directories, `CHANGELOG.md`, `KNOWN_GAPS.md`).
-Two governance preconditions remain unresolved and are not settled by
-this document (§3) — this Plan is **content-complete but
-implementation-blocked**. Once both are resolved, no further research
-is anticipated to be needed before implementation begins; the one
-genuinely open design question this Plan carries forward (§10's
-multi-range ambiguity handling) is flagged for explicit confirmation,
-not silently assumed.
+this session and the subsequent governance-resolution revision
+(`ADR-035-orb-strategy.md`, `ADR-036-orb-strategy-consolidation.md`,
+every relevant `titan_protocol/strategy_engine/`, `titan_protocol/evidence_engine/`,
+`titan_protocol/risk_engine/reservation.py`, `titan_protocol/runtime/in_flight_commands.py`,
+and `titan_protocol/compliance_engine/position_limits.py` file, the full
+Strategy Engine and relevant Runtime test directories, `CHANGELOG.md`,
+`KNOWN_GAPS.md`). Two governance preconditions remain unresolved and are
+not settled by this document (§3) — this Plan is **content-complete but
+implementation-blocked**. Two smaller questions this Plan originally
+carried as open (§10's multi-range handling, §12's registration timing)
+are now resolved directly from ADR-035's own text and no longer require
+independent confirmation. Once §3's two remaining blockers are
+resolved, no further research is anticipated to be needed before
+implementation begins.
 
 ## 23. Validation
 

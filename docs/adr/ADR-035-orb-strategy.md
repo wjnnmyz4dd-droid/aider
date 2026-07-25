@@ -716,14 +716,61 @@ document's own architectural approval:
    `session.py` being separate from `support_resistance.py` despite
    conceptual overlap), but either is architecturally valid.
 2. **Should `orb_max_qualifications_per_range`'s in-memory lockout
-   state survive a process restart?** Must be settled before Phase 1
+   state survive a process restart? Still unresolved — governance
+   investigation (Phase 1 planning) sharpened the evidence below but
+   deliberately did not pick an answer.** Must be settled before Phase 1
    begins, since the answer determines whether Phase 1 needs a
    persisted store (a new, small addition analogous to
-   `compliance_state_store`) or not. This document assumes not (an
-   explicit, narrow, documented exception to Strategy Engine
-   statelessness, never persisted) — that assumption should be
-   explicitly confirmed, not silently carried forward, if a restart
-   mid-range allowing a fresh qualification is judged unacceptable.
+   `compliance_state_store`) or not. This document's original text
+   assumed not (an explicit, narrow, documented exception to Strategy
+   Engine statelessness, never persisted) — that assumption is not
+   merely theoretical: a direct trace of every existing duplicate-control
+   mechanism (`titan_protocol.risk_engine.reservation.ReservationLedger`,
+   `titan_protocol.runtime.in_flight_commands.InFlightCommandRegistry`,
+   `titan_protocol.compliance_engine`'s `max_positions_per_pair`) found
+   that **none of them retains any memory of "this pair already had an
+   ORB trade for this specific opening range" once that trade has
+   closed** — `ReservationLedger` releases its reservation and
+   `InFlightCommandRegistry` releases its entry at the trade's own
+   terminal/confirmed state (both already-shipped fixes, unrelated to
+   ORB); `max_positions_per_pair` is fed by live, current
+   `/bridge/positions` reports, so it only blocks a *second
+   simultaneously open* position, never a *new* one after the first has
+   already closed; and a repository-wide search confirms zero file
+   under `risk_engine/`, `compliance_engine/`, or `runtime/` references
+   `range_start` or any opening-range concept at all — none of these
+   engines has the vocabulary to know what "this opening range" even
+   means, since that fact exists only in Evidence Engine's
+   `OpeningRangeState`/Strategy Engine's own qualification, per ADR-024/
+   ADR-026's ownership boundaries. **Concrete consequence:** if a
+   process restart occurs while the same `(pair, range_start)` window
+   is still current (after an earlier trade for it has already closed,
+   before the range rolls over), and Phase 2+'s eventual breakout
+   condition is still independently true when re-evaluated (Evidence
+   Engine recomputes `OpeningRangeState` fresh from bars every cycle —
+   it carries no "already traded" memory of its own, by design, since
+   that fact is Strategy Engine's concern alone), **a second ORB trade
+   for the same opening range is possible** with no in-memory lockout
+   and no existing downstream control to catch it. Whether this bounded,
+   restart-triggered duplicate is *acceptable* (§6's own phrasing:
+   "judged unacceptable") given it remains governed by every other
+   normal risk/compliance limit on the second trade itself is a
+   risk-tolerance judgment this evidence trail does not resolve on its
+   own — it remains this item's own open decision. **Ownership, if
+   persistence is chosen:** the fact "this opening range has already
+   produced a qualification/trade" is Strategy Engine's own concern (no
+   other engine has opening-range vocabulary, above) — but Strategy
+   Engine owns no persistence mechanism of its own today (confirmed:
+   no state-store module exists anywhere under
+   `titan_protocol/strategy_engine/`), and reusing `compliance_state_store`
+   or `runtime/in_flight_store.py` to hold a *different* engine's
+   qualification state would blur exactly the engine-ownership boundary
+   ADR-026 Hard Rule 5 exists to keep clean. If persistence is judged
+   necessary, that is therefore its own small architectural addition
+   (a new, Strategy-Engine-owned store, analogous to
+   `compliance_state_store` but not reusing it) requiring its own
+   review before Phase 1 implements it — not a detail Phase 1's own
+   Plan may decide unilaterally.
 
 ### 18.B Future design considerations
 
