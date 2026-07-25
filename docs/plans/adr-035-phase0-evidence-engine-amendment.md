@@ -11,7 +11,7 @@ Touched components: `titan_protocol/evidence_engine/` only
 - **Affected files and their dependencies:** `titan_protocol/evidence_engine/models.py`, `config.py`, `engine.py`, plus one new file, `opening_range.py`. All dependencies (`Bar`, `FairValueGap`, `EvidenceEngineConfig`, `_analyze()`'s existing pass) confirmed by direct read this session (see §3 of this plan).
 - **Touched stage's ADR status:** ADR-024 (Evidence Engine) — Accepted. ADR-035 — Accepted (this Plan exists because it is). CLAUDE.md §1.10 satisfied: Phase 0 is this ADR's own first stage, already reviewed.
 - **Duplicate logic / potential regressions found:** none — Phase 0 adds one new computation reusing the exact `bars`/`now` inputs `_analyze()` already receives; no existing function is modified in place, no existing field is removed or renamed.
-- **`python3 scripts/check_architecture.py` result:** not yet re-run for this change (nothing implemented); the existing PASS (17 packages, no circular imports) was last confirmed clean this session and is not expected to change, since no cross-package import is introduced (§3, §11 below).
+- **`python3 -m unittest tests.titan_protocol.evidence_engine.test_architecture` result:** not yet re-run for this change (nothing implemented); this is the actual `titan_protocol`-aware architectural check for this package (verifies no forbidden import of `phantom_pipeline`/`titan_protocol.bridge`, no trade-decision vocabulary, no randomness/ML import, no network/file I/O import) — confirmed passing against the current, pre-Phase-0 source this session, and not expected to change, since Phase 0 introduces no forbidden import (§4, §6 below). (`scripts/check_architecture.py` is not used as a verification gate for this change: direct read confirms its `PACKAGE_ROOT` is hardcoded to `phantom_pipeline`, with zero reference to `titan_protocol` anywhere in the script — it validates the legacy namespace only and cannot observe anything this Phase changes.)
 
 ## Plan
 
@@ -52,6 +52,7 @@ Evidence Engine's pipeline, as it exists today, in the order `_analyze()` calls 
 | `titan_protocol/market_data_ingestion/*` | **READ ONLY** | Confirms (again) that no gap signal or `Timeframe` concept is imported from this package — Phase 0 must not create this cross-package dependency (§6 below). |
 | `titan_protocol/strategy_engine/*` | **READ ONLY** | Out of scope entirely (§12) — read only to confirm no Phase 0 change is needed there. |
 | `tests/titan_protocol/evidence_engine/test_opening_range.py` | **NEW** | Phase 0's own test suite (§10). |
+| `tests/titan_protocol/evidence_engine/test_architecture.py` | **READ (existing coverage)** | The package's actual `titan_protocol`-aware architectural check (forbidden `phantom_pipeline`/`titan_protocol.bridge` imports, trade-decision vocabulary, randomness/ML imports, network/file I/O imports) — re-run unmodified as part of validation (§11, §14); not itself changed by Phase 0. |
 | `tests/titan_protocol/evidence_engine/test_engine.py`, `test_boundary.py`, `test_regression.py`, `test_determinism.py`, `test_property.py` | **MODIFIED or READ, TBD at implementation time** | Existing snapshot/regression/determinism/property tests construct `EvidenceSnapshot` and/or call `evaluate_snapshot()`; since `opening_ranges` defaults to `()`, these should continue to pass unmodified unless a test asserts an exhaustive field list, in which case it needs the new field added to its expectations — verify, don't assume, at implementation time. |
 | Any file outside `titan_protocol/evidence_engine/` and its own tests | **DELETE** | None expected — Phase 0 touches no other package (§12). |
 
@@ -62,7 +63,7 @@ Evidence Engine's pipeline, as it exists today, in the order `_analyze()` calls 
 | Field | Type | Purpose |
 |---|---|---|
 | `session` | `SessionName` | Descriptive only (ADR-035 §3's "Identification" correction) — which broad session window this anchor falls within. Never used to disambiguate one range from another. |
-| `range_start` | `datetime` | First included closed bar's `bar_open_time`. |
+| `range_start` | `datetime` | First included closed bar's `timestamp` (`Bar.timestamp`). |
 | `range_end` | `datetime` | `range_start + configured duration`. |
 | `range_start_index` | `int` | Position of the first included bar within the `bars` sequence `_analyze()` received. |
 | `range_end_index` | `int` | Exclusive upper bound of included bars, in the same index space as `FairValueGap.start_index`/`end_index`. |
@@ -95,7 +96,7 @@ Evidence Engine's pipeline, as it exists today, in the order `_analyze()` calls 
 Confirms and implements ADR-035 §3's corrected fail-closed rule.
 
 - **Required interval concept:** a new `EvidenceEngineConfig` field, e.g. `expected_bar_interval_seconds: int`, engine-wide (matching the existing pattern of engine-wide, not per-symbol, thresholds — e.g. `indicator_cache_max_entries`). This is a **new concept for Evidence Engine**, confirmed absent today by direct grep; it must not be imported from `market_data_ingestion`'s `Timeframe`/`TIMEFRAME_SECONDS`, since Evidence Engine has no existing dependency on that package and creating one would be a new cross-package coupling this Phase does not need (the value only needs to be *a number*, not a shared enum).
-- **Gap detection responsibility:** a pure function in `opening_range.py` (name TBD at implementation time, e.g. `_has_temporal_gap(bars_in_window, expected_interval_seconds)`) checking that consecutive closed bars' `bar_open_time` differ by no more than the configured expected interval (allowing exact equality, flagging anything larger) — operating only on the `Bar.timestamp` values already present in the `bars` argument, never touching `market_data_ingestion`.
+- **Gap detection responsibility:** a pure function in `opening_range.py` (name TBD at implementation time, e.g. `_has_temporal_gap(bars_in_window, expected_interval_seconds)`) checking that consecutive closed bars' `timestamp` values differ by no more than the configured expected interval (allowing exact equality, flagging anything larger) — operating only on the `Bar.timestamp` values already present in the `bars` argument, never touching `market_data_ingestion`.
 - **Failure behavior:** any detected gap, or a bar count below the configured minimum, sets `is_valid=False` on that anchor's `OpeningRangeState` — never raises, never drops the entry from `opening_ranges` (a strategy consuming it needs to see *that* a configured range exists and is invalid, not have it silently vanish).
 - **Output semantics:** `is_valid` is the only signal a consumer needs; it carries no further detail (no distinct "which kind of invalidity" enum) — matching the granularity `FairValueGap.filled` already uses for a comparable pass/fail fact, not over-engineering a taxonomy nothing downstream asks for yet.
 
@@ -120,8 +121,8 @@ Confirms and implements ADR-035 §3's corrected fail-closed rule.
 |---|---|---|---|
 | Insufficient bars in window | `is_valid=False` | Evidence Engine | ORB (Phase 1+) treats as `NOT_QUALIFIED` |
 | Temporal gap detected (§6) | `is_valid=False` | Evidence Engine | Same |
-| Duplicate/overlapping configured anchors | Startup `ConfigError` (§9) | Evidence Engine (config construction) | Prevents ambiguous `opening_ranges` entries reaching any later phase |
-| Invalid duration (≤ 0, or exceeding a sane upper bound) | Startup `ConfigError` | Evidence Engine (config construction) | Same |
+| Duplicate/overlapping configured anchors | Startup `ValueError` (§9) — matches `EvidenceEngineConfig.__post_init__`'s existing, verified pattern (`config.py`'s weight-sum check); `ConfigError` is not this file's exception type, only `deployment_windows/config_loader.py`'s | Evidence Engine (config construction) | Prevents ambiguous `opening_ranges` entries reaching any later phase |
+| Invalid duration (≤ 0, or exceeding a sane upper bound) | Startup `ValueError` | Evidence Engine (config construction) | Same |
 | Timestamp discontinuity within the window | Covered by the gap check (§6) — not a distinct case | Evidence Engine | Same |
 | Unknown/unmapped session for an anchor | Not applicable — `SessionName` is a closed enum; an anchor's `session` value is supplied directly by config, not derived, so there is no "unknown" state to fail on at this layer | Evidence Engine (config typing) | None |
 | Partial window (evaluated before `range_end` has elapsed) | `is_formed=False` (not `is_valid=False` — this is not a failure, just "not yet") | Evidence Engine | ORB (Phase 1+) treats as `NOT_QUALIFIED`, distinctly from an invalid range |
@@ -133,11 +134,12 @@ New file: `tests/titan_protocol/evidence_engine/test_opening_range.py`, matching
 
 - **Unit tests:** range_high/low/midpoint calculation from a known bar set; `range_start_index`/`range_end_index` correctness against a known `bars` list; `is_formed` transitions (before/at/after `range_end`); descriptive-only role of `session` (two different anchors sharing a `SessionName` still produce two distinct, independently valid `OpeningRangeState` entries).
 - **Boundary tests:** exactly the minimum bar count (valid) vs. one fewer (invalid); a bar exactly at `range_start`/`range_end`'s boundary (`[start, end)` — inclusive/exclusive edge behavior); the expected-interval gap check at exactly the threshold vs. one unit beyond it.
-- **Negative tests:** a bar missing inside the window (`is_valid=False`); zero configured anchors (`opening_ranges == ()`, no error); a config with two overlapping anchors (`ConfigError` at construction, §9).
+- **Negative tests:** a bar missing inside the window (`is_valid=False`); zero configured anchors (`opening_ranges == ()`, no error); a config with two overlapping anchors (`ValueError` at construction, §9).
 - **Regression tests:** existing `test_engine.py`/`test_determinism.py`/`test_property.py`/`test_boundary.py` re-run unmodified (or updated only if they assert an exhaustive `EvidenceSnapshot` field list — verify at implementation time, per §4's file matrix) to confirm zero behavior change for every symbol/bar-set that has no configured opening-range anchor at all (the overwhelmingly common case pre-ORB, since `orb_approved_pairs` defaults to empty, ADR-035 §13).
 - **Serialization tests:** not applicable (§5 — no serialization path exists for this type today).
 - **Model integrity tests:** `OpeningRangeState` is frozen (attempting mutation raises, matching every other model in the package — a one-line test mirroring existing coverage for `FairValueGap`, if such coverage exists; add it if it doesn't).
 - **Snapshot tests:** `evaluate_snapshot()` with a configured anchor produces a non-empty `opening_ranges` tuple with correct values; with none configured, produces `()`, byte-identical to today's behavior otherwise.
+- **Architecture test:** `tests/titan_protocol/evidence_engine/test_architecture.py` (existing, unmodified) re-run to confirm `opening_range.py` introduces no forbidden import and no trade-decision vocabulary — this is the package's actual architectural verification gate (§4, §14).
 
 ## 12. Risk Assessment
 
@@ -174,7 +176,7 @@ Phase 0 does **not** implement, and this Plan does not describe:
 - `evaluate()` (non-snapshot path) is unmodified in behavior — verified by re-running its existing tests unchanged.
 - **Every pre-existing Evidence Engine test passes unmodified**, except any identified in §4/§11 as needing a field-list update, each such update reviewed individually — no unexplained regression.
 - `python3 -m compileall titan_protocol/evidence_engine tests/titan_protocol/evidence_engine` clean.
-- `python3 scripts/check_architecture.py` still PASS (no new circular import, no new cross-package private-state access).
+- `python3 -m unittest tests.titan_protocol.evidence_engine.test_architecture` still PASS (no forbidden `phantom_pipeline`/`titan_protocol.bridge` import introduced, no trade-decision vocabulary, no randomness/ML import, no network/file I/O import) — the actual `titan_protocol`-aware architectural check for this package. (`scripts/check_architecture.py` is not used as a gate here: confirmed by direct read to validate only the legacy `phantom_pipeline/` namespace, with zero reference to `titan_protocol` anywhere in the script.)
 - `git diff --stat` shows changes confined to the files in §4's matrix — no file outside `titan_protocol/evidence_engine/` and its own tests is touched.
 
 ## 15. Rollback Strategy
@@ -202,7 +204,7 @@ Deterministic and low-risk, since every change is additive:
 - [ ] `test_opening_range.py` written covering §11's full list.
 - [ ] Every pre-existing Evidence Engine test re-run; any needing a field-list update identified and fixed individually.
 - [ ] `compileall` clean.
-- [ ] `check_architecture.py` PASS.
+- [ ] `tests/titan_protocol/evidence_engine/test_architecture.py` re-run and PASS (the `titan_protocol`-aware architectural check for this package).
 - [ ] `git diff --stat` confined to §4's file matrix.
 - [ ] CHANGELOG entry drafted (per this project's established per-phase convention).
 
@@ -216,7 +218,7 @@ This Plan is grounded entirely in code read directly this session (`engine.py`, 
 
 - `python3 -m compileall titan_protocol/evidence_engine tests/titan_protocol/evidence_engine`:
 - `python3 -m unittest discover -s tests/titan_protocol/evidence_engine`:
-- `python3 scripts/check_architecture.py`:
+- `python3 -m unittest tests.titan_protocol.evidence_engine.test_architecture`:
 - Code Reviewer sign-off:
 - Test Results Analyzer sign-off:
 - Software Architect sign-off (mandatory per `TEAM.md` §3 for an Evidence Engine change):
