@@ -1,13 +1,16 @@
 # ADR-036 — Strategy Consolidation to ORB
 
-Status: **Proposed** — architectural governance/product-direction
-decision only. No implementation accompanies this document. Per
-CLAUDE.md §1.10, no implementation may begin until this ADR is
-independently reviewed and marked **Accepted** — and, independently of
-that, the actual strategy-registry swap this ADR authorizes cannot begin
-until ADR-035's own remaining phases (1–6) are themselves implemented
-and Accepted, since ORB does not exist as a registrable `Strategy` in the
-repository today (§2, §11).
+Status: **Accepted** (product-direction/architectural decision only —
+see below for what this does and does not authorize). No implementation
+accompanies this document. This Acceptance authorizes the
+product-direction decision (§7) and the architectural preservation
+claims (§9, §10) only. It does **not** authorize implementation now:
+per CLAUDE.md §1.10, the actual strategy-registry swap this ADR
+describes cannot begin until ADR-035's own remaining phases (1–6) are
+themselves implemented, tested, independently reviewed, and accepted,
+since ORB does not exist as a registrable `Strategy` in the repository
+today (§2, §11, §13). Until then, the five current production
+strategies remain registered and untouched.
 
 Owner: Principal Software Architect.
 
