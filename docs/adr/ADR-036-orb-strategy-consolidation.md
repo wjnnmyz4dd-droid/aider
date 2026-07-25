@@ -33,10 +33,16 @@ interface, `StrategyRegistry`, and the existing selection cascade
 (`selection.py`) are generic over however many strategies are registered
 and require no modification to hold one instead of five. Every other
 pipeline stage (Evidence Engine, Risk Engine, Compliance Engine,
-Execution, Scanner, Market Intelligence, Runtime) is untouched — none of
-them reference a specific `StrategyId` by name (§4, §10). This document
-authorizes the *decision*; the retirement itself is future work gated on
-ADR-035 Phases 1–6 (§13, §15).
+Execution, Scanner, Market Intelligence) is untouched, referencing no
+specific `StrategyId` by name (§4, §10). **Runtime is a partial
+exception**: it genuinely consumes the `StrategyId` type
+(`TradingProfile.allowed_strategies`, `RuntimeAuditRecord.selected_strategy`)
+and imports Strategy Engine's `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+directly — but this consumption is self-deriving from `StrategyId`'s own
+membership (`tuple(StrategyId)`), never a hardcoded list of the five
+legacy names, so it requires no code change at retirement time (§2, §10).
+This document authorizes the *decision*; the retirement itself is future
+work gated on ADR-035 Phases 1–6 (§13, §15).
 
 ## 2. Repository Investigation Summary
 
@@ -79,25 +85,74 @@ Verified directly against the current repository this session:
   Engine's `OpeningRangeState`/`opening_ranges`) is the only phase of
   ADR-035 implemented to date; Phases 1–6 (the ORB `Strategy` itself,
   its qualification/scoring/config/registration) remain unimplemented.
-- **No coupling to specific strategies outside Strategy Engine**: a
-  repository-wide search for every `StrategyId` value and every
-  strategy class name, excluding `titan_protocol/strategy_engine/`
-  itself, returns only `titan_protocol/research_engine/models.py`'s
-  generic `strategy_id: Optional[StrategyId]` field (a type-level
-  reference to the enum itself, not to any one of the five values) and
-  an unrelated same-named `AttributionDimension.BOS_FVG` enum member in
-  `research_engine/attribution.py` (a coincidental name, not an import of
-  `strategy_engine.StrategyId.BOS_FVG`). Risk Engine, Compliance Engine,
-  Runtime, Bridge, and Execution consume only generic
-  `StrategySnapshot`/`QualificationResult`/`TradeIntent` types — never a
-  named strategy.
-- **Test coupling to the count and identity of the five exists**:
-  `tests/titan_protocol/strategy_engine/test_regression.py` asserts
-  `len(snapshot.all_qualifications) == 5` and asserts a specific
-  strategy (`TREND_CONTINUATION`) wins a specific fixture; per-strategy
-  files (`test_qualification.py`, `test_trade_intent.py`) exist per the
-  same five; `test_selection.py` exercises the cascade using some subset
-  of the five's `StrategyId` values.
+- **No *concrete* coupling to any of the five legacy strategies outside
+  Strategy Engine, but Runtime is a genuine *generic* consumer of
+  `StrategyId` (a distinction this document draws precisely, per its own
+  review)**: a repository-wide search for every `StrategyId` value and
+  every strategy class name, excluding `titan_protocol/strategy_engine/`
+  itself, found:
+  - `titan_protocol/research_engine/models.py`'s generic
+    `strategy_id: Optional[StrategyId]` field, and an unrelated
+    same-named `AttributionDimension.BOS_FVG` enum member in
+    `research_engine/attribution.py` (a coincidental name, not an import
+    of `strategy_engine.StrategyId.BOS_FVG`) — both confirmed harmless,
+    as previously documented.
+  - **`titan_protocol/runtime/models.py`** holds two real `StrategyId`
+    fields: `TradingProfile.allowed_strategies: Tuple[StrategyId, ...]`
+    (line 64) and `RuntimeAuditRecord.selected_strategy: Optional[StrategyId]`
+    (line 155). `titan_protocol/runtime/engine.py` threads
+    `selected_strategy=strategy.winning_strategy.strategy_id` into
+    `RuntimeAuditRecord` at five call sites in the live cycle — an
+    active, per-cycle production code path.
+  - **`titan_protocol/runtime/profiles.py`** imports
+    `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` directly from Strategy Engine's
+    own `config.py` (line 15), and derives `_ALL_STRATEGIES: Tuple[StrategyId, ...]
+    = tuple(StrategyId)` (line 34) and `_TRADEABLE_PAIR_UNIVERSE` from it.
+    Every named production profile factory (`make_london_conservative_profile()`,
+    etc.) uses these two derived defaults; **none hardcodes an explicit
+    subset of the five legacy `StrategyId` values** — confirmed by
+    reading every factory in the file.
+  - Risk Engine, Compliance Engine, Bridge, and Execution hold no
+    `StrategyId` reference at all, generic or concrete (repository-wide
+    grep, zero hits).
+
+  **Conclusion**: Runtime is a genuine downstream consumer of `StrategyId`
+  and selected-strategy metadata, and `runtime/profiles.py` consumes
+  Strategy Engine's approved-pair configuration directly. Current
+  production Runtime behavior does not hard-code the five legacy
+  `StrategyId`s individually — its strategy membership is self-derived
+  from `StrategyId`'s own enum membership and `StrategyEngineConfig`'s
+  own contents. This dependency must therefore be included in retirement
+  verification (§9, §10, §14), but it does not prevent ORB-only
+  production composition: once `StrategyId` and
+  `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` shrink to ORB alone,
+  `runtime/profiles.py`'s derived constants shrink automatically, with
+  zero code change required in that file.
+- **Test coupling to the count and identity of the five exists, in two
+  packages, not one**:
+  - `tests/titan_protocol/strategy_engine/test_regression.py` asserts
+    `len(snapshot.all_qualifications) == 5` and asserts a specific
+    strategy (`TREND_CONTINUATION`) wins a specific fixture; per-strategy
+    files (`test_qualification.py`, `test_trade_intent.py`) exist per the
+    same five; `test_selection.py` exercises the cascade using some
+    subset of the five's `StrategyId` values.
+  - **`tests/titan_protocol/runtime/test_configuration.py:78`**
+    constructs a `TradingProfile` with `allowed_strategies=(StrategyId.TREND_CONTINUATION,)`
+    to test the "pair ineligible for every allowed strategy" validation
+    path — a concrete, named dependency, confirmed by direct read.
+  - **`tests/titan_protocol/runtime/test_integration.py:77`** and
+    **`tests/titan_protocol/runtime/test_phase_3c_ingestion_integration.py:168`**
+    both run the real, unstubbed five-strategy `StrategyEngine` through
+    a full `RuntimeOrchestrator` cycle against a trending-bars fixture
+    and assert `record.selected_strategy == StrategyId.TREND_CONTINUATION`
+    — genuine end-to-end integration tests whose specific assertion
+    depends on today's five-strategy competition, confirmed by direct
+    read of both files.
+  - By contrast, **`tests/titan_protocol/runtime/test_trading_profiles.py:78`**
+    (`assertEqual(set(profile.allowed_strategies), frozenset(StrategyId), ...)`)
+    is self-deriving and requires no future change — confirmed a **false
+    positive** for retirement-coupling purposes, listed here only to
+    distinguish it from the three genuinely concrete references above.
 - **Configuration is one dataclass, not one file per strategy**:
   `StrategyEngineConfig` (`config.py`) holds
   `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` (one 5-entry tuple, one entry per
@@ -118,7 +173,7 @@ Verified, not assumed, this session:
 | Compliance Engine | Daily-loss/drawdown/position-limit gates, strategy-agnostic | Yes |
 | Execution / `runtime/bridge_handoff.py` | Builds `TradeCommand` from `StrategySnapshot.trade_intent`, generic | Yes |
 | Bridge | Wire-level command/report exchange, strategy-agnostic | Yes |
-| Runtime | Orchestrates the cycle; does not reference a `StrategyId` | Yes |
+| Runtime | Orchestrates the cycle; holds `TradingProfile.allowed_strategies` and `RuntimeAuditRecord.selected_strategy` (`StrategyId`-typed) and imports `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` from Strategy Engine (`profiles.py`) | Yes for authority/ownership — Runtime decides nothing about strategies, it only records/whitelists generically; **no code change required** at retirement since both fields derive from `StrategyId`'s own membership (`tuple(StrategyId)`), never a hardcoded 5-name list (§2) |
 
 ## 4. Current Strategy Inventory
 
@@ -194,8 +249,14 @@ This ADR explicitly does **not**:
 
 - Modify Evidence Engine, `EvidenceSnapshot`, or `OpeningRangeState`
   (ADR-024, ADR-035 Phase 0 — untouched, read-only inputs).
-- Modify Risk Engine, Compliance Engine, Runtime, Bridge, or Execution
-  — verified (§2) that none references a specific `StrategyId`.
+- Modify Risk Engine, Compliance Engine, Runtime, Bridge, or Execution.
+  Risk Engine, Compliance Engine, and Bridge hold no `StrategyId`
+  reference at all (§2, verified). Runtime does hold two generic,
+  self-deriving `StrategyId`-typed fields (`TradingProfile.allowed_strategies`,
+  `RuntimeAuditRecord.selected_strategy`) and imports Strategy Engine's
+  `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` — but no Runtime *file* changes at
+  retirement time, since both constants derive from `StrategyId`'s own
+  membership rather than naming the five legacy values individually (§2).
 - Modify Scanner — reference-only, not a running authority (ADR-001).
 - Modify Market Intelligence.
 - Modify the selection/routing architecture (`selection.py`'s cascade)
@@ -225,18 +286,32 @@ Explicitly preserved, unmodified by this decision:
   a generic `Optional[StrategyId]` field, never a hardcoded reference to
   one of the five legacy values; continues to function unmodified
   regardless of `StrategyId`'s membership.
+- **Runtime** — verified (§2) to hold two `StrategyId`-typed fields
+  (`TradingProfile.allowed_strategies`, `RuntimeAuditRecord.selected_strategy`)
+  and one direct import of Strategy Engine's `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+  (`runtime/profiles.py`). Unlike the other components in this list,
+  Runtime's dependency is not merely a passive, unused type reference —
+  it is exercised on every live cycle (`runtime/engine.py`, five call
+  sites). It is nonetheless preserved unmodified by this ADR: every
+  value Runtime derives from `StrategyId`/`DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+  is computed generically (`tuple(StrategyId)` and a set-comprehension
+  over the config constant, `profiles.py:34,42-44`), never hardcoded to
+  the five legacy names, so no line of Runtime code needs to change when
+  the production strategy inventory changes.
 
 No component listed above is redesigned, reinterpreted, or extended by
-this ADR.
+this ADR. §12.B below states the governance rule this dependency
+implies for `StrategyId`'s own future membership.
 
 ## 11. Retired Strategy Inventory
 
 For each of the five, retirement means: removing its file from
-`titan_protocol/strategy_engine/strategies/`, removing its
-`StrategyId` member, removing its registration line from
-`build_default_registry()`, removing its dedicated `StrategyEngineConfig`
-fields, and removing/rewriting its dedicated test coverage. This is
-future implementation work (§15), not performed by this ADR.
+`titan_protocol/strategy_engine/strategies/`, removing its registration
+line from `build_default_registry()`, removing its dedicated
+`StrategyEngineConfig` fields, and removing/rewriting its dedicated test
+coverage. Whether its `StrategyId` member is also removed is a separate
+decision, governed by §12.B, not an automatic part of retirement. This
+is future implementation work (§15), not performed by this ADR.
 
 | Strategy | Location | Registration | Configuration | Tests | Docs | Removal impact | Dependencies | Migration considerations | Evidence |
 |---|---|---|---|---|---|---|---|---|---|
@@ -249,7 +324,26 @@ future implementation work (§15), not performed by this ADR.
 No strategy depends on another (§2) — retiring any subset, or all five,
 carries no cross-strategy ripple effect.
 
-## 12. ORB Strategy Designation
+**Retirement surface extends beyond `titan_protocol/strategy_engine/`'s
+own tests** — verified this revision, three files under
+`tests/titan_protocol/runtime/` concretely reference
+`StrategyId.TREND_CONTINUATION` and must be revisited in the same future
+removal phase:
+
+| File | Reference | Classification |
+|---|---|---|
+| `test_configuration.py:78` | `allowed_strategies=(StrategyId.TREND_CONTINUATION,)`, testing the "pair ineligible for every allowed strategy" validation path | Migration required — needs an ORB-appropriate `StrategyId` once retirement completes |
+| `test_integration.py:77` | `assertEqual(record.selected_strategy, StrategyId.TREND_CONTINUATION)` after a real, unstubbed five-strategy `RuntimeOrchestrator` cycle | Migration required — fixture/assertion depend on today's five-strategy competition |
+| `test_phase_3c_ingestion_integration.py:168` | Same pattern as above | Migration required, same reason |
+| `test_trading_profiles.py:78` | `assertEqual(set(profile.allowed_strategies), frozenset(StrategyId), ...)` | No change required — self-deriving, confirmed a false positive for retirement-coupling purposes |
+
+None of these four files is modified by this ADR (§8 scope, this
+revision task's own constraints) — they are documented here as
+retirement surface for the future removal phase (§13, §15).
+
+## 12. ORB Strategy Designation and StrategyId Policy
+
+### 12.A ORB designation
 
 Upon completion of ADR-035's remaining phases (§13), ORB
 (`StrategyId.OPENING_RANGE_BREAKOUT`) is designated:
@@ -272,7 +366,67 @@ was, through its own accepted ADR and RPI Plan — this ADR commits only
 to today's production inventory being ORB alone, not to a permanent
 one-strategy ceiling.
 
+### 12.B StrategyId retention policy
+
+**Production retirement and `StrategyId` enum deletion are separate
+decisions.** Making ORB the only registered production strategy does
+not, by itself, authorize deleting `LIQUIDITY_SWEEP_MSS`, `BOS_FVG`,
+`TREND_CONTINUATION`, `SESSION_BREAKOUT`, or `RANGE_REVERSAL` from the
+`StrategyId` enum. This is a governance rule this ADR establishes
+explicitly, grounded in repository evidence, not an assumption:
+
+- **Selection-cascade testability**: `selection.py::select_winning_strategy()`'s
+  6-step cascade (§2) is exercised in `tests/titan_protocol/strategy_engine/test_selection.py`
+  by constructing multiple `QualificationResult`s with *different*
+  `StrategyId` values to simulate two-or-more strategies competing for
+  the same pair (e.g. `StrategyId.TREND_CONTINUATION` vs.
+  `StrategyId.SESSION_BREAKOUT` at tied scores). With exactly one
+  `StrategyId` member in existence, this kind of fixture cannot be
+  constructed at all — a single registered strategy can produce at most
+  one `QualificationResult` per cycle (§5 of the Independent Acceptance
+  Review), so steps 2–6 of the cascade would have no realistic
+  multi-candidate scenario to test against. Retaining spare `StrategyId`
+  members (even unbacked by a production `Strategy` class) preserves the
+  ability to exercise this logic meaningfully.
+- **Historical log interpretability**: `runtime/logging_sink.py:47`
+  serializes `record.selected_strategy.value` into operational JSON logs
+  on every cycle. Deleting an enum member does not corrupt or require
+  rewriting historical log files (they are plain text, never re-parsed
+  into a live `StrategyId` by any component in this repository —
+  confirmed by search), but retaining the identifier keeps historical
+  logs interpretable against the same vocabulary a maintainer might
+  still consult `StrategyId` for.
+- **Low-risk rollback**: §13's rollback strategy is simplest if
+  `StrategyId` and the five strategy files are reverted together as one
+  unit; retaining the identifiers does not itself block or complicate
+  this, but premature deletion of just the enum (while, say, deferring
+  file deletion) would create an inconsistent intermediate state this
+  ADR does not authorize.
+
+**This is not a mandate to retain the four retired identifiers
+forever.** It is a governance rule: *any future decision to delete a
+retired `StrategyId` member requires its own evidence* that historical
+log interpretability is no longer a concern and that selection-cascade
+test coverage remains adequate without it (e.g., via synthetic
+test-only identifiers, or an accepted rewrite of `test_selection.py`'s
+own approach) — that evidence does not exist today and this ADR does
+not attempt to manufacture it. Production retirement (§7, §11, §13) and
+`StrategyId` vocabulary deletion are, from this point forward, two
+separate decisions, each requiring its own evidence.
+
 ## 13. Migration Strategy
+
+> **Governance gate, restated for visibility**: legacy strategy
+> retirement (§7, §11, §13, §15) **must not begin** until the ORB
+> strategy required by ADR-035 is implemented, tested, independently
+> reviewed, and accepted through its required phases (ADR-035 §17
+> Phases 1–6). ADR-035 Phase 0 (the Evidence Engine amendment,
+> `OpeningRangeState`/`opening_ranges`) is implemented today — Phases
+> 1–6, which define the ORB `Strategy` itself, are not (§2, verified
+> this revision by repository-wide search: zero occurrences of
+> `OPENING_RANGE_BREAKOUT`, `OrbBreakoutStrategy`, or any `orb_`-prefixed
+> identifier anywhere under `titan_protocol/`). Phase 0 alone does not
+> satisfy this gate.
 
 - **Current repository**: five production strategies registered;
   ADR-035 Phase 0 (Evidence Engine) implemented; ADR-035 Phases 1–6 (the
@@ -288,11 +442,17 @@ one-strategy ceiling.
   members, registry entries, and config fields, and registers ORB in
   their place inside `build_default_registry()` (or its renamed
   successor).
-- **Removal phase**: delete the five strategy files, their `StrategyId`
-  members, their `build_default_registry()` lines, their
-  `StrategyEngineConfig` fields, and their dedicated test files (or
-  rewrite the shared ones, e.g. `test_regression.py`,
-  `test_selection.py`, to reflect a single-strategy registry).
+- **Removal phase**: delete the five strategy files, their
+  `build_default_registry()` lines, and their `StrategyEngineConfig`
+  fields; rewrite the shared Strategy Engine tests (`test_regression.py`,
+  `test_selection.py` — see §12.B on why `test_selection.py`'s
+  multi-`StrategyId` fixtures need deliberate handling, not blind
+  deletion) and the three Runtime tests identified in §11
+  (`test_configuration.py`, `test_integration.py`,
+  `test_phase_3c_ingestion_integration.py`) to reflect a single-strategy
+  registry. Whether any `StrategyId` member is deleted at all is a
+  separate decision, governed by §12.B, not an automatic consequence of
+  this phase.
 - **Validation phase**: full Strategy Engine suite green against the new
   one-strategy registry; `git diff --stat` confined to
   `titan_protocol/strategy_engine/` and its tests, plus ADR-026's own
@@ -320,7 +480,9 @@ one-strategy ceiling.
 | Orphaned tests | Per-strategy files (`test_qualification.py`, `test_trade_intent.py`) contain cases for all five | Must be pruned to ORB-only cases in the same removal phase, not left as dead, always-skipped, or failing tests |
 | Dead code | None of the five strategies is currently unused (§4) — retirement, once executed, must delete rather than merely stop-registering, to avoid leaving unreachable code | Addressed explicitly by the Removal phase (§13) specifying file deletion, not just registry-line removal |
 | Future extensibility | `StrategyRegistry`/`StrategyId` impose no cardinality constraint (§2, §12) | No risk — the architecture already supports adding a strategy back later without modification |
-| Repository consistency | Verified today: zero references to any legacy `StrategyId` outside Strategy Engine except `research_engine`'s generic, type-level field (§2) | Retirement is self-contained to Strategy Engine + its docs; no hidden cross-package consistency risk found |
+| Repository consistency | Verified today: no *concrete* reference to any legacy `StrategyId` outside Strategy Engine, but Runtime holds two genuine, self-deriving `StrategyId`-typed fields plus a direct import of `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` (§2, §10) | Runtime requires no code change at retirement (both dependencies self-derive), but must be included in verification, not assumed absent |
+| Runtime test regression | Three files under `tests/titan_protocol/runtime/` (`test_configuration.py:78`, `test_integration.py:77`, `test_phase_3c_ingestion_integration.py:168`) concretely assert `StrategyId.TREND_CONTINUATION` (§11) | Must be rewritten in the same removal phase as Strategy Engine's own tests — a previously undocumented but bounded, foreseeable addition to the known test-migration surface |
+| Historical log artifacts | `runtime/logging_sink.py:47` serializes `record.selected_strategy.value` into operational JSON logs on every cycle; no reader in the repository deserializes this back into a live `StrategyId` (confirmed by search) | No migration action required — historical logs will contain retired `StrategyId` strings indefinitely, which is harmless and does not imply the retired strategies remain production-enabled (§12.B) |
 
 No risk above is Critical — every one is a bounded, foreseeable
 consequence of a single-package, single-factory-function change,
@@ -336,8 +498,9 @@ discipline:
    configuration, full-suite validation) — each already its own RPI
    Plan/Accepted-ADR-gated phase per ADR-035 §17, unaffected by this
    ADR.
-2. Strategy removal: delete the five legacy strategy files and their
-   `StrategyId` members.
+2. Strategy removal: delete the five legacy strategy files. Whether any
+   `StrategyId` member is also deleted is a *separate* decision, governed
+   by §12.B — not an automatic part of this step.
 3. Registration cleanup: update `build_default_registry()` to register
    ORB alone.
 4. Configuration cleanup: remove the five strategies' dedicated
@@ -345,13 +508,17 @@ discipline:
    (ADR-035 §13).
 5. Documentation cleanup: update ADR-026 and ADR-035 §0's own
    strategy-count language to reflect the new inventory.
-6. Test cleanup: prune or rewrite `test_regression.py`,
-   `test_selection.py`, and the per-strategy test files to reflect a
+6. Test cleanup: prune or rewrite `test_regression.py`, `test_selection.py`
+   (per §12.B's multi-`StrategyId` testability constraint), the
+   per-strategy test files, and the three Runtime tests identified in
+   §11 (`test_configuration.py`, `test_integration.py`,
+   `test_phase_3c_ingestion_integration.py`) to reflect a
    single-strategy registry.
 7. ORB registration: register `OrbBreakoutStrategy` (or whatever ADR-035
    Phase 1 ultimately names it) as the registry's sole member.
-8. Validation: full Strategy Engine suite green; architecture tests
-   green; `git diff --stat` confined to Strategy Engine + docs.
+8. Validation: full Strategy Engine **and** Runtime suites green;
+   architecture tests green; `git diff --stat` confined to Strategy
+   Engine, Runtime's test directory, and docs.
 
 Each numbered step above is its own future RPI Plan, gated by this
 project's standing RPI workflow (`TEAM.md` §9) — this roadmap sequences
@@ -428,8 +595,15 @@ code from version history, not toggling a flag.
 (`select_winning_strategy`), `titan_protocol/strategy_engine/config.py`
 (`StrategyEngineConfig`, `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`),
 `titan_protocol/research_engine/models.py` (generic `StrategyId` field),
-`deployment_windows/start.py:1196`, `deployment_windows/install.py:303`,
+`titan_protocol/runtime/models.py` (`TradingProfile.allowed_strategies`,
+`RuntimeAuditRecord.selected_strategy`), `titan_protocol/runtime/profiles.py`
+(`DEFAULT_APPROVED_PAIRS_BY_STRATEGY` import, `_ALL_STRATEGIES`),
+`titan_protocol/runtime/engine.py` (`selected_strategy` call sites),
+`titan_protocol/runtime/logging_sink.py` (`selected_strategy.value` log
+serialization), `deployment_windows/start.py:1196`,
+`deployment_windows/install.py:303`,
 `tests/titan_protocol/strategy_engine/{test_regression,test_selection,test_qualification,test_trade_intent}.py`,
+`tests/titan_protocol/runtime/{test_configuration,test_integration,test_phase_3c_ingestion_integration,test_trading_profiles}.py`,
 `docs/adr/ADR-026-strategy-engine.md`, `docs/adr/ADR-035-orb-strategy.md`.
 
 ## 20. Final Recommendation
