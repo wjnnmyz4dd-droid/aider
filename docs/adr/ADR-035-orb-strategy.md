@@ -1,14 +1,30 @@
 # ADR-035 — Opening Range Breakout (ORB) Strategy
 
-Status: **Proposed** — design only. No implementation, no tests, no
-architecture modification accompany this document, per explicit
-instruction. Per CLAUDE.md §1.10, no implementation may begin until
-this ADR is independently reviewed and marked **Accepted**.
+Status: **Accepted** (2026-07-25 — architecture and phased roadmap,
+§§0-16 and §17, only). This Acceptance is a new, explicit governance
+decision made this session, not a reconstruction of history: no prior
+commit ever changed this document's own Status line, and none is
+retroactively claimed here. It rests on repository-verified maturity —
+an independent Acceptance Review already found and required corrections
+(F1-F5, all incorporated, commit `af5b9c0`), the companion Evidence
+Engine amendment (§3) is implemented and independently validated (Phase
+0, commit `ee976f4`, 22+5 tests green), and neither of §18.A's two
+required-before-implementation items is an architectural objection:
+item 1 (module location) is resolved by Phase 0's own implementation
+choice; item 2 (lockout persistence) is resolved in direction this
+session (§18.A item 2) with its remaining engineering work explicitly
+gated to Phase 2, not blocking Phase 0 or Phase 1. **This Acceptance
+does not authorize skipping any phase's own RPI Plan/review gate
+(§17, `TEAM.md` §9), and it does not shorten ADR-036's own sequencing
+requirement** — legacy-strategy retirement remains gated on ADR-035
+Phases 1-6 being implemented, tested, and independently accepted, per
+ADR-036 §13's governance gate, unchanged by this Acceptance.
 
 Owner: Software Architect (per the ADR-024/025/026 precedent — a
 cross-cutting evaluation design, not a playbook-orchestration one).
 
-Reviewed by: (pending) — this document itself performs the §0 scope
+Reviewed by: Independent Acceptance Review (F1-F5, corrections
+incorporated in `af5b9c0`); this document itself performs the §0 scope
 audit ADR-026 established as precedent, checking the proposal against
 Evidence Engine, Strategy Engine, Risk Engine, and Runtime's actual
 current code before proposing anything.
@@ -166,8 +182,16 @@ qualifies on a *failure* to break the range, a VWAP Opening Drive
 strategy, or a Mean Reversion strategy trading *back toward*
 `range_midpoint` instead of away from it.
 
-**Proposed new Evidence Engine model** (ADR-024 Amendment 2, a
-sibling change to this ADR, not implemented here):
+**Proposed new Evidence Engine model** (ADR-024 Amendment 3 — corrected
+numbering, this session: ADR-024's own Amendment 2 slot is already used
+by Fair Value Gap detection, dated 2026-07-10, unrelated to this
+proposal; this document's prior references to "Amendment 2" for the
+opening-range addition were a clerical numbering error, fixed here. The
+addition was implemented as ADR-035 Phase 0, but `ADR-024-evidence-engine.md`
+itself has never been updated with a corresponding Amendment 3 entry
+recording it — a bookkeeping gap in that document, not this one, that
+does not block this ADR's own Acceptance and is flagged here as a
+recommended follow-up correction to ADR-024's own text):
 
 ```
 OpeningRangeState:
@@ -651,7 +675,7 @@ always pairs an "Implement X" step with a "Write X test suite" step
 immediately after, never batched at the end; the phase ordering itself
 is unchanged, only this clarification is added).**
 
-- **Phase 0 — ADR-024 Amendment 2 (Evidence Engine):** add
+- **Phase 0 — ADR-024 Amendment 3 (Evidence Engine, implemented):** add
   `OpeningRangeState` model (including `range_start_index`/
   `range_end_index`, §3) + `opening_range.py` computation (including the
   independent temporal-gap check against a newly-introduced expected-bar-
@@ -661,13 +685,41 @@ is unchanged, only this clarification is added).**
   own Accepted status before Phase 1 begins (CLAUDE.md §1.10).
 - **Phase 1 — Core ORB detection:** consume `opening_ranges` inside a
   new `OrbBreakoutStrategy` (naming to match `StrategyId.
-  OPENING_RANGE_BREAKOUT`); range-formed/valid checks and the §6
-  session-lockout only, no qualification scoring yet — with its own unit
-  tests for exactly that scope.
-- **Phase 2 — Breakout qualification:** §4's objective rules (close
-  beyond range, ATR-relative distance, corrected body/wick ratio,
-  momentum, confirmation-candle count), with unit tests for each rule
-  individually and each fail-closed path.
+  OPENING_RANGE_BREAKOUT`); range-formed/valid checks only, no
+  qualification scoring yet — with its own unit tests for exactly that
+  scope. **The §6 session-lockout moves to Phase 2 (revised this
+  session, §18.A item 2):** Phase 1's `qualify()` cannot produce a
+  `QUALIFIED` result under any input (no breakout-qualification rule
+  exists until Phase 2), so the lockout's own consumption event (§6:
+  "once ORB has produced one `QUALIFIED` result") can never fire within
+  Phase 1's scope — building lockout state (in-memory or persisted) that
+  can never be written is speculative scaffolding for a condition that
+  cannot occur, not a genuine Phase 1 requirement (CLAUDE.md §7). Moving
+  it to Phase 2 also means Phase 1's `OrbBreakoutStrategy` needs no
+  constructor/instance state at all, matching every existing strategy's
+  stateless convention (ADR-026) rather than introducing this package's
+  first stateful strategy a phase before that statefulness has any
+  observable effect.
+- **Phase 2 — Breakout qualification and session lockout:** §4's
+  objective rules (close beyond range, ATR-relative distance, corrected
+  body/wick ratio, momentum, confirmation-candle count) — the first
+  phase at which `qualify()` can produce `QUALIFIED`, and therefore the
+  first phase at which the §6 session-lockout has anything to protect.
+  **§18.A item 2's persistence requirement gates this phase, not Phase
+  1:** the lockout state must survive a process restart (resolved this
+  session — see §18.A item 2), owned by Strategy Engine, requiring its
+  own small, Strategy-Engine-owned persistence mechanism (analogous in
+  convention to `titan_protocol/compliance_state_store/` — file-backed,
+  atomic write, schema-versioned, fail-closed on corruption/unavailable
+  state — but a separate package, never a reuse of another engine's
+  store, per ADR-026 Hard Rule 5). That mechanism's own concrete design
+  is new architecture and requires its own focused review (a Phase 2 RPI
+  Plan addendum or a further ADR-035 amendment) before Phase 2
+  implementation begins — this ADR authorizes the requirement, not the
+  implementation. With unit tests for each breakout rule individually,
+  each fail-closed path, and the full lockout/persistence behavior
+  (first consumption, duplicate attempt, restart-survival, corrupt/
+  unavailable state, different pair/range unaffected).
 - **Phase 3 — FVG confirmation:** §5's weighted scoring addition,
   including the corrected index-based temporal comparison, with unit
   tests covering direction matching, age, size, overlap, and expiration.
@@ -709,68 +761,110 @@ These must be resolved before the phase that depends on them starts —
 Phase 0 and Phase 1 specifically (§17) — but do not block this
 document's own architectural approval:
 
-1. **Should `OpeningRangeState` live in `support_resistance.py` (the
+1. **~~Should `OpeningRangeState` live in `support_resistance.py` (the
    nearest existing analog) or as a new sibling module
-   `opening_range.py`?** Must be settled before Phase 0 begins. This
-   document assumes a new sibling module (cleaner separation, mirrors
-   `session.py` being separate from `support_resistance.py` despite
-   conceptual overlap), but either is architecturally valid.
-2. **Should `orb_max_qualifications_per_range`'s in-memory lockout
-   state survive a process restart? Still unresolved — governance
-   investigation (Phase 1 planning) sharpened the evidence below but
-   deliberately did not pick an answer.** Must be settled before Phase 1
-   begins, since the answer determines whether Phase 1 needs a
-   persisted store (a new, small addition analogous to
-   `compliance_state_store`) or not. This document's original text
-   assumed not (an explicit, narrow, documented exception to Strategy
-   Engine statelessness, never persisted) — that assumption is not
-   merely theoretical: a direct trace of every existing duplicate-control
-   mechanism (`titan_protocol.risk_engine.reservation.ReservationLedger`,
-   `titan_protocol.runtime.in_flight_commands.InFlightCommandRegistry`,
-   `titan_protocol.compliance_engine`'s `max_positions_per_pair`) found
-   that **none of them retains any memory of "this pair already had an
-   ORB trade for this specific opening range" once that trade has
-   closed** — `ReservationLedger` releases its reservation and
-   `InFlightCommandRegistry` releases its entry at the trade's own
-   terminal/confirmed state (both already-shipped fixes, unrelated to
-   ORB); `max_positions_per_pair` is fed by live, current
-   `/bridge/positions` reports, so it only blocks a *second
-   simultaneously open* position, never a *new* one after the first has
-   already closed; and a repository-wide search confirms zero file
-   under `risk_engine/`, `compliance_engine/`, or `runtime/` references
-   `range_start` or any opening-range concept at all — none of these
-   engines has the vocabulary to know what "this opening range" even
-   means, since that fact exists only in Evidence Engine's
-   `OpeningRangeState`/Strategy Engine's own qualification, per ADR-024/
-   ADR-026's ownership boundaries. **Concrete consequence:** if a
-   process restart occurs while the same `(pair, range_start)` window
-   is still current (after an earlier trade for it has already closed,
-   before the range rolls over), and Phase 2+'s eventual breakout
-   condition is still independently true when re-evaluated (Evidence
-   Engine recomputes `OpeningRangeState` fresh from bars every cycle —
-   it carries no "already traded" memory of its own, by design, since
-   that fact is Strategy Engine's concern alone), **a second ORB trade
-   for the same opening range is possible** with no in-memory lockout
-   and no existing downstream control to catch it. Whether this bounded,
-   restart-triggered duplicate is *acceptable* (§6's own phrasing:
-   "judged unacceptable") given it remains governed by every other
-   normal risk/compliance limit on the second trade itself is a
-   risk-tolerance judgment this evidence trail does not resolve on its
-   own — it remains this item's own open decision. **Ownership, if
-   persistence is chosen:** the fact "this opening range has already
-   produced a qualification/trade" is Strategy Engine's own concern (no
-   other engine has opening-range vocabulary, above) — but Strategy
-   Engine owns no persistence mechanism of its own today (confirmed:
-   no state-store module exists anywhere under
-   `titan_protocol/strategy_engine/`), and reusing `compliance_state_store`
-   or `runtime/in_flight_store.py` to hold a *different* engine's
-   qualification state would blur exactly the engine-ownership boundary
-   ADR-026 Hard Rule 5 exists to keep clean. If persistence is judged
-   necessary, that is therefore its own small architectural addition
-   (a new, Strategy-Engine-owned store, analogous to
-   `compliance_state_store` but not reusing it) requiring its own
-   review before Phase 1 implements it — not a detail Phase 1's own
-   Plan may decide unilaterally.
+   `opening_range.py`?~~ RESOLVED — Phase 0 implemented it as the
+   sibling module `titan_protocol/evidence_engine/opening_range.py`**
+   (commit `ee976f4`), matching this document's original assumption.
+   No longer open.
+2. **Should `orb_max_qualifications_per_range`'s lockout state survive a
+   process restart? RESOLVED THIS SESSION — persistence is required in
+   principle; the concrete storage mechanism is new architecture,
+   deliberately deferred to Phase 2 (§17), which is also the first phase
+   at which the answer has any observable effect.** Full resolution:
+   - **Semantic requirement:** YES, persistence is required. ORB's own
+     purpose for this field (§6: "preventing the same breakout from
+     re-qualifying... until the range rolls over") is "at most N
+     qualifications per opening range," full stop — not "at most N per
+     opening range unless the process happens to restart first." A
+     restart mid-range is an ordinary, anticipated operational event
+     (§15 already documents "Bridge/EA restart mid-range" as a normal
+     case, not an exotic failure), and CLAUDE.md §1's Priority-1 rule
+     ("No duplicate trades... Capital preservation overrides profit")
+     outranks this document's own original assumption that in-memory,
+     session-scoped state was sufficient — that assumption is
+     superseded here, not merely revisited.
+   - **Restart/re-entry evidence (re-verified this session, unchanged
+     from the prior investigation):** a direct trace of every existing
+     duplicate-control mechanism
+     (`titan_protocol.risk_engine.reservation.ReservationLedger`,
+     `titan_protocol.runtime.in_flight_commands.InFlightCommandRegistry`,
+     `titan_protocol.compliance_engine`'s `max_positions_per_pair`)
+     confirms **none of them retains any memory of "this pair already
+     had an ORB trade for this specific opening range" once that trade
+     has closed** — `ReservationLedger` releases its reservation and
+     `InFlightCommandRegistry` releases its entry at the trade's own
+     terminal/confirmed state; `max_positions_per_pair` is fed by live,
+     current `/bridge/positions` reports, so it only blocks a *second
+     simultaneously open* position, never a *new* one after the first
+     has already closed; and a repository-wide search confirms zero
+     file under `risk_engine/`, `compliance_engine/`, or `runtime/`
+     references `range_start` or any opening-range concept at all —
+     none of these engines has the vocabulary to know what "this
+     opening range" even means. **Concrete consequence:** without
+     persisted lockout state, a restart while the same `(pair,
+     range_start)` window is still current, after an earlier trade for
+     it has already closed, could allow a second `QUALIFIED` result (and
+     therefore a second trade) for the same opening range once Phase 2
+     exists — classified **POSSIBLE**, not already-prevented.
+   - **Ownership:** Strategy Engine. The fact "this opening range has
+     already produced N qualifications" is a strategy-qualification
+     concern (ADR-026 Hard Rule 5) — no other engine has opening-range
+     vocabulary (above), and none should acquire it merely to host this
+     one fact.
+   - **Storage architecture:** no existing persistence mechanism may be
+     reused. Strategy Engine owns no persistence mechanism of its own
+     today (confirmed: no state-store module exists anywhere under
+     `titan_protocol/strategy_engine/`), and reusing
+     `compliance_state_store` or `runtime/in_flight_store.py` to hold a
+     *different* engine's qualification state would blur exactly the
+     engine-ownership boundary ADR-026 Hard Rule 5 exists to keep clean.
+     A new, small, Strategy-Engine-owned store is required — in
+     *convention* analogous to `titan_protocol/compliance_state_store/`
+     (its own sibling top-level package, not nested inside the engine it
+     serves; file-backed JSON; atomic write via a temp file + `os.replace`;
+     schema-versioned; a `.bak` rotation; fail-closed on a corrupt or
+     unreadable file, never a silent reset) — but its own package, never
+     a reuse of `compliance_state_store` itself. This is new
+     architecture and requires its own focused review (a Phase 2 RPI
+     Plan addendum, or a further ADR-035 amendment) before Phase 2
+     implementation begins; this ADR authorizes the requirement and its
+     governing conventions, not a specific implementation.
+   - **Counter consumption semantics:** the lockout counts `qualify()`
+     returning `QUALIFIED` (§6's own words: "once ORB has produced one
+     `QUALIFIED` result"), never a later event (selection, reservation,
+     command submission, or execution). This is deliberately the
+     strictest, most conservative trigger available — it can only cause
+     ORB to under-trade (skip a would-be-selected opportunity because an
+     earlier cycle qualified but lost the selection cascade), never to
+     over-trade, consistent with "capital preservation overrides profit."
+   - **State identity:** `(pair, range_start)`, unchanged — `range_start`
+     is already the unique, collision-checked per-anchor identity §3's
+     "Identification" correction establishes (startup validation rejects
+     overlapping anchors), and is directly available on
+     `OpeningRangeState` without inventing a new field.
+   - **Fail-closed persistence principle (governs whatever Phase 2's own
+     store design produces):** if persisted state cannot be read, is
+     corrupt, or is an unsupported schema version, ORB must not qualify
+     the affected `(pair, range_start)` until the state is resolved —
+     mirroring `compliance_state_store`'s own `CorruptStateError`
+     precedent (fail closed, never silently treat unreadable state as
+     "not yet consumed"). A write failure after a qualification is
+     produced must not be silently swallowed; the qualification that
+     already occurred stands (it already happened), but the mechanism
+     must not paper over its own inability to record it.
+   - **Why this does not block Phase 1:** Phase 1's `OrbBreakoutStrategy.
+     qualify()` cannot produce `QUALIFIED` under any input (§9 of the
+     Phase 1 Plan — every path returns `NOT_QUALIFIED`, since no
+     breakout-qualification rule exists until Phase 2). The lockout's own
+     consumption event, above, therefore cannot fire within Phase 1's
+     scope regardless of whether the state is in-memory or persisted —
+     building storage for a write that cannot occur yet would be
+     speculative code for a scenario that cannot occur (CLAUDE.md §7).
+     The lockout mechanism itself (design, storage, and its own tests)
+     accordingly moves to Phase 2 (§17), the first phase at which it has
+     any observable effect. Phase 1 needs no persistence decision and
+     introduces no stateful strategy instance.
 
 ### 18.B Future design considerations
 
@@ -797,28 +891,40 @@ after the phase noted, without requiring a return to this ADR:
 
 ## 19. Acceptance criteria
 
-This ADR may be marked **Accepted** once, and only once, all of the
-following hold:
+This ADR was marked **Accepted** (2026-07-25) once, and only once, all
+of the following held — recorded below as satisfied, not as a
+still-pending gate:
 
 - The architecture described in §§0-16 is approved as sound by
   independent review (this document's own §0 self-audit is not a
-  substitute for that review).
+  substitute for that review). **Satisfied** — Independent Acceptance
+  Review (F1-F5, `af5b9c0`).
 - The companion Evidence Engine amendment (§3, proposed as ADR-024
-  Amendment 2) is itself approved — this ADR's Phase 1 cannot begin
+  Amendment 3) is itself approved — this ADR's Phase 1 cannot begin
   without it, so its approval is a precondition of this ADR's
   Acceptance, not a separate, independently-timed decision.
+  **Satisfied** — implemented as Phase 0 (`ee976f4`), independently
+  reviewed (F1-F4) and validated (22+5 tests green). Note:
+  `ADR-024-evidence-engine.md` itself has not yet been updated with a
+  corresponding Amendment 3 entry recording this — a documentation gap
+  in that ADR, not this one (§3).
 - No conflict is found with ADR-024 (Evidence Engine), ADR-025 (Market
   Intelligence), or ADR-026 (Strategy Engine) — verified, not assumed
   (§0 performed this check against current code; independent review
   should re-verify against whatever code state exists at review time).
+  **Satisfied** — re-verified this session.
 - No violation of the Engineering Charter (CLAUDE.md) is found,
   including but not limited to: no duplicate logic (§0's FVG/ATR/session
   reuse), no position sizing or price-level stop/target introduced into
   Strategy Engine (§7-9), and fail-closed behavior on every ambiguous or
-  incomplete condition (§14).
+  incomplete condition (§14). **Satisfied.**
 - §18.A's two required-before-implementation decisions are explicitly
-  resolved (not silently defaulted) before Phase 0 and Phase 1 begin,
-  respectively.
+  resolved (not silently defaulted): item 1 before Phase 0 began
+  (satisfied — Phase 0 implemented and resolved it); item 2 before
+  Phase 2 begins (resolved in direction this session — persistence
+  required, ownership and semantics settled; the concrete storage
+  design remains a Phase 2 precondition, not an ADR-035-Acceptance
+  precondition, per §18.A item 2's own text).
 
 **Acceptance of this ADR authorizes design approval only.**
 Implementation may begin solely through the phased roadmap (§17), one

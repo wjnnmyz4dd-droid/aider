@@ -1,60 +1,61 @@
 # Plan: ADR-035 Phase 1 — ORB Strategy Foundation
 
-Status: **BLOCKED — NOT IMPLEMENTATION-READY** (see §3 Governance
-Preconditions; both blockers are repository-verified, independent of
-each other, and unresolved as of this document)
+Status: **READY FOR INDEPENDENT REVIEW** (both governance blockers
+resolved this session — see §3 Governance Preconditions)
 Owner (Plan phase): Software Architect
-Touched components (if/when unblocked): `titan_protocol/strategy_engine/` only
+Touched components: `titan_protocol/strategy_engine/` only
 
 ---
 
-> **PHASE 1 NOT IMPLEMENTATION-READY.** Two independent governance
-> preconditions are unresolved, verified directly against the current
-> repository this session. Neither is invented, assumed, or silently
-> resolved below. Implementation of any part of this Plan must not
-> begin until both are explicitly settled by the appropriate authority.
-> See §3 for full evidence.
+> **PHASE 1 UNBLOCKED — SUMMARY OF RESOLUTION.** The two governance
+> preconditions recorded against this Plan are both resolved as of this
+> revision, per a dedicated governance task explicitly scoped to
+> resolve them. See §3 for full evidence and the ADR-035 sections cited
+> below for the complete reasoning.
 >
-> **Blocker A — ADR-035's own document status.** `docs/adr/ADR-035-orb-strategy.md`
-> line 3 reads `Status: **Proposed**` today. ADR-035 §17 itself states:
-> *"Requires its own Accepted status before Phase 1 begins (CLAUDE.md
-> §1.10)"* and *"this document is the Research artifact for Phase 0
-> only; Phases 1-6 each need their own Plan artifact once Phase 0 is
-> Accepted."* No commit in this repository's history
-> (`git log -- docs/adr/ADR-035-orb-strategy.md`) ever changed this
-> line. This contradicts every prior turn's working assumption
-> (including this task's own §0 "Governing State," ADR-036's own
-> "Depends on" line citing "ADR-035-orb-strategy.md (Accepted)", and
-> `CHANGELOG.md`'s 2026-07-25 entry describing "Phase 0 of ADR-035
-> (Opening Range Breakout strategy, Accepted)") — none of which is
-> repository ground truth for the ADR document itself.
+> **Blocker A — ADR-035's own document status — RESOLVED, Accepted.**
+> `docs/adr/ADR-035-orb-strategy.md` line 3 now reads `Status:
+> **Accepted**` (2026-07-25), changed as an explicit, new governance
+> decision — not a reconstruction of history. The decision rests on
+> repository-verified maturity: the Independent Acceptance Review's
+> required corrections (F1-F5) were incorporated (`af5b9c0`), the
+> companion Evidence Engine amendment is implemented and independently
+> validated (Phase 0, `ee976f4`), and neither §18.A item blocks
+> Acceptance (item 1 resolved by Phase 0's own implementation; item 2
+> resolved in direction, below).
 >
-> **Blocker B — ADR-035 §18.A item 2, lockout persistence, unresolved
-> (evidence now sharpened, answer still not chosen).** A subsequent
-> governance investigation traced every existing duplicate-control
-> mechanism (`ReservationLedger`, `InFlightCommandRegistry`,
-> `max_positions_per_pair`) directly and confirmed: **none of them
-> retains any memory of "this pair already had an ORB trade for this
-> opening range" once that trade has closed** — all three reset once
-> the position/command lifecycle completes, and a repository-wide
-> search confirms zero file under `risk_engine/`, `compliance_engine/`,
-> or `runtime/` has any concept of opening-range identity at all. The
-> concrete restart-reentry failure sequence is therefore classified
-> **POSSIBLE**, not "already prevented" — full analysis now recorded in
-> ADR-035 §18.A item 2 itself. This sharpens the evidence considerably
-> but does **not** resolve the question: whether a bounded,
-> restart-triggered duplicate trade is acceptable remains a
-> risk-tolerance judgment for ADR-035's own owner, and if persistence is
-> chosen, Strategy Engine owns no persistence mechanism of its own today
-> — a new, small, Strategy-Engine-owned store would itself need its own
-> review before Phase 1 could implement it. See ADR-035 §18.A item 2
-> for the full, current text.
+> **Blocker B — ADR-035 §18.A item 2, lockout persistence — RESOLVED IN
+> DIRECTION, and found not to gate Phase 1 at all.** The governance
+> investigation determined: persistence of the lockout state across a
+> restart **is required** (ORB's own "at most N qualifications per
+> range" purpose, plus CLAUDE.md's Priority-1 "no duplicate trades"
+> rule, override this Plan's original in-memory-only assumption);
+> ownership belongs to Strategy Engine; no existing persistence
+> mechanism may be safely reused (`compliance_state_store` and
+> `runtime/in_flight_store.py` both belong to a different engine, per
+> ADR-026 Hard Rule 5); a new, small, Strategy-Engine-owned store is
+> therefore required, in the convention of (but not reusing)
+> `compliance_state_store`. **That store's concrete design is new
+> architecture and is deliberately deferred to Phase 2** — not because
+> the question is unresolved, but because Phase 1's own
+> `OrbBreakoutStrategy.qualify()` can never return `QUALIFIED` under any
+> input (§9 — no breakout-qualification rule exists until Phase 2), so
+> the lockout's consumption event can never fire within Phase 1's scope
+> regardless of storage. Building lockout state — in-memory or
+> persisted — that can never be written would be speculative scaffolding
+> for a condition that cannot occur (CLAUDE.md §7). **The entire §6
+> session-lockout mechanism therefore moves out of Phase 1's scope and
+> into Phase 2's** (ADR-035 §17, revised this session) — the first phase
+> at which it has any observable effect and the first phase the
+> persistence-architecture precondition actually gates. This revision
+> touches every section below that previously described the lockout as
+> Phase 1 scope; each is updated accordingly, not merely flagged.
 >
-> Everything below this point is genuine, repository-grounded Research
-> and Plan content, complete and internally consistent **except** where
-> a section depends on one of these two blockers being resolved first —
-> those sections state the dependency explicitly rather than guessing
-> an answer.
+> See ADR-035 §18.A item 2 for the complete resolution text (semantic
+> requirement, restart evidence, ownership, storage-architecture
+> assessment, counter-consumption semantics, state identity, and the
+> fail-closed persistence principle governing Phase 2's eventual store
+> design).
 
 ---
 
@@ -145,23 +146,20 @@ Verified directly this session (not inferred from ADR prose alone):
 
 ## 3. Governance Preconditions
 
-See the boxed blocker statement at the top of this document for full
-evidence. Summary table:
+Both preconditions below were resolved by a dedicated governance task
+this session. Summary table:
 
-| Precondition (per this task's §0 "Governing State") | Expected | Actual (verified this session) | Status |
+| Precondition | Expected | Actual (verified this session) | Status |
 |---|---|---|---|
-| ADR-035: Accepted | Accepted | `Status: **Proposed**` (`docs/adr/ADR-035-orb-strategy.md:3`), never changed in git history | **CONTRADICTED — Blocker A** |
+| ADR-035: Accepted | Accepted | `Status: **Accepted**` (`docs/adr/ADR-035-orb-strategy.md:3`), changed this session as an explicit governance decision, not a reconstruction of history | **RESOLVED — Blocker A closed** |
 | ADR-035 Phase 0: implemented and independently validated | Yes | Confirmed: `OpeningRangeState`, `EvidenceSnapshot.opening_ranges`, `opening_range.py`, config fields all exist and are wired; 22+5 tests green (§4) | Verified true |
 | ADR-036: Accepted | Accepted | Confirmed: `docs/adr/ADR-036-orb-strategy-consolidation.md:3` reads `Status: **Accepted**` | Verified true |
-| ADR-035 §18.A item 2 (lockout persistence) resolved | Resolved before Phase 1 begins | No resolution found anywhere in `docs/`, `CHANGELOG.md`, `KNOWN_GAPS.md` | **UNRESOLVED — Blocker B** |
+| ADR-035 §18.A item 2 (lockout persistence) resolved | Resolved before the phase it gates begins | Resolved in direction this session: persistence required, ownership = Strategy Engine, counter = on `QUALIFIED`, no existing store reusable, new store required. **Determined to gate Phase 2, not Phase 1** — Phase 1's `qualify()` never returns `QUALIFIED` (§9), so the lockout mechanism itself moves to Phase 2 (ADR-035 §17) | **RESOLVED — does not gate Phase 1; gates Phase 2** |
 
-Per this task's own instruction ("If current repository state
-contradicts an Accepted ADR... STOP and report the contradiction before
-creating or editing the Phase 1 Plan") and its Governance Blocker Rule
-("You MAY create the Research portion and a conditional Plan, but you
-MUST label: PHASE 1 NOT IMPLEMENTATION-READY"): this document proceeds
-as the conditional Research + Plan artifact, not an implementation
-authorization.
+Per this session's governance task, both preconditions are settled: this
+document now proceeds as an implementation-ready Plan, pending only the
+normal independent review this project's RPI workflow (`TEAM.md` §9)
+requires before any Plan is implemented.
 
 ## 4. Current Architecture Assessment (Phase 0 verification)
 
@@ -216,11 +214,20 @@ against §4/§6:
   invalidated by a data gap or insufficient bar count") — both directly
   from ADR-035 §4's exact wording, applicable at Phase 1 since these
   are range-state checks, not breakout-qualification rules.
-- The §6 session-lockout (`orb_max_qualifications_per_range`, in-memory,
-  session-scoped) — **contingent on Blocker B (§3)**.
 - Phase 1's own unit tests for exactly this scope (§15).
 
 **DEFERRED TO PHASE 2+:**
+- **The §6 session-lockout (`orb_max_qualifications_per_range`) —
+  resolved this revision, moved to Phase 2, not Phase 1** (ADR-035 §17,
+  §18.A item 2). Phase 1's `qualify()` can never produce `QUALIFIED`
+  under any input (§9), so the lockout's own consumption event ("once
+  ORB has produced one `QUALIFIED` result," ADR-035 §6) cannot fire
+  within Phase 1's scope regardless of whether the state is in-memory or
+  persisted — implementing it here would be speculative scaffolding for
+  a condition that cannot occur. Phase 2 is the first phase at which
+  `qualify()` can return `QUALIFIED`, and therefore the first phase the
+  lockout has anything to protect and the first phase gated by the
+  lockout's own persistence-architecture precondition (§11).
 - Breakout qualification (§4: close-beyond-range, ATR-relative
   distance, body/wick ratio, momentum, confirmation-candle count) —
   Phase 2.
@@ -263,7 +270,8 @@ confirmation, not asserted as ADR-mandated.
 
 (Restated from §5 for the template's own section numbering — no new
 content beyond §5's "DEFERRED TO PHASE 2+" list.) Phase 2 owns breakout
-qualification; Phase 3 owns FVG confirmation; Phase 4 owns Market
+qualification **and the §6 session-lockout** (moved this revision, §5,
+§11); Phase 3 owns FVG confirmation; Phase 4 owns Market
 Intelligence/eligibility integration; Phase 5 owns the remainder of
 `StrategyEngineConfig`'s ORB fields and their config-loader wiring;
 Phase 6 owns full-suite integration including the production registry
@@ -297,7 +305,7 @@ session's direct reading of `selection.py`/`engine.py`.
 
 ## 8. Model / StrategyId Changes
 
-**Required (contingent on Blocker A being resolved):**
+**Required:**
 - Add `OPENING_RANGE_BREAKOUT = "OPENING_RANGE_BREAKOUT"` to
   `titan_protocol/strategy_engine/models.py`'s `StrategyId` enum — the
   exact name ADR-035 §17 itself specifies ("naming to match
@@ -346,17 +354,13 @@ is copied**, per this task's own instruction.
 - Module: `titan_protocol/strategy_engine/strategies/orb_breakout.py`
   (new).
 - Class: `OrbBreakoutStrategy(Strategy)`.
-- **Constructor**: unlike every existing strategy, Phase 1's
-  `OrbBreakoutStrategy` needs an `__init__` to hold the §6 lockout's
-  in-memory `Dict[(pair, range_start), bool]`-shaped state — **the
-  first stateful strategy in this package's history** (§2), an
-  explicit, narrow, ADR-035-§6-documented exception to Strategy Engine
-  statelessness. This is contingent on Blocker B (§3) — if the
-  governance decision determines this state must instead be persisted
-  (analogous to `compliance_state_store`), the constructor/lifecycle
-  design changes materially (a new persisted-store dependency, not a
-  bare in-memory dict) and this section must be revised before
-  implementation.
+- **No constructor override — resolved this revision:** since the §6
+  lockout moves to Phase 2 (§5, §11), Phase 1's `OrbBreakoutStrategy`
+  needs no `__init__` and no instance attributes at all, matching every
+  existing strategy's stateless convention exactly (§2). This package's
+  first stateful strategy, and the persisted-store dependency its
+  constructor will need, is now a Phase 2 concern, not Phase 1's —
+  removing an entire class of design risk from this phase.
 - **`qualify()` signature**: identical to every other strategy's
   (`pair: str, evidence: EvidenceSnapshot, market_intelligence:
   MarketIntelligenceSnapshot, config: StrategyEngineConfig) ->
@@ -372,24 +376,22 @@ is copied**, per this task's own instruction.
   3. `is_formed=False` → `NOT_QUALIFIED` ("range not yet formed").
   4. `is_valid=False` → `NOT_QUALIFIED` ("range invalidated by a data
      gap or insufficient bar count").
-  5. Lockout already consumed for this `(pair, range_start)` →
-     `NOT_QUALIFIED` ("already qualified for this opening range") —
-     contingent on Blocker B.
-  6. Otherwise → **Phase 1 cannot legitimately produce `QUALIFIED`** —
-     no breakout-qualification rule exists yet (Phase 2's own scope).
-     Per this task's explicit instruction ("A foundation phase may
-     correctly return NOT_QUALIFIED until later rules exist... No fake
-     behavior"), Phase 1's `qualify()` returns `NOT_QUALIFIED` ("no
-     breakout qualification logic exists yet — Phase 2") at this final
-     step, always, for every input that survives steps 1-5. This is
-     the explicit, honest answer to this task's §8 instruction — no
-     provisional trading logic is invented to make ORB "work" early.
+  5. Otherwise → **Phase 1 cannot legitimately produce `QUALIFIED`** —
+     no breakout-qualification rule exists yet (Phase 2's own scope,
+     which also owns the §6 lockout check, §5/§11). Per this task's
+     explicit instruction ("A foundation phase may correctly return
+     NOT_QUALIFIED until later rules exist... No fake behavior"), Phase
+     1's `qualify()` returns `NOT_QUALIFIED` ("no breakout qualification
+     logic exists yet — Phase 2") at this final step, always, for every
+     input that survives steps 1-4. This is the explicit, honest answer
+     to this task's own instruction — no provisional trading logic is
+     invented to make ORB "work" early.
 
 **`StrategyDefinition` for Phase 1:** all 13 fields populated the same
 way `SessionBreakoutStrategy`'s are, with `market_regime=MarketRegime.BREAKOUT`
 (ADR-035 §12) and `purpose`/`entry_conditions`/etc. describing the
-range-formed/valid/lockout gate only — not later phases' rules (would
-be misleading self-declaration otherwise).
+range-formed/valid gate only — not later phases' rules (would be
+misleading self-declaration otherwise).
 
 ## 10. OpeningRangeState Consumption
 
@@ -428,45 +430,56 @@ be misleading self-declaration otherwise).
   valid/lockout scope. Confirmed by re-reading ADR-035 §17's Phase 1
   bullet: no index usage named.
 
-## 11. Lockout Design
+## 11. Lockout Design (moved to Phase 2 — not part of this Plan's own implementation scope)
 
-**Contingent on Blocker B (§3) — this section describes the design
-ADR-035 itself provisionally assumes, not a settled Phase 1
-implementation decision.**
+**Resolved this revision: the §6 session-lockout is Phase 2 scope, not
+Phase 1's.** ADR-035 §18.A item 2 is now resolved in direction (semantic
+requirement, ownership, counter-consumption event, and the fail-closed
+persistence principle are all settled — see ADR-035 §18.A item 2 for the
+complete text); what remains open is the lockout's *concrete storage
+architecture*, which is new architecture requiring its own focused
+review before Phase 2 implements it — not a Phase 1 concern, since
+Phase 1's `qualify()` can never produce `QUALIFIED` and therefore never
+reaches the lockout check at all (§9). This section is retained,
+renumbered in place, to carry the design summary forward into Phase 2's
+own future Plan rather than losing it:
 
-- **What it solves (task §10's five-way distinction, resolved directly
-  from ADR-035 §6's own text):** duplicate **strategy qualification**
-  only — preventing the same already-completed opening range from
-  producing a fresh `QUALIFIED` result every cycle until the range rolls
-  over. It does **not** solve duplicate winning selection
-  (`selection.py`, already generic and unrelated), duplicate reservation
-  (`risk_engine`'s `ReservationLedger`, unrelated), duplicate command
-  submission (Runtime's `InFlightCommandRegistry`, ADR-034, unrelated —
-  ADR-035 §6 itself: *"ORB introduces no new duplicate-prevention logic,
-  reusing what exists"*), or duplicate actual position
-  (`compliance_engine`'s `max_positions_per_pair`, unrelated).
-- **State shape:** `Dict[(pair, range_start), bool]`, keyed by the exact
-  tuple ADR-035 §6 specifies — `range_start` (not `range_start_index`)
-  as the per-anchor identity, consistent with §10's per-instance
-  `OpeningRangeState.range_start` field.
-- **Lifecycle:** one `OrbBreakoutStrategy` instance is constructed once
-  (not `build_default_registry()` in Phase 1, §12's own registration
-  answer) and
-  reused across every pair/cycle for the process's lifetime — confirmed
-  safe for the single-threaded, sequential live-cycle loop (§7); no
-  intra-process concurrency risk. **Process restart is exactly where
-  Blocker B bites**: an in-memory dict resets to empty on restart,
-  meaning a range that already produced one `QUALIFIED` result before a
-  restart could produce a second one after — the exact scenario ADR-035
-  §18.A item 2 says "must be settled... if a restart mid-range allowing
-  a fresh qualification is judged unacceptable," and which this session
-  found no resolution for.
-- **Configuration:** `orb_max_qualifications_per_range: int = 1` must
-  be added to `StrategyEngineConfig` at Phase 1 (not deferred to Phase
-  5) — this is a code-level default powering Phase 1's own required
-  mechanism, not a Phase-5 "config-loader wiring" concern (§13); per
-  CLAUDE.md §3, this number must be named, never a magic literal
-  embedded in `orb_breakout.py` itself.
+- **What it solves (resolved directly from ADR-035 §6's own text):**
+  duplicate **strategy qualification** only — preventing the same
+  already-completed opening range from producing a fresh `QUALIFIED`
+  result every cycle until the range rolls over. It does **not** solve
+  duplicate winning selection (`selection.py`, already generic and
+  unrelated), duplicate reservation (`risk_engine`'s `ReservationLedger`,
+  unrelated), duplicate command submission (Runtime's
+  `InFlightCommandRegistry`, ADR-034, unrelated — ADR-035 §6 itself:
+  *"ORB introduces no new duplicate-prevention logic, reusing what
+  exists"*), or duplicate actual position (`compliance_engine`'s
+  `max_positions_per_pair`, unrelated).
+- **State shape:** `(pair, range_start)` as the key, per ADR-035 §6 and
+  §18.A item 2 — `range_start` (not `range_start_index`) as the
+  per-anchor identity, consistent with §10's per-instance
+  `OpeningRangeState.range_start` field. **Persisted, not a bare
+  in-memory dict** (resolved, ADR-035 §18.A item 2) — the concrete
+  record shape (e.g. a schema-versioned JSON document analogous to
+  `compliance_state_store`'s own `PersistedComplianceState`) is Phase
+  2's own design work, not specified here.
+- **Ownership and storage:** Strategy Engine owns the fact; a new,
+  small, Strategy-Engine-owned persistence mechanism (its own sibling
+  top-level package, in the convention of but not reusing
+  `compliance_state_store`) is required, per ADR-035 §18.A item 2. This
+  is new architecture and needs its own focused review before Phase 2
+  implements it.
+- **Lifecycle:** whichever `OrbBreakoutStrategy` instance Phase 2
+  constructs will need to read/write this persisted state around each
+  qualification — confirmed safe for the single-threaded, sequential
+  live-cycle loop (§7) from a concurrency standpoint; the write-failure
+  and corrupt-read fail-closed semantics are governed by ADR-035 §18.A
+  item 2's persistence principle, not re-derived here.
+- **Configuration:** `orb_max_qualifications_per_range: int = 1` is
+  added to `StrategyEngineConfig` at Phase 2 (moved from Phase 1, per
+  this revision) — a code-level default powering Phase 2's own
+  mechanism, not a Phase-5 "config-loader wiring" concern; per CLAUDE.md
+  §3, this number must be named, never a magic literal.
 
 ## 12. Registration / Composition Plan
 
@@ -517,7 +530,7 @@ Distinguishing (per this task's own required distinction):
 |---|---|---|
 | `EvidenceEngineConfig.opening_range_anchors`/`opening_range_duration_minutes`/etc. | Evidence Engine, Phase 0 (implemented) | None — read-only consumption via `evidence.opening_ranges` |
 | `StrategyEngineConfig.approved_pairs_by_strategy` entry for `OPENING_RANGE_BREAKOUT` | Existing generic Strategy Engine config surface | **None required** — `approved_pairs_for()` already falls back to `()` for any unlisted `StrategyId` (§2), correctly producing `NOT_ELIGIBLE` for every pair with zero code change, mirroring ADR-035 §18.B item 4's own "empty by default" philosophy |
-| `StrategyEngineConfig.orb_max_qualifications_per_range` | Phase 1's own mechanism (§11) | **Add**, default `1`, contingent on Blocker B |
+| `StrategyEngineConfig.orb_max_qualifications_per_range` | Phase 2's own mechanism (§11, moved this revision) | **None in Phase 1** — added at Phase 2, alongside the lockout's own persistence store |
 | ADR-035 §13's remaining ORB fields (`orb_approved_pairs`, `orb_min_range_atr_ratio`, `orb_min_breakout_distance_atr_multiple`, `orb_min_body_to_range_ratio`, `orb_min_confirmation_candles`, `orb_fvg_*`, `orb_min_liquidity_score`) | Phase 5 (config loading) / Phase 2-4 (the rules that consume them) | None — out of Phase 1 scope entirely |
 
 No duplication of Evidence Engine's own opening-range computation
@@ -533,8 +546,7 @@ only ever reads `evidence.opening_ranges`, never recomputes a range.
 | Multiple ambiguous ranges | `NOT_QUALIFIED` (proposed, §10) | Independent review confirmation |
 | `is_formed=False` | `NOT_QUALIFIED` | Nothing — direct ADR-035 §4 text |
 | `is_valid=False` | `NOT_QUALIFIED` | Nothing — direct ADR-035 §4 text |
-| Lockout already consumed | `NOT_QUALIFIED` | Blocker B resolution |
-| Every other input | `NOT_QUALIFIED` (no qualification logic exists yet) | Nothing — Phase 2's own scope, no fake behavior (§9) |
+| Every other input | `NOT_QUALIFIED` (no qualification logic exists yet) | Nothing — Phase 2's own scope, no fake behavior (§9); Phase 2 also owns the lockout check (§11), not Phase 1 |
 
 No path in this table produces `QUALIFIED` — a direct, intended
 consequence of Phase 1 being a foundation phase, not a defect.
@@ -555,9 +567,9 @@ suite).
   True/False edges (four combinations); zero vs. one vs. two
   `opening_ranges` entries.
 - **Negative tests:** pair outside `approved_pairs_for()`'s empty
-  fallback (confirms `NOT_ELIGIBLE` with zero config, §13); lockout
-  re-qualification attempt within the same `(pair, range_start)`
-  (contingent on Blocker B).
+  fallback (confirms `NOT_ELIGIBLE` with zero config, §13). The lockout
+  re-qualification test moves to Phase 2's own test suite along with the
+  mechanism itself (§11) — Phase 1 has no lockout behavior to test.
 - **Model integrity tests:** `StrategyId.OPENING_RANGE_BREAKOUT`
   round-trips through `QualificationResult`/`StrategySnapshot`
   unchanged (mirrors existing per-`StrategyId` coverage patterns).
@@ -584,8 +596,11 @@ suite).
   confirmed no code change required in any of the three.
 
 Every Phase 1 implementation item has its own Phase 1 test above — none
-is deferred to Phase 6, per this task's own instruction and ADR-035
-§17's own corrected wording (re-verified this session, unchanged).
+is deferred to Phase 6. The lockout's own future test suite (first
+consumption, duplicate attempt, restart-survival, corrupt/unavailable
+persisted state, different pair/range unaffected, per ADR-035 §18.A item
+2's own fail-closed principle) belongs to Phase 2, moved there with the
+mechanism itself (§11) — not omitted, relocated.
 
 ## 16. Legacy Strategy Preservation
 
@@ -615,52 +630,55 @@ scope.
 
 | Risk | Classification | Evidence | Failure mode | Severity | Mitigation | Test/gate |
 |---|---|---|---|---|---|---|
-| Implementing against a Proposed (not Accepted) ADR-035 | Governance | `docs/adr/ADR-035-orb-strategy.md:3` (§3) | Implementation proceeds without the CLAUDE.md §1.10 precondition ADR-035 itself requires | High (governance, not technical) | Do not implement until Blocker A is resolved | This Plan's own blocked status |
-| Lockout persistence decision made by default (silently in-memory) | Governance/Capital-preservation | ADR-035 §18.A item 2 unresolved (§3) | A restart mid-range could allow a second `QUALIFIED` result for the same range if the "unacceptable" branch of the open question is the correct answer | Medium (bounded by Runtime's existing reservation/in-flight controls even if it occurs, per ADR-035 §6) | Do not implement lockout until Blocker B is explicitly settled | This Plan's own blocked status |
 | Premature `QUALIFIED` result from an incomplete strategy | Behavioral/Capital-preservation | §9's fail-closed table — every path returns `NOT_QUALIFIED` | None if this Plan's §9 design is followed exactly | Low | §9's explicit "no fake behavior" design | §15's unit tests for every §14 row |
 | Malformed/missing `OpeningRangeState` | Behavioral | §10 | Handled: `()` and ambiguous-multiple both fail closed | Low | §10's explicit rules | §15 boundary tests |
 | Adding a 6th `StrategyId` breaks a hardcoded test | Testing | `test_regression.py:22` (§2) | None, if not registered in `build_default_registry()` (§12) | Low (avoided by design) | §12's registration answer | §15 regression tests |
 | Registry/selection effects from a 6th `StrategyId` | Architectural | `selection.py` re-confirmed generic (§2, §7) | None expected | Low | N/A — already generic | §15 regression tests |
 | Runtime `allowed_strategies`/logging effects | Concurrency/state, Configuration | `profiles.py`'s self-deriving constants, `logging_sink.py`'s generic `.value` access (§8) | None expected | Low | N/A — already generic | Runtime test re-run, unmodified |
-| First stateful strategy in this package's history | Concurrency/state, Architectural | `OrbBreakoutStrategy`'s proposed constructor (§9, §11) | A narrow, documented exception to ADR-026's stateless-strategy convention; single-threaded sequential call path confirmed safe (§7) | Medium (novel pattern, not a functional defect) | Explicit documentation in the class docstring citing ADR-035 §6; no concurrency risk given confirmed sequential Runtime loop | §15 model-integrity/regression tests |
+| Lockout mechanism designed/implemented prematurely | Governance/Architectural | ADR-035 §18.A item 2, resolved this revision (§11) | A future implementer adds the lockout (in-memory or persisted) to Phase 1 "since it's in the ADR," reintroducing a stateful strategy and an unreviewed persistence dependency a phase early | Low if this Plan is followed; procedural, not technical | §5/§9/§11's explicit move to Phase 2; Phase 2's own RPI Plan must carry its own persistence-architecture review before implementing it | Independent review of the eventual Phase 1 diff against this Plan (no `__init__`, no lockout check) |
 | Phase leakage from Phase 2+ | Governance | §5/§6's explicit deferral list | A future implementer adds breakout/FVG/MI logic "while they're in there" | Low if this Plan is followed; the risk is procedural, not technical | §5's explicit REQUIRED/DEFERRED split; each phase's own RPI gate (`TEAM.md` §9) | Independent review of the eventual diff against this Plan |
 
-No risk above is Critical. Two items (governance) are the reason this
-Plan is blocked, not merely risky.
+No risk above is Critical. The two governance blockers that previously
+gated this Plan (ADR-035 Acceptance; lockout persistence direction) are
+resolved (§3); the residual risk is procedural (Phase 2 scope leaking
+into Phase 1), not a technical or capital-preservation risk within
+Phase 1's own scope.
 
 ## 18. Out-of-Scope Confirmation
 
 Phase 1 does **not** implement, and this Plan does not describe:
-breakout qualification (Phase 2), FVG confirmation (Phase 3), Market
-Intelligence/eligibility integration (Phase 4), ORB's remaining
-`StrategyEngineConfig` fields or `config_loader.py` wiring (Phase 5),
-production registration of `OrbBreakoutStrategy` (proposed as Phase 4
-or 6, §12, not decided here), stop-loss/take-profit computation (out of
-every phase's scope, ADR-031 §3), Risk Engine sizing, Compliance Engine
-gates, Runtime orchestration changes, Bridge/execution changes, or any
-part of ADR-036's retirement roadmap (dormant, per ADR-036's own
-Acceptance scope).
+breakout qualification (Phase 2), **the §6 session-lockout and its
+persistence mechanism (moved to Phase 2 this revision, §5/§9/§11)**,
+FVG confirmation (Phase 3), Market Intelligence/eligibility integration
+(Phase 4), ORB's remaining `StrategyEngineConfig` fields or
+`config_loader.py` wiring (Phase 5), production registration of
+`OrbBreakoutStrategy` (no earlier than Phase 6, §12), stop-loss/take-profit
+computation (out of every phase's scope, ADR-031 §3), Risk Engine
+sizing, Compliance Engine gates, Runtime orchestration changes,
+Bridge/execution changes, or any part of ADR-036's retirement roadmap
+(dormant, per ADR-036's own Acceptance scope).
 
 ## 19. Acceptance Criteria
 
-**Governance (must pass before any of the below is implementation-ready):**
-- Blocker A resolved: ADR-035's own document `Status:` line reads
-  **Accepted**.
-- Blocker B resolved: ADR-035 §18.A item 2 (lockout persistence) is
-  explicitly confirmed one way or the other, in writing, by the
-  appropriate authority — not silently carried forward.
+**Governance (both satisfied this revision):**
+- ADR-035's own document `Status:` line reads **Accepted** — satisfied
+  (§3).
+- ADR-035 §18.A item 2 (lockout persistence) is resolved in direction
+  (semantic requirement, ownership, counter-consumption, fail-closed
+  principle) — satisfied (§3, §11). Its concrete storage architecture is
+  a Phase 2 precondition, not a Phase 1 one, since the lockout mechanism
+  itself moved to Phase 2 (§11).
 
-**Once unblocked, objective, repository-verifiable gates:**
+**Objective, repository-verifiable gates:**
 - `StrategyId.OPENING_RANGE_BREAKOUT` exists.
-- `OrbBreakoutStrategy` exists, conforms to `Strategy`, and is
-  constructible/callable directly (not necessarily registered, §12).
+- `OrbBreakoutStrategy` exists, conforms to `Strategy`, is stateless (no
+  `__init__` override, §9), and is constructible/callable directly (not
+  necessarily registered, §12).
 - `evidence.opening_ranges` is consumed without recomputation and
   without any `market_data_ingestion`/raw-bar access (verified by
   `test_architecture.py`, unmodified, still green).
 - Every §14 fail-closed row is verified by a dedicated test, all
   passing.
-- Lockout behavior matches whatever Blocker B's resolution specifies
-  (in-memory or persisted) — verified by dedicated tests.
 - No Risk/Compliance/Bridge/Execution authority is transferred to ORB
   (verified by `test_architecture.py`'s forbidden-vocabulary check,
   unmodified).
@@ -682,41 +700,43 @@ Acceptance scope).
 - `git diff --stat` confined to `titan_protocol/strategy_engine/` and
   its own new test file — no other package touched.
 
-No criterion above is marked PASS by this document — these are future
-implementation gates, per this task's own instruction.
+No criterion above is marked PASS by this document — these are
+implementation gates for whoever carries out Phase 1, not yet executed.
 
 ## 20. Rollback Strategy
 
 Deterministic and low-risk, mirroring Phase 0's own rollback pattern:
-revert the future implementation commit(s); `OrbBreakoutStrategy`,
-`StrategyId.OPENING_RANGE_BREAKOUT`, and `orb_max_qualifications_per_range`
-disappear entirely; no other file depends on any of them (§8, §12 — not
-registered in production, so no downstream consumer to unwind); the
-five legacy strategies and every existing test are already confirmed
-untouched (§16), so rollback has zero cascading effect outside
-`titan_protocol/strategy_engine/` and its own new test file.
+revert the future implementation commit(s); `OrbBreakoutStrategy` and
+`StrategyId.OPENING_RANGE_BREAKOUT` disappear entirely; no other file
+depends on either of them (§8, §12 — not registered in production, so no
+downstream consumer to unwind); the five legacy strategies and every
+existing test are already confirmed untouched (§16), so rollback has
+zero cascading effect outside `titan_protocol/strategy_engine/` and its
+own new test file. (`orb_max_qualifications_per_range` and its
+persistence store no longer exist in Phase 1's own scope, §11 — nothing
+to roll back for them here.)
 
 ## 21. Engineering Checklist
 
-*(Blocked — none of the following may begin until §3's two blockers are
-resolved.)*
-
-- [ ] Blocker A resolved: ADR-035 marked Accepted in its own document.
-- [ ] Blocker B resolved: lockout persistence decision made explicit.
+- [x] Blocker A resolved: ADR-035 marked Accepted in its own document
+      (this session).
+- [x] Blocker B resolved in direction: lockout persistence requirement,
+      ownership, and counter semantics made explicit (this session);
+      concrete storage architecture deferred to Phase 2, which is also
+      where the lockout mechanism itself now lives (§11).
 - [ ] `StrategyId.OPENING_RANGE_BREAKOUT` added.
 - [ ] `orb_breakout.py` created with `OrbBreakoutStrategy`, matching §9
-      exactly.
-- [ ] `orb_max_qualifications_per_range` added to `StrategyEngineConfig`,
-      default `1`.
-- [ ] Lockout mechanism implemented per Blocker B's resolved design.
+      exactly (stateless, no `__init__`).
 - [ ] `test_orb_breakout_foundation.py` written covering §15's full list.
 - [ ] Every pre-existing Strategy Engine and Runtime test re-run,
       confirmed unmodified (§15).
 - [ ] `compileall` clean.
 - [ ] `test_architecture.py` (Strategy Engine's own) re-run and PASS.
-- [ ] `git diff --stat` confined to §8/§9/§11's files plus the new test
+- [ ] `git diff --stat` confined to §8/§9's files plus the new test
       file.
 - [ ] CHANGELOG entry drafted.
+- [ ] Independent review of this Plan (Software Architect sign-off,
+      `TEAM.md` §3) completed before implementation begins.
 
 ## 22. Final Readiness Assessment
 
@@ -725,21 +745,24 @@ this session and the subsequent governance-resolution revision
 (`ADR-035-orb-strategy.md`, `ADR-036-orb-strategy-consolidation.md`,
 every relevant `titan_protocol/strategy_engine/`, `titan_protocol/evidence_engine/`,
 `titan_protocol/risk_engine/reservation.py`, `titan_protocol/runtime/in_flight_commands.py`,
-and `titan_protocol/compliance_engine/position_limits.py` file, the full
+`titan_protocol/compliance_state_store/store.py`, and
+`titan_protocol/compliance_engine/position_limits.py` file, the full
 Strategy Engine and relevant Runtime test directories, `CHANGELOG.md`,
-`KNOWN_GAPS.md`). Two governance preconditions remain unresolved and are
-not settled by this document (§3) — this Plan is **content-complete but
-implementation-blocked**. Two smaller questions this Plan originally
-carried as open (§10's multi-range handling, §12's registration timing)
-are now resolved directly from ADR-035's own text and no longer require
-independent confirmation. Once §3's two remaining blockers are
-resolved, no further research is anticipated to be needed before
-implementation begins.
+`KNOWN_GAPS.md`). **Both governance preconditions are resolved** (§3):
+ADR-035 is Accepted, and the lockout-persistence question is resolved in
+direction with its remaining engineering work correctly re-scoped to
+Phase 2 rather than left as an unresolved gate on Phase 1. The two
+smaller questions this Plan previously carried as open (§10's
+multi-range handling, §12's registration timing) remain resolved
+directly from ADR-035's own text. This Plan is **content-complete and
+implementation-ready**, pending only this project's normal independent
+review of the Plan itself (`TEAM.md` §9) before implementation begins —
+no further governance research is anticipated to be needed.
 
 ## 23. Validation
 
-*(To be completed during/after Phase 1 implementation, once unblocked —
-recorded here as the expected checklist, not yet executed.)*
+*(To be completed during/after Phase 1 implementation — recorded here
+as the expected checklist, not yet executed.)*
 
 - `python3 -m compileall titan_protocol/strategy_engine tests/titan_protocol/strategy_engine`:
 - `python3 -m unittest discover -s tests/titan_protocol/strategy_engine`:
@@ -749,5 +772,5 @@ recorded here as the expected checklist, not yet executed.)*
 - Test Results Analyzer sign-off:
 - Software Architect sign-off (mandatory per `TEAM.md` §3 for a Strategy
   Engine change):
-- Confirmation that Blocker A and Blocker B were resolved *before*
-  implementation began, not retroactively.
+- Confirmation that this Plan's own independent review (§21) occurred
+  *before* implementation began, not retroactively.
