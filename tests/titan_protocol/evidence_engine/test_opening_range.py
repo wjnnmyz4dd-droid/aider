@@ -11,7 +11,7 @@ from pathlib import Path
 
 from titan_protocol.evidence_engine.config import EvidenceEngineConfig
 from titan_protocol.evidence_engine.engine import EvidenceEngine
-from titan_protocol.evidence_engine.models import OpeningRangeState, SessionName
+from titan_protocol.evidence_engine.models import OpeningRangeBarObservation, OpeningRangeState, SessionName
 from titan_protocol.evidence_engine.opening_range import compute_opening_ranges
 from tests.titan_protocol.evidence_engine._fixtures import T0, make_bar, make_config
 
@@ -250,6 +250,244 @@ class TestModelIntegrity(unittest.TestCase):
         )
         with self.assertRaises(FrozenInstanceError):
             state.range_high = 2.0  # type: ignore[misc]
+
+    def test_opening_range_state_post_range_bars_defaults_to_empty_tuple(self):
+        state = OpeningRangeState(
+            session=SessionName.LONDON,
+            range_start=BASE,
+            range_end=BASE + timedelta(minutes=30),
+            range_start_index=0,
+            range_end_index=1,
+            range_high=1.1,
+            range_low=1.0,
+            range_midpoint=1.05,
+            is_formed=True,
+            is_valid=True,
+        )
+        self.assertEqual(state.post_range_bars, ())
+
+    def test_opening_range_bar_observation_is_frozen(self):
+        observation = OpeningRangeBarObservation(
+            index=6, timestamp=BASE, open=1.10, high=1.11, low=1.09, close=1.105,
+        )
+        with self.assertRaises(FrozenInstanceError):
+            observation.close = 2.0  # type: ignore[misc]
+
+    def test_opening_range_bar_observation_field_shape(self):
+        observation = OpeningRangeBarObservation(
+            index=6, timestamp=BASE, open=1.10, high=1.11, low=1.09, close=1.105,
+        )
+        self.assertEqual(observation.index, 6)
+        self.assertEqual(observation.timestamp, BASE)
+        self.assertEqual(observation.open, 1.10)
+        self.assertEqual(observation.high, 1.11)
+        self.assertEqual(observation.low, 1.09)
+        self.assertEqual(observation.close, 1.105)
+
+
+class TestPostRangeBars(unittest.TestCase):
+    """(ADR-024 Amendment 4) `OpeningRangeState.post_range_bars` --
+    exact first-candidate anchoring, exact subsequent continuity,
+    self-derived completion, bounded retention, no skip-and-resume."""
+
+    _CONFIG_KWARGS = dict(
+        opening_range_anchors=((SessionName.LONDON_NEW_YORK_OVERLAP, ANCHOR_HOUR, ANCHOR_MINUTE),),
+        opening_range_duration_minutes=30,
+        opening_range_min_bars=3,
+        expected_bar_interval_seconds=300,  # 5 minutes
+    )
+
+    def _in_range_bars(self):
+        # 6 bars at 0,5,...,25 minutes -- fully inside [0, 30), gap-free.
+        return _bars_at([0, 5, 10, 15, 20, 25], highs=[1.10] * 6, lows=[1.05] * 6)
+
+    def test_first_candidate_exactly_at_range_end_is_eligible(self):
+        post_range = (make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=30)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=35)  # 30 + 5 <= 35
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(len(state.post_range_bars), 1)
+        self.assertEqual(state.post_range_bars[0].timestamp, BASE + timedelta(minutes=30))
+        self.assertEqual(state.post_range_bars[0].index, 6)
+
+    def test_first_candidate_later_than_range_end_yields_empty_tuple(self):
+        # range_end bar (offset 30) is entirely absent; first real bar is offset 35.
+        post_range = (make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=35)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=45)
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(state.post_range_bars, ())
+
+    def test_first_candidate_earlier_than_range_end_yields_empty_tuple(self):
+        # Pathological/out-of-order input: the bar occupying the array
+        # position range_end_index would land on has a timestamp well
+        # before range_start, not merely before range_end. A normal,
+        # later bar follows it so the anchor's own "has this window
+        # started yet" guard (based on the array's last timestamp) still
+        # passes -- isolating the first-candidate check being exercised.
+        stray = make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE - timedelta(minutes=100))
+        later = make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=40))
+        bars = self._in_range_bars() + (stray, later)
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=45)
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(state.range_end_index, 6)
+        self.assertEqual(state.post_range_bars, ())
+
+    def test_missing_boundary_candle_scenario(self):
+        # range_end=BASE+30min absent; next available bar is BASE+35min.
+        # The 35-minute bar must NOT be accepted as the first observation.
+        post_range = (make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=35)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=45)
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(state.post_range_bars, ())
+
+    def test_exact_subsequent_continuity_accepts_full_contiguous_run(self):
+        post_range = _bars_at([30, 35, 40], highs=[1.10, 1.11, 1.12], lows=[1.05, 1.06, 1.07])
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=50)  # 40 + 5 <= 50
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(len(state.post_range_bars), 3)
+        self.assertEqual(
+            [obs.timestamp for obs in state.post_range_bars],
+            [BASE + timedelta(minutes=m) for m in (30, 35, 40)],
+        )
+        self.assertEqual([obs.index for obs in state.post_range_bars], [6, 7, 8])
+
+    def test_internal_gap_retains_only_the_contiguous_prefix(self):
+        # 40-minute bar missing; 45-minute bar exists but must never be
+        # reached (no skip-and-resume).
+        post_range = _bars_at([30, 35, 45], highs=[1.10, 1.11, 1.30], lows=[1.05, 1.06, 0.90])
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=55)
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(len(state.post_range_bars), 2)
+        self.assertEqual(
+            [obs.timestamp for obs in state.post_range_bars],
+            [BASE + timedelta(minutes=m) for m in (30, 35)],
+        )
+
+    def test_incomplete_first_candidate_yields_empty_tuple(self):
+        post_range = (make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=30)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=34)  # 30 + 5 = 35 > 34 -- not yet complete
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(state.post_range_bars, ())
+
+    def test_incomplete_later_candidate_retains_accepted_prefix_only_no_resume(self):
+        # A bar at offset 40 exists and is fully complete/contiguous, but
+        # must never be inspected once offset 35 fails completion.
+        post_range = _bars_at([30, 35, 40], highs=[1.10, 1.11, 1.12], lows=[1.05, 1.06, 1.07])
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=39)  # 30+5=35<=39 (complete); 35+5=40>39 (incomplete)
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(len(state.post_range_bars), 1)
+        self.assertEqual(state.post_range_bars[0].timestamp, BASE + timedelta(minutes=30))
+
+    def test_completion_exactly_at_boundary_is_eligible(self):
+        post_range = (make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=30)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=35)  # 30 + 5 == 35 exactly
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(len(state.post_range_bars), 1)
+
+    def test_incomplete_one_second_before_boundary_yields_empty_tuple(self):
+        post_range = (make_bar(1.10, 1.12, 1.09, 1.115, timestamp=BASE + timedelta(minutes=30)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=30, seconds=299)  # one second short of 30+5min
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(state.post_range_bars, ())
+
+    def test_retention_bound_enforced(self):
+        post_range = _bars_at([30, 35, 40, 45], highs=[1.10] * 4, lows=[1.05] * 4)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=2)
+        now = BASE + timedelta(minutes=55)
+        state = compute_opening_ranges(bars, now, config)[0]
+        self.assertEqual(len(state.post_range_bars), 2)
+        self.assertEqual(
+            [obs.timestamp for obs in state.post_range_bars],
+            [BASE + timedelta(minutes=m) for m in (30, 35)],
+        )
+
+    def test_exact_ohlc_preservation(self):
+        post_range = (make_bar(1.101, 1.123, 1.091, 1.117, timestamp=BASE + timedelta(minutes=30)),)
+        bars = self._in_range_bars() + post_range
+        config = make_config(**self._CONFIG_KWARGS, opening_range_post_range_bar_window=5)
+        now = BASE + timedelta(minutes=40)
+        observation = compute_opening_ranges(bars, now, config)[0].post_range_bars[0]
+        self.assertEqual(observation.open, 1.101)
+        self.assertEqual(observation.high, 1.123)
+        self.assertEqual(observation.low, 1.091)
+        self.assertEqual(observation.close, 1.117)
+
+    def test_invalid_window_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            make_config(opening_range_post_range_bar_window=0)
+
+    def test_window_default_is_five(self):
+        config = make_config()
+        self.assertEqual(config.opening_range_post_range_bar_window, 5)
+
+
+class TestMultipleOpeningRangeIndependence(unittest.TestCase):
+    """A bar may legitimately be post-range evidence for one configured
+    anchor while simultaneously being in-range formation evidence for a
+    different, later-starting anchor -- each `OpeningRangeState` is
+    derived independently, and neither computation mutates or suppresses
+    the other's result."""
+
+    def test_shared_bar_serves_both_roles_without_interference(self):
+        anchor_a_hour, anchor_a_minute = 13, 0
+        anchor_b_hour, anchor_b_minute = 13, 10  # starts exactly where A's post-range window begins
+        config = make_config(
+            opening_range_anchors=(
+                (SessionName.LONDON, anchor_a_hour, anchor_a_minute),
+                (SessionName.LONDON_NEW_YORK_OVERLAP, anchor_b_hour, anchor_b_minute),
+            ),
+            opening_range_duration_minutes=10,
+            opening_range_min_bars=1,
+            expected_bar_interval_seconds=600,  # 10 minutes
+        )
+        start = BASE.replace(hour=13, minute=0)
+        shared_bar_timestamp = start + timedelta(minutes=10)  # 13:10
+        bars = (
+            make_bar(1.10, 1.11, 1.09, 1.105, timestamp=start),  # 13:00 -- in-range for A only
+            make_bar(1.12, 1.13, 1.11, 1.125, timestamp=shared_bar_timestamp),  # 13:10 -- shared
+            make_bar(1.14, 1.15, 1.13, 1.145, timestamp=start + timedelta(minutes=20)),  # 13:20
+        )
+        now = start + timedelta(minutes=30)
+        ranges = compute_opening_ranges(bars, now, config)
+        self.assertEqual(len(ranges), 2)
+        range_a, range_b = ranges[0], ranges[1]
+
+        # Range A: [13:00, 13:10) -- only the 13:00 bar is in-range; its
+        # post_range_bars must start with the shared 13:10 bar (and,
+        # since the 13:20 bar is also genuinely contiguous/complete
+        # relative to A's own 10-minute interval, correctly extends to
+        # include it too).
+        self.assertEqual(range_a.range_start, start)
+        self.assertTrue(range_a.is_valid)
+        self.assertEqual(len(range_a.post_range_bars), 2)
+        self.assertEqual(range_a.post_range_bars[0].timestamp, shared_bar_timestamp)
+
+        # Range B: [13:10, 13:20) -- the shared 13:10 bar is B's own
+        # in-range formation evidence (contributes to range_high/low),
+        # completely independent of its role in A's post_range_bars.
+        self.assertEqual(range_b.range_start, shared_bar_timestamp)
+        self.assertTrue(range_b.is_valid)
+        self.assertAlmostEqual(range_b.range_high, 1.13)
+        self.assertAlmostEqual(range_b.range_low, 1.11)
 
 
 class TestSnapshotIntegration(unittest.TestCase):

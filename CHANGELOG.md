@@ -15,6 +15,46 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-26 (ADR-024 Amendment 4 — ORB Phase 2 Step 2A: post-range evidence)
+
+### Added
+- `titan_protocol/evidence_engine/models.py` -- `OpeningRangeBarObservation`
+  (frozen: `index`, `timestamp`, `open`, `high`, `low`, `close`) and
+  `OpeningRangeState.post_range_bars: Tuple[OpeningRangeBarObservation, ...] = ()`
+  (additive, backward-compatible default). Pure factual OHLC evidence
+  only -- no breakout, direction, or qualification decision.
+- `titan_protocol/evidence_engine/config.py` -- `EvidenceEngineConfig.
+  opening_range_post_range_bar_window` (default 5, validated `>= 1`),
+  an Evidence-Engine-owned retention bound, independent of any Strategy
+  Engine confirmation-count policy.
+- `titan_protocol/evidence_engine/opening_range.py` --
+  `_compute_post_range_bars()`, computed inside the existing
+  `_compute_single_range()` pass: the first candidate must open exactly
+  at `range_end` (no tolerance, no forward search); every subsequent
+  candidate must open exactly one `expected_bar_interval_seconds` after
+  the previous accepted one; each candidate must be provably complete
+  (`candidate.timestamp + expected_bar_interval_seconds <= now`) before
+  acceptance. A continuity failure or an incomplete candidate stops
+  extraction immediately -- never skip-and-resume. Each configured
+  opening-range anchor derives its own `post_range_bars` independently.
+- `tests/titan_protocol/evidence_engine/test_opening_range.py` -- 18 new
+  tests covering model shape/immutability, exact first-candidate
+  anchoring (at/before/after `range_end`, including the concrete
+  missing-boundary-bar case), exact subsequent continuity, internal-gap
+  and incomplete-candidate truncation with no skip-and-resume, exact
+  completion-boundary arithmetic, retention-bound enforcement, index/OHLC
+  preservation, and multiple-opening-range independence (a bar serving
+  as both post-range evidence for one anchor and in-range formation
+  evidence for another).
+
+This is Step 2A of the ADR-035 Phase 2 Plan
+(`docs/plans/adr-035-phase2-orb-breakout-lockout.md`) -- implements
+Accepted ADR-024 Amendment 4 only. `evaluate()` remains behaviorally
+unchanged (same `EvidenceReport`); `OrbBreakoutStrategy` is untouched by
+this commit and still cannot return `QUALIFIED`. Step 2B (breakout
+qualification + lockout, Strategy Engine) remains gated on this
+increment's own independent conformance review.
+
 ## 2026-07-26 (ADR-035 Phase 1 — ORB Strategy foundation)
 
 ### Added

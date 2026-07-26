@@ -86,6 +86,13 @@ class EvidenceEngineConfig:
     #: §18.B) -- an operator must configure this to match the actual bar
     #: timeframe Evidence Engine is fed.
     expected_bar_interval_seconds: int = 300
+    #: (ADR-024 Amendment 4) Maximum number of completed post-range bars
+    #: retained in `OpeningRangeState.post_range_bars` per evaluation --
+    #: an Evidence Engine retention/exposure bound only, independent of
+    #: any Strategy Engine confirmation-count policy. A safety margin
+    #: over ADR-035 §13's currently recommended `orb_min_confirmation_candles`
+    #: range of 1-2.
+    opening_range_post_range_bar_window: int = 5
 
     def __post_init__(self) -> None:
         total = (
@@ -108,6 +115,10 @@ class EvidenceEngineConfig:
         if self.expected_bar_interval_seconds <= 0:
             raise ValueError(
                 f"expected_bar_interval_seconds must be > 0, got {self.expected_bar_interval_seconds}"
+            )
+        if self.opening_range_post_range_bar_window < 1:
+            raise ValueError(
+                f"opening_range_post_range_bar_window must be >= 1, got {self.opening_range_post_range_bar_window}"
             )
         _validate_no_overlapping_anchors(self.opening_range_anchors, self.opening_range_duration_minutes)
 

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import List, Sequence, Tuple
 
 from .config import EvidenceEngineConfig
-from .models import Bar, OpeningRangeState, SessionName
+from .models import Bar, OpeningRangeBarObservation, OpeningRangeState, SessionName
 
 
 def _has_temporal_gap(bars_in_window: Sequence[Bar], expected_interval_seconds: int) -> bool:
@@ -29,6 +29,46 @@ def _has_temporal_gap(bars_in_window: Sequence[Bar], expected_interval_seconds: 
     return False
 
 
+def _compute_post_range_bars(
+    bars: Sequence[Bar],
+    range_end: datetime,
+    range_end_index: int,
+    expected_interval_seconds: int,
+    window: int,
+    now: datetime,
+) -> Tuple[OpeningRangeBarObservation, ...]:
+    """(ADR-024 Amendment 4) The bounded, chronological, contiguous
+    prefix of completed bars immediately following `range_end_index`.
+    The first candidate must open exactly at `range_end` -- no
+    tolerance, no forward search. Every following candidate must open
+    exactly one `expected_interval_seconds` after the previous accepted
+    one. A continuity failure or an incomplete candidate stops
+    extraction immediately; never skip-and-resume."""
+    interval = timedelta(seconds=expected_interval_seconds)
+    observations: List[OpeningRangeBarObservation] = []
+    expected_timestamp = range_end
+    index = range_end_index
+    while len(observations) < window and index < len(bars):
+        candidate = bars[index]
+        if candidate.timestamp != expected_timestamp:
+            break
+        if candidate.timestamp + interval > now:
+            break
+        observations.append(
+            OpeningRangeBarObservation(
+                index=index,
+                timestamp=candidate.timestamp,
+                open=candidate.open,
+                high=candidate.high,
+                low=candidate.low,
+                close=candidate.close,
+            )
+        )
+        expected_timestamp = candidate.timestamp + interval
+        index += 1
+    return tuple(observations)
+
+
 def _compute_single_range(
     bars: Sequence[Bar],
     now: datetime,
@@ -37,6 +77,7 @@ def _compute_single_range(
     duration_minutes: int,
     min_bars: int,
     expected_interval_seconds: int,
+    post_range_bar_window: int,
 ) -> OpeningRangeState:
     range_end = range_start + timedelta(minutes=duration_minutes)
     is_formed = now >= range_end
@@ -65,6 +106,10 @@ def _compute_single_range(
     range_midpoint = (range_high + range_low) / 2.0
     is_valid = len(included_bars) >= min_bars and not _has_temporal_gap(included_bars, expected_interval_seconds)
 
+    post_range_bars = _compute_post_range_bars(
+        bars, range_end, range_end_index, expected_interval_seconds, post_range_bar_window, now,
+    )
+
     return OpeningRangeState(
         session=session,
         range_start=range_start,
@@ -76,6 +121,7 @@ def _compute_single_range(
         range_midpoint=range_midpoint,
         is_formed=is_formed,
         is_valid=is_valid,
+        post_range_bars=post_range_bars,
     )
 
 
@@ -100,6 +146,7 @@ def compute_opening_ranges(
                 config.opening_range_duration_minutes,
                 config.opening_range_min_bars,
                 config.expected_bar_interval_seconds,
+                config.opening_range_post_range_bar_window,
             )
         )
     return tuple(states)

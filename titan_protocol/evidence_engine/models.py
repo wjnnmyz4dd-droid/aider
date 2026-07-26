@@ -335,6 +335,28 @@ class FairValueGap:
 
 
 @dataclass(frozen=True)
+class OpeningRangeBarObservation:
+    """(ADR-024 Amendment 4) One closed, contiguous, completed bar
+    following an opening range's own `range_end` -- a pure factual OHLC
+    observation, never a breakout/direction/qualification decision.
+    `index` is sequence-relative to the `bars` argument of the one
+    `EvidenceEngine.evaluate_snapshot()` call that produced it -- not a
+    globally stable identity, and not comparable across separate calls.
+    `timestamp` (bar-open time) supplies this observation's own temporal
+    identity only within that same call's enclosing symbol context;
+    `symbol` is deliberately not duplicated here, matching
+    `OpeningRangeState`'s and `FairValueGap`'s own convention of relying
+    on the enclosing snapshot for it."""
+
+    index: int
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+@dataclass(frozen=True)
 class OpeningRangeState:
     """(ADR-035 §3, Phase 0 -- ADR-024 Amendment 2) A fixed-width price
     range anchored to a configured session-open time. `session` is
@@ -352,6 +374,16 @@ class OpeningRangeState:
     range_midpoint: float
     is_formed: bool  # True once range_end has fully elapsed relative to `now`
     is_valid: bool  # False on insufficient bar count or a detected temporal gap
+    post_range_bars: Tuple[OpeningRangeBarObservation, ...] = ()
+    """(ADR-024 Amendment 4) The bounded, chronological, contiguous
+    prefix of completed bars immediately following `range_end_index`.
+    The first entry's `timestamp` must equal `range_end` exactly (no
+    tolerance, no forward search); every subsequent entry's `timestamp`
+    must equal the previous entry's `timestamp` plus
+    `EvidenceEngineConfig.expected_bar_interval_seconds` exactly. A
+    continuity failure or an incomplete candidate stops extraction --
+    never skip-and-resume. Bounded by
+    `EvidenceEngineConfig.opening_range_post_range_bar_window`."""
 
 
 @dataclass(frozen=True)
@@ -404,6 +436,7 @@ __all__ = [
     "ConfluenceZone",
     "SupportResistanceContext",
     "FairValueGap",
+    "OpeningRangeBarObservation",
     "OpeningRangeState",
     "EvidenceSnapshot",
 ]
