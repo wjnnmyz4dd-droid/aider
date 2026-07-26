@@ -65,11 +65,18 @@ made this session; this is the corresponding, previously-missing entry
 in *this* document, not a new one.
 
 **Amendment 4 (2026-07-26, Proposed -- not yet Accepted, requires
-independent review before any implementation; revised 2026-07-26 to
-resolve findings from the independent "ADR-024 Amendment 4 -- Independent
-Evidence-Contract Architecture & Acceptance Review," disposition
-**REQUIRES MAJOR REVISION** on the original text's closed-bar claim --
-this revision replaces that claim, not merely restates it): adds a
+independent review before any implementation; revised twice, 2026-07-26:
+first to resolve the closed-bar finding from the independent "ADR-024
+Amendment 4 -- Independent Evidence-Contract Architecture & Acceptance
+Review" (disposition **REQUIRES MAJOR REVISION**); second, this
+revision, to resolve the first-candidate continuity finding from the
+independent "ADR-024 Amendment 4 Revised Proposal -- Independent
+Acceptance Re-Review" (disposition again **REQUIRES MAJOR REVISION**:
+the prior text's suggestion to reuse `_has_temporal_gap()`'s tolerance
+test against `range_end` was proven wrong -- that test only flags a gap
+exceeding one full interval, so a bar missing exactly at the range
+boundary would have gone undetected). Each revision replaces the
+defective claim it targets, never merely restates it): adds a
 bounded, per-opening-range post-range bar-observation fact, closing the
 evidence-contract gap discovered during ADR-035 Phase 2 RPI planning.**
 See `docs/plans/adr-035-phase2-orb-breakout-lockout.md` for the full
@@ -145,26 +152,74 @@ following `range_end_index`, with no gap-skipping.* The range remains
 -- the first bar not included in the range. Therefore **the first
 post-range candidate is `bars[range_end_index]`, never `bars[range_end_index
 + 1]`** (`range_end_index` already points one past the last in-range bar).
-Processing proceeds bar-by-bar in chronological order starting there,
-and for each candidate, in order:
+**First-candidate continuity (corrected -- this is the load-bearing fix
+in this revision).** The prior text suggested reusing
+`opening_range.py::_has_temporal_gap()`'s existing test (`later.timestamp
+- earlier.timestamp > expected_interval_seconds`) against `(range_end,
+first candidate)`. Independent review proved this wrong by direct
+arithmetic: for `range_end=10:00`, `expected_interval=5min`, a first
+candidate at `10:05` (the true 10:00 bar missing entirely) computes
+`10:05 - 10:00 = 5min`, which is **not** `> 5min` -- so `_has_temporal_gap()`'s
+own tolerance would silently accept a bar that is one full missing
+interval away from the range boundary. That test is correct for
+comparing two real, already-adjacent bars; it is the wrong comparison
+when one side is the `range_end` boundary itself, because the boundary
+is not a bar -- the true first legitimate post-range bar is defined to
+open **exactly** at `range_end` (§3 above, `range_end_index` already
+points at the first bar not in the range). The corrected, exact rule,
+with no tolerance of any kind:
 
-1. Verify temporal continuity from the immediately preceding boundary
-   (`range_end` for the first candidate, or the prior accepted
-   observation's own `timestamp + expected_bar_interval_seconds` for
-   every subsequent one) -- reusing the exact continuity test
-   `_has_temporal_gap()` already applies inside the opening range itself,
-   never trusting an upstream gap flag.
+```
+FIRST CANDIDATE:  candidate.timestamp == range_end
+```
+
+If `bars[range_end_index].timestamp != range_end` -- whether earlier,
+later, one expected interval later, or several intervals later --
+`post_range_bars = ()` for that `OpeningRangeState`, unconditionally.
+There is no searching forward for a later bar that happens to match;
+the first post-range bar must begin exactly at the boundary or no
+post-range evidence is exposed at all for that range in that
+evaluation cycle.
+
+**Subsequent-candidate continuity (kept separate from the first-candidate
+rule -- distinct anchor, distinct check).** Only once the first
+candidate has passed the exact-equality check above does the earlier
+`_has_temporal_gap()`-style comparison apply, and only between two real,
+already-accepted bars:
+
+```
+SUBSEQUENT CANDIDATES:  candidate.timestamp == previous.timestamp + expected_bar_interval_seconds
+```
+
+(stated here as exact equality, tighter than `_has_temporal_gap()`'s own
+`>`-only check, since a contiguous confirmation sequence must never
+admit a candidate that arrived either early/duplicated or with any gap,
+not merely one exceeding a full interval).
+
+Processing proceeds bar-by-bar in chronological order starting at
+`bars[range_end_index]`, and for each candidate, in order:
+
+1. Verify continuity: the first-candidate exact-equality rule for the
+   very first candidate, or the subsequent-candidate exact-equality rule
+   (relative to the immediately preceding **accepted** observation) for
+   every candidate after it.
 2. Verify completion per the rule above.
 3. Accept the candidate into `post_range_bars` only if both checks
-   succeed.
-4. **Stop at the first incomplete bar or the first detected temporal
-   gap** -- do not skip the invalid or missing point and resume
-   collecting from later, otherwise-valid bars.
+   succeed, in that order.
+4. **Stop at the first failed continuity check or the first incomplete
+   bar** -- do not skip the invalid or missing point and resume
+   collecting from later, otherwise-valid bars. A first-candidate
+   continuity failure yields `post_range_bars = ()` directly (there is
+   no "later" bar to fall back to, per the exact rule above); a
+   subsequent-candidate failure or an incomplete bar truncates the
+   already-accepted prefix at that point.
 
 This guarantees `post_range_bars` can never represent a non-contiguous
-confirmation history assembled around a hole -- a gap or an incomplete
-bar truncates the sequence at that point, exactly the same fail-closed
-posture `is_valid` already applies to the opening range itself.
+confirmation history assembled around a hole, at the range boundary or
+anywhere inside the sequence -- a gap or an incomplete bar truncates (or,
+at the very first candidate, empties) the sequence at that point, exactly
+the same fail-closed posture `is_valid` already applies to the opening
+range itself.
 
 **Index contract (clarified -- stated explicitly, not left inferable).**
 `OpeningRangeBarObservation.index` is **sequence-relative, not a globally
@@ -174,10 +229,24 @@ identical in kind to the pre-existing, unchanged limitation already true
 of `range_start_index`/`range_end_index`/`FairValueGap.start_index`/
 `end_index` (`Bar` carries no persistent identity anywhere in this
 system). Index comparisons are therefore valid only among evidence
-produced by the same snapshot call, never across separate calls;
-`timestamp` is what supplies the observation's own independent temporal
-identity outside that scope. This is sufficient for ADR-035 Phase 2,
-which only ever compares indices within one snapshot.
+produced by the same snapshot call, never across separate calls. This
+is sufficient for ADR-035 Phase 2, which only ever compares indices
+within one snapshot.
+
+**Timestamp identity (tightened -- scoped explicitly, not left
+overstated).** `timestamp` is not a globally stable bar identity either;
+it supplies the observation's own temporal identity only within the
+enclosing symbol/evaluation context -- practically, uniqueness holds at
+the scope of `(symbol, timestamp)` for one evaluation call, matching
+this same, pre-existing scope every other bar-derived fact in
+`EvidenceSnapshot` already has. `OpeningRangeBarObservation` intentionally
+does not duplicate `symbol` on the observation itself -- `symbol` is
+already supplied once by the enclosing `EvidenceEngine.evaluate_snapshot()`
+call's own context, matching `OpeningRangeState`'s and `FairValueGap`'s
+existing convention of never repeating it. Neither `index` nor
+`timestamp`, alone or together, should be treated as a repository-wide
+or globally durable bar identifier -- both are scoped to one evaluation
+call for one symbol.
 
 **Multiple opening ranges (clarified -- stated explicitly).** A single
 physical bar may simultaneously be post-range evidence for one configured
@@ -203,46 +272,94 @@ false `QUALIFIED`. It is a **capability/configuration incompatibility**,
 not a safety defect -- and one that would require revisiting this bound
 at that time, not one this amendment must solve now.
 
+**Snapshot freshness (clarified -- explicitly out of this amendment's
+scope, not silently ignored).** This amendment proves completion and
+continuity only for bars actually supplied to `EvidenceEngine` in a
+given call; it does not, and is not required to, establish that the
+overall `bars` input itself is fresh relative to `now` (i.e., that no
+newer bar exists that simply wasn't supplied). Snapshot/input freshness
+remains `market_data_ingestion.freshness.is_stale()`'s own, pre-existing,
+upstream responsibility (ADR-033, unchanged) -- this amendment introduces
+no new freshness mechanism, and never fabricates an observation for a bar
+that was never supplied.
+
 **Testing (planned, added to this amendment's own scope -- not yet
-written, no test file is touched by this proposal):** model shape and
-immutability of `OpeningRangeBarObservation`; `post_range_bars` defaults
-to `()`; the first post-range observation begins at `range_end_index`
-(not `+1`); exact OHLC/timestamp/index preservation; chronological
-ordering; window-bound enforcement; a genuinely completed candidate is
-included; a candidate with `bar.timestamp + expected_bar_interval_seconds
-> now` is excluded; a candidate exactly at
-`bar.timestamp + expected_bar_interval_seconds == now` is eligible; a
-temporal gap between `range_end` and the first candidate prevents that
-candidate and every later bar from forming a false contiguous
-confirmation sequence; a temporal gap inside the post-range sequence
-truncates evidence at the gap; later, otherwise-valid bars after a
-detected gap are never resumed into the same `post_range_bars` sequence;
-`evaluate()` remains behaviorally unchanged; `evaluate_snapshot()` exposes
-the additive evidence; existing `OpeningRangeState` construction
-(`opening_range.py`, `tests/titan_protocol/evidence_engine/
-test_opening_range.py`, `tests/titan_protocol/strategy_engine/
-test_orb_breakout_foundation.py` -- all keyword-argument construction,
-confirmed by direct search, none positional) remains backward compatible;
-no `market_data_ingestion` dependency is introduced into Strategy Engine;
-no raw bars reach `Strategy.qualify()`; no Phase 2 qualification
-semantics are implemented by this amendment.
+written, no test file is touched by this proposal):**
+
+- model shape and immutability of `OpeningRangeBarObservation`;
+- `post_range_bars` defaults to `()`;
+- **A.** first candidate's `timestamp` exactly equals `range_end` ->
+  eligible for the subsequent completion check;
+- **B.** first candidate's `timestamp` is later than `range_end`
+  (including exactly one, or several, expected intervals later -- the
+  §3 boundary-missing-bar case) -> `post_range_bars == ()`;
+- **C.** first candidate's `timestamp` is earlier than `range_end` ->
+  `post_range_bars == ()`;
+- exact OHLC/timestamp/index preservation for every accepted
+  observation;
+- chronological ordering; window-bound enforcement (`opening_range_post_range_bar_window`);
+- a genuinely completed candidate is included;
+- a candidate with `bar.timestamp + expected_bar_interval_seconds > now`
+  is excluded (extraction stops there);
+- a candidate exactly at `bar.timestamp + expected_bar_interval_seconds
+  == now` is eligible;
+- **D.** an internal subsequent-candidate gap (`candidate.timestamp !=
+  previous.timestamp + expected_bar_interval_seconds`) stops extraction,
+  keeping only the already-accepted prefix;
+- **E.** an incomplete candidate stops extraction the same way;
+- **F.** later, otherwise-valid bars after a detected gap or incomplete
+  bar are never resumed into the same `post_range_bars` sequence (no
+  skip-and-resume, tested explicitly by asserting the tuple length/content
+  after the stop point);
+- the concrete boundary-missing-bar scenario named in the required
+  revision -- `range_end=10:00`, `expected_interval=5min`, final in-range
+  bar `09:55`, `10:00` bar absent, next available bar `10:05` (otherwise
+  complete) -> `post_range_bars == ()`, the `10:05` bar must not be
+  accepted;
+- `evaluate()` remains behaviorally compatible (see below); `evaluate_snapshot()`
+  exposes the additive evidence;
+- existing `OpeningRangeState` construction (`opening_range.py`,
+  `tests/titan_protocol/evidence_engine/test_opening_range.py`,
+  `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`
+  -- all keyword-argument construction, confirmed by direct search, none
+  positional) remains backward compatible;
+- no `market_data_ingestion` dependency is introduced into Strategy
+  Engine; no raw bars reach `Strategy.qualify()`; no Phase 2
+  qualification semantics are implemented by this amendment.
 
 Computed inside the existing `compute_opening_ranges()`/
 `_compute_single_range()` pass (Phase 0's own module), reusing the same
 `bars`/`range_end_index`/`config.expected_bar_interval_seconds` already
 in scope -- one bounded forward scan, no second traversal, no unbounded
-scan. `evaluate()` is unaffected; only `evaluate_snapshot()`'s existing
-`opening_ranges` output gains the new, defaulted field.
+scan.
 
-**Governance:** this amendment remains **Proposed**, not Accepted.
-Acceptance criterion "closed-bar semantics are proven" is satisfied only
-once Evidence Engine's own self-derived completion proof (above) is what
-implementation actually builds -- restating this proposal's text is not,
-by itself, sufficient to consider that criterion met; the revised design
-must still pass its own independent re-review before Acceptance. Requires
-its own independent review and Acceptance before ADR-035 Phase 2
-implementation may begin (CLAUDE.md §1.10); this entry documents the
-revised proposal, not an acceptance.
+**`evaluate()` compatibility (corrected wording -- behavioral, not
+computational, identity).** `compute_opening_ranges()` already runs
+unconditionally inside the shared `_analyze()` pass today, and `evaluate()`
+already discards its result (assigned to `_opening_ranges`); this
+amendment makes that same, already-discarded computation marginally
+larger for callers of `evaluate_snapshot()`. The precise claim is
+therefore: `evaluate()` remains **behaviorally compatible** -- its
+returned `EvidenceReport` contract and semantics, and every field on it,
+are byte-for-byte unchanged -- not that zero additional computation
+occurs. Only `evaluate_snapshot()`'s existing `opening_ranges` output
+gains the new, defaulted `post_range_bars` field.
+
+**Governance:** this amendment remains **Proposed**, not Accepted. It
+introduces no ORB breakout qualification, direction, body/wick or
+confirmation-threshold decision, `QualificationResult`, `TradeIntent`,
+lockout, persistence, FVG confirmation, Market Intelligence integration,
+production ORB registration, legacy-strategy modification, or ADR-036
+retirement work -- evidence only. Acceptance criterion "closed-bar and
+continuity semantics are proven" is satisfied only once Evidence
+Engine's own self-derived completion-and-continuity proof (above,
+including the corrected first-candidate rule) is what implementation
+actually builds -- restating this proposal's text is not, by itself,
+sufficient to consider that criterion met; the revised design must still
+pass its own independent re-review before Acceptance. Requires its own
+independent review and Acceptance before ADR-035 Phase 2 implementation
+may begin (CLAUDE.md §1.10); this entry documents the revised proposal,
+not an acceptance, and does not itself unblock Phase 2.
 
 Owner: Software Architect (per `.claude/agents/TEAM.md`'s precedent for
 cross-cutting evaluation components — same accountable role as
