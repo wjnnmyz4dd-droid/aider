@@ -64,19 +64,25 @@ document.** ADR-035's own text previously mislabeled this addition
 made this session; this is the corresponding, previously-missing entry
 in *this* document, not a new one.
 
-**Amendment 4 (2026-07-26, Proposed -- not yet Accepted, requires
-independent review before any implementation; revised twice, 2026-07-26:
+**Amendment 4 (2026-07-26, Accepted 2026-07-26 -- history preserved
+below, not backdated): revised twice before Acceptance, both 2026-07-26:
 first to resolve the closed-bar finding from the independent "ADR-024
 Amendment 4 -- Independent Evidence-Contract Architecture & Acceptance
-Review" (disposition **REQUIRES MAJOR REVISION**); second, this
-revision, to resolve the first-candidate continuity finding from the
-independent "ADR-024 Amendment 4 Revised Proposal -- Independent
-Acceptance Re-Review" (disposition again **REQUIRES MAJOR REVISION**:
-the prior text's suggestion to reuse `_has_temporal_gap()`'s tolerance
-test against `range_end` was proven wrong -- that test only flags a gap
-exceeding one full interval, so a bar missing exactly at the range
-boundary would have gone undetected). Each revision replaces the
-defective claim it targets, never merely restates it): adds a
+Review" (disposition **REQUIRES MAJOR REVISION**); second, to resolve
+the first-candidate continuity finding from the independent "ADR-024
+Amendment 4 Revised Proposal -- Independent Acceptance Re-Review"
+(disposition again **REQUIRES MAJOR REVISION**: the prior text's
+suggestion to reuse `_has_temporal_gap()`'s tolerance test against
+`range_end` was proven wrong -- that test only flags a gap exceeding one
+full interval, so a bar missing exactly at the range boundary would have
+gone undetected). A third independent review, "ADR-024 Amendment 4
+(commit `d081f487`) -- Independent Acceptance Re-Review," returned
+**ACCEPTED WITH REQUIRED MINOR REVISIONS** (one required addition: an
+explicit multiple-opening-range test commitment, added below as Testing
+item G); applying that single revision satisfies the remaining
+criterion, and this entry now formally records Acceptance. Each prior
+revision replaced the defective claim it targeted, never merely
+restated it): adds a
 bounded, per-opening-range post-range bar-observation fact, closing the
 evidence-contract gap discovered during ADR-035 Phase 2 RPI planning.**
 See `docs/plans/adr-035-phase2-orb-breakout-lockout.md` for the full
@@ -311,6 +317,22 @@ written, no test file is touched by this proposal):**
   bar are never resumed into the same `post_range_bars` sequence (no
   skip-and-resume, tested explicitly by asserting the tuple length/content
   after the stop point);
+- **G.** multiple configured opening-range anchors: with two anchors
+  configured (e.g. a London-open range ending 10:00 and a New York-open
+  range spanning 10:00-10:30), each resulting `OpeningRangeState` derives
+  its own `post_range_bars` independently, applying the first-candidate/
+  subsequent-continuity/completion rules above against its own
+  `range_end`/`range_end_index` only -- asserting concretely that a bar
+  which is simultaneously a valid post-range observation for the first
+  anchor and a valid in-range (formation) bar for the second anchor is
+  correctly present in the first anchor's `post_range_bars` and correctly
+  contributes to the second anchor's own `range_high`/`range_low`
+  formation, with neither computation mutating, suppressing, or being
+  aware of the other's result -- both `OpeningRangeState` instances are
+  produced from the same immutable `bars` sequence by independent calls
+  to `_compute_single_range()`. This test is fact-association only: it
+  asserts no range-selection or disambiguation policy (Phase 4's own
+  scope, unchanged) and introduces no qualification behavior;
 - the concrete boundary-missing-bar scenario named in the required
   revision -- `range_end=10:00`, `expected_interval=5min`, final in-range
   bar `09:55`, `10:00` bar absent, next available bar `10:05` (otherwise
@@ -345,21 +367,29 @@ are byte-for-byte unchanged -- not that zero additional computation
 occurs. Only `evaluate_snapshot()`'s existing `opening_ranges` output
 gains the new, defaulted `post_range_bars` field.
 
-**Governance:** this amendment remains **Proposed**, not Accepted. It
-introduces no ORB breakout qualification, direction, body/wick or
-confirmation-threshold decision, `QualificationResult`, `TradeIntent`,
-lockout, persistence, FVG confirmation, Market Intelligence integration,
-production ORB registration, legacy-strategy modification, or ADR-036
-retirement work -- evidence only. Acceptance criterion "closed-bar and
-continuity semantics are proven" is satisfied only once Evidence
-Engine's own self-derived completion-and-continuity proof (above,
-including the corrected first-candidate rule) is what implementation
-actually builds -- restating this proposal's text is not, by itself,
-sufficient to consider that criterion met; the revised design must still
-pass its own independent re-review before Acceptance. Requires its own
-independent review and Acceptance before ADR-035 Phase 2 implementation
-may begin (CLAUDE.md §1.10); this entry documents the revised proposal,
-not an acceptance, and does not itself unblock Phase 2.
+**Governance: this amendment is Accepted (2026-07-26).** Acceptance
+authorizes the Evidence Engine contract described above -- the
+`OpeningRangeState.post_range_bars`/`OpeningRangeBarObservation` model,
+the self-derived completion rule, the exact first-candidate and
+subsequent-candidate continuity rules, the stop-at-first-failure/no-skip-
+and-resume extraction algorithm, the bounded retention window, and the
+sequence-relative index/`(symbol, timestamp)` identity scoping -- as the
+evidence source ADR-035 Phase 2 will build against. **Acceptance of this
+amendment does NOT itself authorize:** implementation of this amendment
+without the project's normal RPI Implement-phase gate; ADR-035 Phase 2
+implementation; ORB production registration; ADR-036 strategy
+consolidation/legacy-strategy retirement. It introduces no ORB breakout
+qualification, direction, body/wick or confirmation-threshold decision,
+`QualificationResult`, `TradeIntent`, lockout, persistence, FVG
+confirmation, Market Intelligence integration, production ORB
+registration, legacy-strategy modification, or ADR-036 retirement work --
+evidence only. The next authorized action is reconciling the ADR-035
+Phase 2 Plan (`docs/plans/adr-035-phase2-orb-breakout-lockout.md`)
+against this now-Accepted contract -- removing its evidence-contract
+blocker, incorporating `post_range_bars`, completing the breakout-
+qualification design while preserving the already-resolved lockout/
+persistence architecture -- followed by its own independent
+implementation-readiness review before any Phase 2 code may be written.
 
 Owner: Software Architect (per `.claude/agents/TEAM.md`'s precedent for
 cross-cutting evaluation components — same accountable role as
