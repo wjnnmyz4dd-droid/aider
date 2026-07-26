@@ -220,6 +220,28 @@ class TestDirectionDetermination(_OrbTestCase):
         self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
         self.assertEqual(result.reason, "No breakout: close within range")
 
+    def test_close_exactly_at_range_high_boundary_is_not_qualified(self):
+        """Locks in the strict `>` (never `>=`) direction-determination
+        operator choice (ADR-035 §5.1, Plan §5.1): a close exactly on the
+        boundary is not yet a breakout."""
+        strategy = self.make_strategy()
+        opening_range = _make_opening_range()
+        candidate = _bar(6, 0, 1.100, 1.106, 1.099, _RANGE_HIGH)  # close == range_high exactly
+        evidence = _breakout_evidence(candidate, opening_range)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "No breakout: close within range")
+
+    def test_bearish_wick_only_crossing_close_does_not_confirm_is_not_qualified(self):
+        strategy = self.make_strategy()
+        opening_range = _make_opening_range()
+        # low crosses range_low, but close stays inside the range.
+        candidate = _bar(6, 0, 1.100, 1.102, 1.091, 1.096)
+        evidence = _breakout_evidence(candidate, opening_range)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "No breakout: close within range")
+
 
 class TestMomentum(_OrbTestCase):
     def test_no_volatility_expansion_is_not_qualified(self):
@@ -234,6 +256,7 @@ class TestMomentum(_OrbTestCase):
 
 class TestAtrDistance(_OrbTestCase):
     _CANDIDATE = _bar(6, 0, 1.1055, 1.1085, 1.1050, 1.108)  # close = range_high + 0.003
+    _BEARISH_CANDIDATE = _bar(6, 0, 1.0945, 1.0950, 1.0915, 1.092)  # close = range_low - 0.003
 
     def test_non_positive_atr_is_not_qualified(self):
         strategy = self.make_strategy()
@@ -255,13 +278,21 @@ class TestAtrDistance(_OrbTestCase):
         strategy = self.make_strategy()
         evidence = _breakout_evidence(self._CANDIDATE, _make_opening_range(), atr=0.02, volatility_score=90.0)
         result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
-        self.assertNotEqual(result.reason, "Breakout distance below ATR-relative threshold")
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
 
     def test_distance_above_threshold_proceeds(self):
         strategy = self.make_strategy()
         evidence = _breakout_evidence(self._CANDIDATE, _make_opening_range(), atr=0.001, volatility_score=90.0)
         result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
-        self.assertNotEqual(result.reason, "Breakout distance below ATR-relative threshold")
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+
+    def test_bearish_distance_below_threshold_is_not_qualified(self):
+        # distance = 0.003; threshold = 0.15 * atr; atr=0.03 -> threshold 0.0045 > 0.003
+        strategy = self.make_strategy()
+        evidence = _breakout_evidence(self._BEARISH_CANDIDATE, _make_opening_range(), atr=0.03)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Breakout distance below ATR-relative threshold")
 
 
 class TestBodyWickRatio(_OrbTestCase):
@@ -289,6 +320,14 @@ class TestBodyWickRatio(_OrbTestCase):
         evidence = self._evidence_for(1.100, 1.108, 1.099, 1.108)
         result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
         self.assertNotEqual(result.reason, "Body/wick ratio below threshold")
+
+    def test_bearish_ratio_below_threshold_is_not_qualified(self):
+        # body=abs(1.0918-1.0921)=0.0003; range=1.0980-1.0910=0.0070; ratio needed 0.5*0.0070=0.0035 > 0.0003
+        strategy = self.make_strategy()
+        evidence = self._evidence_for(1.0921, 1.0980, 1.0910, 1.0918)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Body/wick ratio below threshold")
 
 
 class TestConfirmationCount(_OrbTestCase):
