@@ -32,6 +32,22 @@ rather than through letting an exception propagate — §18.A never
 required the latter. This correction requires its own independent review
 before Step 2B implementation may be authorized to begin (§27).
 
+**Follow-up correction — 2026-07-26 (Plan-level only, no code touched):**
+the independent re-review of the above correction found it structurally
+sound but incomplete on three narrow points that would otherwise have
+been left for an implementer to invent: (1) whether `try_consume()`'s
+persist step writes the whole `entries` dict or a per-key delta —
+resolved in §10 as whole-dict, with the resulting self-healing property
+made explicit; (2) where the store's exception-safe logging call gets
+its logger from — resolved in §10 as a plain module-level
+`_LOGGER = logging.getLogger(__name__)` and `_safe_log_persist_failure()`
+helper in `store.py`, not a constructor dependency; (3) the ADR-035
+§18.A-accepted restart-duplication residual risk and the whole-dict
+self-healing property were both real but untested requirements — two
+tests are now added to §21. None of these three points changed the
+underlying design decided by the first correction; they close gaps in
+its specification.
+
 Touched components (this document only): none in production code.
 `docs/plans/` only. No production code, test, ADR, or config file is
 modified by this Plan revision. `titan_protocol/strategy_engine/*`
@@ -305,7 +321,18 @@ titan_protocol/strategy_state_store/
                  CorruptStateError
     config.py    StrategyStateStoreConfig(state_file: Path)
     store.py     OrbQualificationStore
+                 module-level `_LOGGER = logging.getLogger(__name__)`
+                 and `_safe_log_persist_failure(exc: Exception) -> None`
+                 (see the write-failure contract below)
 ```
+
+`store.py`'s logger is a plain module-level `logging.getLogger(__name__)`
+— not a constructor/callback dependency on `OrbQualificationStore`. No
+`logging_sink.py` is added for this package: unlike the engine packages
+that have one, this store has exactly one thing to log (a persist
+failure), which does not warrant the structured-snapshot-logging
+abstraction those packages exist for (CLAUDE.md §6 — smallest change that
+solves the problem).
 
 **`entries` key encoding:** `f"{pair}|{range_start.isoformat()}"` (a
 single string, since JSON object keys must be strings) — no
@@ -349,6 +376,28 @@ a later call to under-count and silently re-allow a `(pair, range_start)`
 that was already consumed, since a later call never re-reads the disk to
 find out.
 
+**Persistence writes the full dictionary, never a per-key delta
+(clarified — resolves the disk/memory-invariant gap identified in the
+Step 2B implementation-readiness re-review):** each successful
+`try_consume()` call serializes the *entire* in-memory `entries` dict to
+disk — the same whole-JSON-object model `PersistedOrbQualificationState.entries:
+Dict[str, int]` already implies, and the same whole-file-replace
+convention `compliance_state_store` already uses; there is no per-key
+delta or append format anywhere in this design. **Consequence (the
+self-healing property):** if a persist attempt fails for one key's
+increment, that increment remains in the authoritative in-memory dict
+(above) and is not lost — it is simply not yet durable. The *next*
+successful `try_consume()` call for *any* `(pair, range_start)` key,
+including an unrelated one, serializes the whole current `entries` dict
+to disk, which durably writes the previously-failed key's increment too,
+as a side effect. No explicit retry logic is introduced or needed:
+ordinary subsequent operation (new opening ranges qualifying for other
+pairs over the trading day) is what eventually flushes a stalled write to
+disk. The narrow exposure window this leaves — a crash after a failed
+persist and before any later successful persist anywhere in the store —
+is the same ADR-035 §18.A-accepted residual risk discussed below, not a
+new one.
+
 **Read/write semantics**, mirroring `compliance_state_store`'s own
 established convention exactly (file-backed JSON, `schema_version`
 checked on that one initial load, atomic write via `tempfile.mkstemp()` →
@@ -357,7 +406,7 @@ checked on that one initial load, atomic write via `tempfile.mkstemp()` →
 - Missing state file (first-ever run) → bootstrap `entries: {}`, never an error.
 - Corrupt/unparseable file on the one initial load → attempt `.bak` recovery; if that also fails, raise `CorruptStateError` (fail closed — construction itself fails; `try_consume()` is never reached with an unreadable store silently treated as "nothing consumed yet").
 - Unsupported `schema_version` on the one initial load → same fail-closed path, no migration attempted.
-- **Write failure after the in-memory increment (corrected contract):** the in-memory increment inside `try_consume()`'s critical section happens first and is never rolled back — that increment *is* the atomic decision (§11), and is what "the decision stands" means. The subsequent disk-persist call is then attempted; if it raises, `try_consume()` catches that specific exception **inside the store** — never letting it cross the method's own boundary — records it through a self-contained, exception-safe logging call (mirroring this codebase's own established fault-containment pattern, where a failure in the logging/diagnostic path must never itself escape and compound the original failure — the positions-staleness diagnostic's `_safe_log_exception()` precedent), and returns `True` exactly as it would on a successful persist. **No exception ever crosses `try_consume()`'s boundary for a write failure.** This satisfies ADR-035/ADR-024 §18.A's actual requirement — persisted state must not be "silently swallowed" — through visible, unmissable logging, not through letting an exception propagate; §18.A's text never required the latter, and reading it that way was this Plan's own prior error, since `StrategyEngine.evaluate()`'s `qualifications = tuple(strategy.qualify(...) for strategy in self.registry.all())` has zero exception handling around each `qualify()` call (independently confirmed by direct code read during the Step 2B readiness review) — an exception escaping `try_consume()` would abort that entire evaluation cycle for all 5 legacy strategies too, a materially worse outcome than a durability gap that is loudly logged. `OrbBreakoutStrategy.qualify()` therefore needs no exception handling of its own around `try_consume()`, since the store's public contract now guarantees it never raises for this reason.
+- **Write failure after the in-memory increment (corrected contract):** the in-memory increment inside `try_consume()`'s critical section happens first and is never rolled back — that increment *is* the atomic decision (§11), and is what "the decision stands" means. The subsequent disk-persist call is then attempted; if it raises, `try_consume()` catches that specific exception **inside the store** — never letting it cross the method's own boundary — and calls the module-level `_safe_log_persist_failure(exc)` helper (defined alongside `OrbQualificationStore` in `store.py`, using the module-level `_LOGGER = logging.getLogger(__name__)`, no constructor/callback dependency), which itself wraps its own `_LOGGER.exception(...)` call in a bare `except Exception: pass` so a *logging* failure can never compound the original persist failure — mirroring this codebase's own established fault-containment pattern (the positions-staleness diagnostic's `_safe_log_exception()` precedent in `deployment_windows/start.py`). `try_consume()` then returns `True` exactly as it would on a successful persist. **No exception ever crosses `try_consume()`'s boundary for a write failure.** This satisfies ADR-035/ADR-024 §18.A's actual requirement — persisted state must not be "silently swallowed" — through visible, unmissable logging, not through letting an exception propagate; §18.A's text never required the latter, and reading it that way was this Plan's own prior error, since `StrategyEngine.evaluate()`'s `qualifications = tuple(strategy.qualify(...) for strategy in self.registry.all())` has zero exception handling around each `qualify()` call (independently confirmed by direct code read during the Step 2B readiness review) — an exception escaping `try_consume()` would abort that entire evaluation cycle for all 5 legacy strategies too, a materially worse outcome than a durability gap that is loudly logged. `OrbBreakoutStrategy.qualify()` therefore needs no exception handling of its own around `try_consume()`, since the store's public contract now guarantees it never raises for this reason.
 
 **Dependency injection:** `OrbBreakoutStrategy.__init__(self, store: OrbQualificationStore)` — the strategy's first, narrowly-scoped instance state (ADR-035 §6's own anticipated "explicit, narrow, documented exception" to Strategy Engine's stateless convention). `build_default_registry()` is unaffected since `OrbBreakoutStrategy` is not registered there (§13).
 
@@ -624,7 +673,9 @@ tests; full existing Evidence Engine regression suite green.
 - **QualificationResult correctness:** exact `status`/`score`/`confidence`/`reason`/`trade_intent` fields for a genuine `QUALIFIED` case; `trade_intent=NONE` on every non-`QUALIFIED` path.
 - **Lockout:** first qualification for a `(pair, range_start)` succeeds; a second attempt at the same key with `max_allowed=1` is denied (`"Already qualified for this opening range"`); a `NOT_QUALIFIED` result never consumes; a different pair is independent; a different `range_start` is independent.
 - **Concurrency:** two simulated concurrent `qualify()` calls (e.g. via threads calling into one shared `OrbQualificationStore`) for the identical `(pair, range_start)` with `max_allowed=1` produce exactly one `QUALIFIED` and one `NOT_QUALIFIED` — never two `QUALIFIED`.
-- **Persistence:** state survives store-recreation (simulated restart); missing file bootstraps safely; corrupt file fails closed at construction (with `.bak` recovery attempted first); unsupported schema version fails closed at construction; a disk-persist failure inside `try_consume()` is caught internally, logged via the exception-safe logging call, and `try_consume()` still returns `True` — the call must not raise; a second `try_consume()` call in the same process for the same `(pair, range_start)` after a first call's persist failure still correctly observes the incremented in-memory count and returns `False` if `max_allowed` is now exhausted (proving the in-memory authority model, not just the disk, is what prevents duplicate consumption); a failure inside the exception-safe logging call itself must also not raise past `try_consume()` (mirrors the `_safe_log_exception()` test-coverage precedent).
+- **Persistence:** state survives store-recreation (simulated restart); missing file bootstraps safely; corrupt file fails closed at construction (with `.bak` recovery attempted first); unsupported schema version fails closed at construction; a disk-persist failure inside `try_consume()` is caught internally, logged via `_safe_log_persist_failure()`, and `try_consume()` still returns `True` — the call must not raise; a second `try_consume()` call in the same process for the same `(pair, range_start)` after a first call's persist failure still correctly observes the incremented in-memory count and returns `False` if `max_allowed` is now exhausted (proving the in-memory authority model, not just the disk, is what prevents duplicate consumption); a failure inside `_safe_log_persist_failure()` itself must also not raise past `try_consume()` (mirrors the `_safe_log_exception()` test-coverage precedent).
+- **Restart duplication after a failed persist (required — documents the ADR-035 §18.A-accepted residual risk as a tested fact, not a silent assumption):** force a persist failure on one `try_consume()` call for `(pair, range_start)` with `max_allowed=1` (it still returns `True`, per the corrected contract above); without any further successful persist, construct a **new** `OrbQualificationStore` instance against the same on-disk state file (simulating a process restart); assert the new instance's first `try_consume()` call for the identical `(pair, range_start)` also returns `True` — i.e., the reload observes the stale, un-incremented disk count and a second qualification for that exact range becomes possible. This test exists to keep the known, ADR-accepted limitation visible and regression-tested, not to assert it is safe.
+- **Later whole-state self-healing (required — proves the full-dictionary persistence property above):** force a persist failure on one `try_consume()` call for key A, then perform a *successful* `try_consume()` call for a different key B on the *same, still-live* store instance; assert that reading the on-disk file afterward shows key A's incremented count durably present alongside key B's — proving a later successful write for an unrelated key opportunistically flushes an earlier key's failed increment, bounding the residual-risk window described above to "until the next successful write anywhere in the store."
 - **Regression:** five legacy strategies unchanged; `OrbBreakoutStrategy` still absent from `build_default_registry()`; full `tests/titan_protocol` suite green.
 - **Architecture:** `test_architecture.py` green including the new `strategy_state_store` upstream-prefix entry; both `test_structural_boundary.py` files' narrowly-scoped exceptions in place.
 
@@ -697,8 +748,10 @@ precisely to prevent that ordering from ever occurring in practice.
 - [x] File impact matrices and test plans produced for both increments separately.
 - [x] Step 2A implementation — complete (commit `dcf9b58`).
 - [x] Step 2A independent conformance review — complete, **ACCEPTED**.
-- [x] §10's write-failure self-contradiction — identified by the Step 2B implementation-readiness review, corrected in this revision (Plan-level only, no code touched).
-- [ ] This correction's own independent review — not started; required before Step 2B implementation may begin (§27).
+- [x] §10's write-failure self-contradiction — identified by the Step 2B implementation-readiness review, corrected in a prior revision (Plan-level only, no code touched).
+- [x] That correction's own independent re-review — complete: **STEP 2B PLAN APPROVED WITH REQUIRED MINOR REVISIONS** (full-dictionary persistence, the store's module-level exception-safe logger, and two durability tests covering restart duplication after a failed persist and later whole-state self-healing).
+- [x] The three required minor revisions — applied in this revision (§10, §21).
+- [ ] Step 2B's own RPI Research phase — not started; per the re-review's own next-step instruction, this revision's three additions should be re-confirmed present as part of that phase, but no further standalone Plan re-review is required before it begins.
 - [ ] Step 2B implementation — not started, gated on the above.
 - [ ] Step 2B independent conformance review — not started.
 
@@ -708,23 +761,28 @@ precisely to prevent that ordering from ever occurring in practice.
 
 **Step 2A is done and accepted.** Its implementation (commit `dcf9b58`)
 independently passed its own conformance review with an **ACCEPTED**
-disposition. **Step 2B remains not yet implementation-ready to *begin***
-— not because its design is incomplete, but because (a) this revision's
-own correction to §10's write-failure handling has not yet itself passed
-an independent review, and (b) §21's test suite still cannot be written
-against real `post_range_bars` values until Step 2B's own RPI Implement
-phase starts, which it may not do until (a) is satisfied.
+disposition. **§10's write-failure correction independently passed its
+own re-review with an APPROVED WITH REQUIRED MINOR REVISIONS
+disposition; those three revisions (full-dictionary persistence, the
+store's module-level exception-safe logger, and the two durability
+tests) are applied in this revision.** Per that re-review's own
+next-step instruction, no further standalone Plan re-review round is
+required before Step 2B's RPI cycle begins — Step 2B's own upcoming
+Research phase should simply re-confirm these three additions are
+present. §21's full test suite still cannot be *written* against real
+`post_range_bars` values until Step 2B's own RPI Implement phase starts.
 
 ---
 
 ## Plan disposition
 
 **PHASE 2 PLAN — STEP 2A (AMENDMENT 4 IMPLEMENTATION) IMPLEMENTED AND
-INDEPENDENTLY ACCEPTED. STEP 2B (BREAKOUT + LOCKOUT) FULLY SPECIFIED,
-WITH §10'S WRITE-FAILURE HANDLING CORRECTED IN THIS REVISION; STEP 2B
-REMAINS GATED ON AN INDEPENDENT REVIEW OF THIS CORRECTION.**
+INDEPENDENTLY ACCEPTED. §10'S WRITE-FAILURE CORRECTION INDEPENDENTLY
+RE-REVIEWED AND APPROVED WITH REQUIRED MINOR REVISIONS, NOW APPLIED.
+STEP 2B (BREAKOUT + LOCKOUT) IS FULLY SPECIFIED AND MAY PROCEED TO ITS
+OWN RPI RESEARCH PHASE.**
 
-Next authorized action: submit this correction (§10, §11, §21, §22, and
-the correction note under the Owner line) for its own independent
-implementation-readiness re-review. Only after that review authorizes it
-may Step 2B's own RPI Research/Plan/Implement cycle begin.
+Next authorized action: begin Step 2B's own RPI Research phase,
+re-confirming this revision's three additions (§10, §21) are present as
+part of that phase's own governance-gate verification, per CLAUDE.md
+§1.10 and TEAM.md §9.
