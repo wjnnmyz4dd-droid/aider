@@ -1,25 +1,43 @@
 # Plan: ADR-035 Phase 2 — ORB Breakout Qualification and Persistent Per-Range Lockout
 
-Status: **Reconciled — Implementation-Ready in Two Gated Increments**
-(2026-07-26). The evidence-contract blocker that previously made this
-Plan **Blocked** is architecturally resolved: `docs/adr/ADR-024-evidence-engine.md`
-Amendment 4 (`OpeningRangeState.post_range_bars`) is now **Accepted**
-(commit `d569de5475a71a17a9d261f3ad8366bfaa9d245e`). **This Acceptance is
-a design decision, not an implementation fact** — Amendment 4's own code
-does not exist yet. This Plan therefore specifies two separately gated
-RPI Implement increments (§4) rather than treating Phase 2 as unblocked
-for a single combined implementation. Neither increment may begin until
-this Plan itself passes its own independent implementation-readiness
-review.
+Status: **Step 2A implemented and independently accepted (commit
+`dcf9b580ef6f46fd9bb8422cecb22ba794df892a`). Step 2B remains gated —
+this revision (2026-07-26) corrects a self-contradictory write-failure
+defect found in §10 by the Step 2B implementation-readiness review; the
+correction itself now requires its own independent review before Step
+2B's RPI cycle may begin (§27).** This Plan originally specified two
+separately gated RPI Implement increments (§4) rather than treating
+Phase 2 as unblocked for a single combined implementation; that
+structure is unchanged by this revision.
 
 Owner: Software Architect (RPI Plan phase, per ADR-035/ADR-024 owner
 precedent).
 
+**Correction — 2026-07-26 (Plan-level only, no code touched):** the
+independent Step 2B implementation-readiness review of this Plan found
+§10's original write-failure text self-contradictory — it required
+`OrbBreakoutStrategy.qualify()` to "still return `QUALIFIED` even if the
+persist call raises" while also requiring "the raised exception must
+propagate to logging... not swallowed inside the store," which cannot
+both hold given `StrategyEngine.evaluate()`'s `qualifications = tuple(strategy.qualify(...)
+for strategy in self.registry.all())` has zero exception handling around
+each `qualify()` call (independently confirmed by direct code read) — an
+exception escaping `try_consume()` would abort that entire evaluation
+cycle for all 5 legacy strategies too, not just ORB. §10 below is
+corrected: the store now catches and logs the write failure **inside**
+`try_consume()` and never raises past its own boundary, which this
+correction shows still satisfies ADR-024/ADR-035 §18.A's actual
+requirement ("must not be silently swallowed") through visible logging
+rather than through letting an exception propagate — §18.A never
+required the latter. This correction requires its own independent review
+before Step 2B implementation may be authorized to begin (§27).
+
 Touched components (this document only): none in production code.
 `docs/plans/` only. No production code, test, ADR, or config file is
-modified by this Plan revision. `titan_protocol/strategy_engine/*` and
-`titan_protocol/evidence_engine/*` remain exactly as they are at HEAD
-`d569de5475a71a17a9d261f3ad8366bfaa9d245e`.
+modified by this Plan revision. `titan_protocol/strategy_engine/*`
+remains untouched by any commit to date; `titan_protocol/evidence_engine/*`
+reflects Step 2A's own implementation (commit `dcf9b58`) — both are
+exactly as they are at current HEAD `dcf9b580ef6f46fd9bb8422cecb22ba794df892a`.
 
 ---
 
@@ -316,15 +334,30 @@ There is deliberately **no separate `get_count()`/`increment()` pair** —
 splitting the operation into two public calls is exactly the race this
 design must prevent (§12 below).
 
+**In-memory authority model (corrected — resolves the write-failure
+contradiction identified in the Step 2B implementation-readiness
+review):** `OrbQualificationStore` loads `entries` from disk exactly
+once, at first access (construction or lazy first call, guarded by the
+same `self._lock`), and thereafter treats its own in-memory `entries`
+dict as the sole authority `try_consume()` reads and increments for the
+rest of the process's lifetime. Disk state is written *from* that
+authoritative in-memory dict after every successful increment — never
+read back mid-process to "refresh" it. This is what makes "the decision
+stands" true for every subsequent call in the same process, not merely
+the one call that experienced a write failure: a lost write cannot cause
+a later call to under-count and silently re-allow a `(pair, range_start)`
+that was already consumed, since a later call never re-reads the disk to
+find out.
+
 **Read/write semantics**, mirroring `compliance_state_store`'s own
 established convention exactly (file-backed JSON, `schema_version`
-checked on load, atomic write via `tempfile.mkstemp()` → `fsync` →
-`os.replace()`, `.bak` rotation before every overwrite):
+checked on that one initial load, atomic write via `tempfile.mkstemp()` →
+`fsync` → `os.replace()`, `.bak` rotation before every overwrite):
 
 - Missing state file (first-ever run) → bootstrap `entries: {}`, never an error.
-- Corrupt/unparseable file → attempt `.bak` recovery; if that also fails, raise `CorruptStateError` (fail closed — `try_consume()` never treats an unreadable store as "nothing consumed yet").
-- Unsupported `schema_version` → same fail-closed path, no migration attempted.
-- Write failure after the in-memory increment decision → the decision stands (the qualification event already happened logically), but the write failure itself is raised/logged, never silently swallowed — matching ADR-035 §18.A's own text verbatim. `OrbBreakoutStrategy.qualify()` must therefore still return `QUALIFIED` even if the persist call raises, but the raised exception must propagate to logging (via `StrategyEngine`'s own existing `log_strategy_snapshot`/metrics path, not swallowed inside the store).
+- Corrupt/unparseable file on the one initial load → attempt `.bak` recovery; if that also fails, raise `CorruptStateError` (fail closed — construction itself fails; `try_consume()` is never reached with an unreadable store silently treated as "nothing consumed yet").
+- Unsupported `schema_version` on the one initial load → same fail-closed path, no migration attempted.
+- **Write failure after the in-memory increment (corrected contract):** the in-memory increment inside `try_consume()`'s critical section happens first and is never rolled back — that increment *is* the atomic decision (§11), and is what "the decision stands" means. The subsequent disk-persist call is then attempted; if it raises, `try_consume()` catches that specific exception **inside the store** — never letting it cross the method's own boundary — records it through a self-contained, exception-safe logging call (mirroring this codebase's own established fault-containment pattern, where a failure in the logging/diagnostic path must never itself escape and compound the original failure — the positions-staleness diagnostic's `_safe_log_exception()` precedent), and returns `True` exactly as it would on a successful persist. **No exception ever crosses `try_consume()`'s boundary for a write failure.** This satisfies ADR-035/ADR-024 §18.A's actual requirement — persisted state must not be "silently swallowed" — through visible, unmissable logging, not through letting an exception propagate; §18.A's text never required the latter, and reading it that way was this Plan's own prior error, since `StrategyEngine.evaluate()`'s `qualifications = tuple(strategy.qualify(...) for strategy in self.registry.all())` has zero exception handling around each `qualify()` call (independently confirmed by direct code read during the Step 2B readiness review) — an exception escaping `try_consume()` would abort that entire evaluation cycle for all 5 legacy strategies too, a materially worse outcome than a durability gap that is loudly logged. `OrbBreakoutStrategy.qualify()` therefore needs no exception handling of its own around `try_consume()`, since the store's public contract now guarantees it never raises for this reason.
 
 **Dependency injection:** `OrbBreakoutStrategy.__init__(self, store: OrbQualificationStore)` — the strategy's first, narrowly-scoped instance state (ADR-035 §6's own anticipated "explicit, narrow, documented exception" to Strategy Engine's stateless convention). `build_default_registry()` is unaffected since `OrbBreakoutStrategy` is not registered there (§13).
 
@@ -356,12 +389,15 @@ configured limit permits only one, because:
    holds exactly one `OrbQualificationStore` instance for the process
    lifetime, injected once at construction — never one instance per
    call).
-3. The **entire** "read current count → compare to `max_allowed` →
-   increment → persist" sequence executes while holding that lock. The
-   second caller to acquire the lock necessarily observes the
-   already-incremented count from the first caller's completed
-   critical section, and correctly receives `False` (capacity
-   exhausted) if `max_allowed=1`.
+3. The **entire** "read current in-memory count → compare to
+   `max_allowed` → increment the in-memory dict → best-effort persist"
+   sequence executes while holding that lock (§10's in-memory authority
+   model — the in-memory dict, never the disk, is what this step reads
+   and compares). The second caller to acquire the lock necessarily
+   observes the already-incremented in-memory count from the first
+   caller's completed critical section, and correctly receives `False`
+   (capacity exhausted) if `max_allowed=1` — regardless of whether the
+   first caller's disk persist succeeded or failed (§10).
 4. `qualify()` returns `QUALIFIED` if and only if `try_consume()`
    returned `True`; otherwise it returns `NOT_QUALIFIED`,
    `"Already qualified for this opening range"`.
@@ -588,7 +624,7 @@ tests; full existing Evidence Engine regression suite green.
 - **QualificationResult correctness:** exact `status`/`score`/`confidence`/`reason`/`trade_intent` fields for a genuine `QUALIFIED` case; `trade_intent=NONE` on every non-`QUALIFIED` path.
 - **Lockout:** first qualification for a `(pair, range_start)` succeeds; a second attempt at the same key with `max_allowed=1` is denied (`"Already qualified for this opening range"`); a `NOT_QUALIFIED` result never consumes; a different pair is independent; a different `range_start` is independent.
 - **Concurrency:** two simulated concurrent `qualify()` calls (e.g. via threads calling into one shared `OrbQualificationStore`) for the identical `(pair, range_start)` with `max_allowed=1` produce exactly one `QUALIFIED` and one `NOT_QUALIFIED` — never two `QUALIFIED`.
-- **Persistence:** state survives store-recreation (simulated restart); missing file bootstraps safely; corrupt file fails closed (with `.bak` recovery attempted first); unsupported schema version fails closed; write failure still returns the already-decided `QUALIFIED` but raises/logs the write error.
+- **Persistence:** state survives store-recreation (simulated restart); missing file bootstraps safely; corrupt file fails closed at construction (with `.bak` recovery attempted first); unsupported schema version fails closed at construction; a disk-persist failure inside `try_consume()` is caught internally, logged via the exception-safe logging call, and `try_consume()` still returns `True` — the call must not raise; a second `try_consume()` call in the same process for the same `(pair, range_start)` after a first call's persist failure still correctly observes the incremented in-memory count and returns `False` if `max_allowed` is now exhausted (proving the in-memory authority model, not just the disk, is what prevents duplicate consumption); a failure inside the exception-safe logging call itself must also not raise past `try_consume()` (mirrors the `_safe_log_exception()` test-coverage precedent).
 - **Regression:** five legacy strategies unchanged; `OrbBreakoutStrategy` still absent from `build_default_registry()`; full `tests/titan_protocol` suite green.
 - **Architecture:** `test_architecture.py` green including the new `strategy_state_store` upstream-prefix entry; both `test_structural_boundary.py` files' narrowly-scoped exceptions in place.
 
@@ -606,6 +642,7 @@ tests; full existing Evidence Engine regression suite green.
 | Score/confidence formula is an interim approximation | LOW | Flagged explicitly (§5.1/§6); never affects whether a trade occurs, only ranking/sizing quality |
 | Confirmation-window quality-check scope is an interpretation | LOW | Flagged explicitly (§5.1) for the Step 2B conformance review to confirm or correct |
 | Two implementation increments landing out of the specified order | MEDIUM | Mitigated by §4's explicit gate — Step 2B's own RPI cycle must not begin before Step 2A's is independently accepted |
+| Write-failure exception escaping `try_consume()` and aborting `evaluate()` for all strategies | CRITICAL | **Resolved by this correction** — `try_consume()` catches and logs the write failure internally via an exception-safe logging call and never raises past its own boundary (§10, corrected) |
 | Multiple-range disambiguation prematurely invented | LOW | Explicitly preserved as `NOT_QUALIFIED` (§16), not touched |
 | Accidental ORB registration | LOW | Unchanged, explicitly preserved (§15) |
 | Legacy-strategy regression | LOW | No legacy file touched by either increment |
@@ -658,8 +695,10 @@ precisely to prevent that ordering from ever occurring in practice.
 - [x] Configuration ownership kept one-directional (Evidence Engine retention bound vs. Strategy Engine confirmation policy).
 - [x] Registration/approved-pairs/multiple-range behavior preserved unchanged.
 - [x] File impact matrices and test plans produced for both increments separately.
-- [ ] Step 2A implementation — not started.
-- [ ] Step 2A independent conformance review — not started.
+- [x] Step 2A implementation — complete (commit `dcf9b58`).
+- [x] Step 2A independent conformance review — complete, **ACCEPTED**.
+- [x] §10's write-failure self-contradiction — identified by the Step 2B implementation-readiness review, corrected in this revision (Plan-level only, no code touched).
+- [ ] This correction's own independent review — not started; required before Step 2B implementation may begin (§27).
 - [ ] Step 2B implementation — not started, gated on the above.
 - [ ] Step 2B independent conformance review — not started.
 
@@ -667,24 +706,25 @@ precisely to prevent that ordering from ever occurring in practice.
 
 ## 27. Final Readiness Assessment
 
-**Ready, in two gated increments.** This Plan is now complete and
-implementation-ready for **Step 2A** immediately. **Step 2B** is fully
-specified but not yet implementation-ready to *begin* until Step 2A's
-own implementation has landed and passed its own independent
-conformance review — not because Step 2B's design is incomplete, but
-because its own test suite (§21) cannot be written against real
-`post_range_bars` values until Step 2A's code exists to produce them.
+**Step 2A is done and accepted.** Its implementation (commit `dcf9b58`)
+independently passed its own conformance review with an **ACCEPTED**
+disposition. **Step 2B remains not yet implementation-ready to *begin***
+— not because its design is incomplete, but because (a) this revision's
+own correction to §10's write-failure handling has not yet itself passed
+an independent review, and (b) §21's test suite still cannot be written
+against real `post_range_bars` values until Step 2B's own RPI Implement
+phase starts, which it may not do until (a) is satisfied.
 
 ---
 
 ## Plan disposition
 
-**PHASE 2 PLAN RECONCILED — STEP 2A (AMENDMENT 4 IMPLEMENTATION)
-AUTHORIZED FOR ITS OWN RPI IMPLEMENT PHASE; STEP 2B (BREAKOUT + LOCKOUT)
-FULLY SPECIFIED BUT GATED ON STEP 2A'S INDEPENDENT ACCEPTANCE.**
+**PHASE 2 PLAN — STEP 2A (AMENDMENT 4 IMPLEMENTATION) IMPLEMENTED AND
+INDEPENDENTLY ACCEPTED. STEP 2B (BREAKOUT + LOCKOUT) FULLY SPECIFIED,
+WITH §10'S WRITE-FAILURE HANDLING CORRECTED IN THIS REVISION; STEP 2B
+REMAINS GATED ON AN INDEPENDENT REVIEW OF THIS CORRECTION.**
 
-Next authorized action: submit this Plan for its own independent
-implementation-readiness review. Only after that review authorizes it
-may Step 2A's RPI Implement phase begin — Step 2A's own code, its own
-test suite (§20), and its own independent conformance review, before
-Step 2B's Implement phase may begin in turn.
+Next authorized action: submit this correction (§10, §11, §21, §22, and
+the correction note under the Owner line) for its own independent
+implementation-readiness re-review. Only after that review authorizes it
+may Step 2B's own RPI Research/Plan/Implement cycle begin.
