@@ -24,7 +24,9 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Tuple
 
-from titan_protocol.evidence_engine.models import OpeningRangeBarObservation, OpeningRangeState, SessionName
+from titan_protocol.evidence_engine.models import (
+    FairValueGap, OpeningRangeBarObservation, OpeningRangeState, SessionName, StructureDirection,
+)
 from titan_protocol.strategy_engine.config import DEFAULT_APPROVED_PAIRS_BY_STRATEGY, StrategyEngineConfig
 from titan_protocol.strategy_engine.models import QualificationStatus, StrategyId, TradeIntent
 from titan_protocol.strategy_engine.strategies import OrbBreakoutStrategy
@@ -94,10 +96,23 @@ def _evidence_with_ranges(*ranges: OpeningRangeState, volatility=None):
     )
 
 
-def _breakout_evidence(candidate: OpeningRangeBarObservation, opening_range: OpeningRangeState, is_expansion: bool = True, atr: float = 0.001, volatility_score: float = 80.0):
-    return _evidence_with_ranges(
+def _breakout_evidence(
+    candidate: OpeningRangeBarObservation, opening_range: OpeningRangeState, is_expansion: bool = True, atr: float = 0.001,
+    volatility_score: float = 80.0, fair_value_gaps: Tuple[FairValueGap, ...] = (),
+):
+    evidence = _evidence_with_ranges(
         dataclasses.replace(opening_range, post_range_bars=opening_range.post_range_bars or (candidate,)),
         volatility=make_volatility_state(atr=atr, is_expansion=is_expansion, volatility_score=volatility_score),
+    )
+    return dataclasses.replace(evidence, fair_value_gaps=fair_value_gaps)
+
+
+def _fvg(
+    direction: StructureDirection, start_index: int, end_index: int, gap_high: float, gap_low: float, filled: bool = False,
+) -> FairValueGap:
+    return FairValueGap(
+        direction=direction, start_index=start_index, end_index=end_index,
+        gap_high=gap_high, gap_low=gap_low, filled=filled, fill_index=None,
     )
 
 
@@ -473,12 +488,181 @@ class TestConfigValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             StrategyEngineConfig(orb_max_qualifications_per_range=0)
 
+    def test_invalid_fvg_max_age_bars_raises(self):
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_fvg_max_age_bars=0)
+
+    def test_invalid_fvg_min_size_atr_multiple_raises(self):
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_fvg_min_size_atr_multiple=0.0)
+
+    def test_invalid_fvg_score_weight_raises(self):
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_fvg_score_weight=1.01)
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_fvg_score_weight=-0.01)
+
     def test_defaults_match_adr_035(self):
         config = StrategyEngineConfig()
         self.assertEqual(config.orb_min_breakout_distance_atr_multiple, 0.15)
         self.assertEqual(config.orb_min_body_to_range_ratio, 0.5)
         self.assertEqual(config.orb_min_confirmation_candles, 1)
         self.assertEqual(config.orb_max_qualifications_per_range, 1)
+        self.assertEqual(config.orb_fvg_max_age_bars, 10)
+        self.assertEqual(config.orb_fvg_min_size_atr_multiple, 0.1)
+        self.assertEqual(config.orb_fvg_score_weight, 0.15)
+
+
+class TestFvgConfirmation(_OrbTestCase):
+    """ADR-035 §5, Phase 3 -- FVG confirmation is score-only and never a
+    qualification gate. Examples A-N mirror the accepted Plan exactly
+    (docs/plans/adr-035-phase3-fvg-confirmation.md §5), including its
+    shared fixture values."""
+
+    _CONFIG = StrategyEngineConfig(
+        approved_pairs_by_strategy=_ORB_APPROVED_CONFIG.approved_pairs_by_strategy,
+        orb_fvg_max_age_bars=3, orb_fvg_min_size_atr_multiple=0.1, orb_fvg_score_weight=0.15,
+    )
+    _CANDIDATE = _bar(10, 0, 1.100, 1.108, 1.099, 1.108)  # bullish breakout, close=1.108, index=10
+    _BEARISH_CANDIDATE = _bar(10, 0, 1.0940, 1.0945, 1.0900, 1.0910)  # bearish breakout, close=1.0910, index=10
+
+    def _fresh_strategy(self) -> OrbBreakoutStrategy:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        store = OrbQualificationStore(StrategyStateStoreConfig(state_file=Path(tmpdir.name) / "orb_state.json"))
+        return self.make_strategy(store=store)
+
+    def _qualify(self, opening_range, fair_value_gaps, candidate=None, config=None):
+        strategy = self._fresh_strategy()
+        evidence = _breakout_evidence(
+            candidate or self._CANDIDATE, opening_range, atr=0.001, volatility_score=80.0, fair_value_gaps=fair_value_gaps,
+        )
+        return strategy.qualify("EURUSD", evidence, make_mi_snapshot(), config or self._CONFIG)
+
+    def test_no_fvg_contributes_no_score_bonus(self):
+        opening_range = _make_opening_range()
+        with_default_weight = self._qualify(opening_range, ())
+        zero_weight_config = dataclasses.replace(self._CONFIG, orb_fvg_score_weight=0.0)
+        with_zero_weight = self._qualify(opening_range, (), config=zero_weight_config)
+        self.assertEqual(with_default_weight.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(with_default_weight.score, with_zero_weight.score)
+        self.assertFalse(any("FVG" in s for s in with_default_weight.strengths))
+
+    def test_wrong_direction_fvg_contributes_no_bonus(self):
+        gap = _fvg(StructureDirection.BEARISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        no_fvg = self._qualify(_make_opening_range(), ())
+        wrong_direction = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(wrong_direction.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(wrong_direction.score, no_fvg.score)
+
+    def test_exact_age_boundary_passes(self):
+        # end_index=7 -> age_bars = candidate.index(10) - 7 = 3 == orb_fvg_max_age_bars -- inclusive pass
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=7, gap_high=1.107, gap_low=1.1065)
+        result = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+        self.assertTrue(any("FVG" in s for s in result.strengths))
+
+    def test_one_bar_too_old_excluded(self):
+        # end_index=6 -> age_bars = 10 - 6 = 4 > 3 -- excluded
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=6, gap_high=1.107, gap_low=1.1065)
+        no_fvg = self._qualify(_make_opening_range(), ())
+        too_old = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(too_old.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(too_old.score, no_fvg.score)
+
+    def test_future_index_excluded_fail_closed(self):
+        # end_index=11 -> age_bars = 10 - 11 = -1 -- excluded, never "maximally fresh"
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=11, gap_high=1.107, gap_low=1.1065)
+        no_fvg = self._qualify(_make_opening_range(), ())
+        future_index = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(future_index.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(future_index.score, no_fvg.score)
+
+    def test_multiple_fvgs_selects_first_qualifying_in_tuple_order(self):
+        gap1_wrong_direction = _fvg(StructureDirection.BEARISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        gap2_qualifies = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        gap3_also_qualifies = _fvg(StructureDirection.BULLISH, start_index=2, end_index=9, gap_high=1.1075, gap_low=1.107)
+        result = self._qualify(_make_opening_range(), (gap1_wrong_direction, gap2_qualifies, gap3_also_qualifies))
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+        self.assertTrue(any("[2-8]" in s for s in result.strengths))
+        self.assertFalse(any("[2-9]" in s for s in result.strengths))
+
+    def test_valid_bullish_fvg_adds_bonus_and_strength(self):
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        without_fvg = self._qualify(_make_opening_range(), ())
+        with_fvg = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(with_fvg.status, QualificationStatus.QUALIFIED)
+        self.assertGreater(with_fvg.score, without_fvg.score)
+        self.assertTrue(any("unfilled bullish FVG confirmation [2-8]" in s for s in with_fvg.strengths))
+
+    def test_valid_bearish_fvg_adds_bonus(self):
+        opening_range = _make_opening_range()
+        gap = _fvg(StructureDirection.BEARISH, start_index=2, end_index=8, gap_high=1.0935, gap_low=1.0925)
+        without_fvg = self._qualify(opening_range, (), candidate=self._BEARISH_CANDIDATE)
+        with_fvg = self._qualify(opening_range, (gap,), candidate=self._BEARISH_CANDIDATE)
+        self.assertEqual(with_fvg.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(with_fvg.trade_intent, TradeIntent.SELL)
+        self.assertGreater(with_fvg.score, without_fvg.score)
+
+    def test_weight_zero_is_accepted_and_inert(self):
+        config = dataclasses.replace(self._CONFIG, orb_fvg_score_weight=0.0)
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        no_fvg = self._qualify(_make_opening_range(), (), config=config)
+        with_fvg = self._qualify(_make_opening_range(), (gap,), config=config)
+        self.assertEqual(with_fvg.score, no_fvg.score)
+
+    def test_weight_one_is_accepted_and_clamped(self):
+        config = dataclasses.replace(self._CONFIG, orb_fvg_score_weight=1.0)
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        result = self._qualify(_make_opening_range(), (gap,), config=config)
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+        self.assertLessEqual(result.score, 100.0)
+
+    def test_weight_out_of_range_raises(self):
+        with self.assertRaises(ValueError):
+            dataclasses.replace(self._CONFIG, orb_fvg_score_weight=1.01)
+        with self.assertRaises(ValueError):
+            dataclasses.replace(self._CONFIG, orb_fvg_score_weight=-0.01)
+
+    def test_lockout_interaction_unaffected_by_fvg(self):
+        strategy = self._fresh_strategy()
+        opening_range = _make_opening_range()
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        evidence = _breakout_evidence(self._CANDIDATE, opening_range, atr=0.001, volatility_score=80.0, fair_value_gaps=(gap,))
+        first = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), self._CONFIG)
+        second = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), self._CONFIG)
+        self.assertEqual(first.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(second.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(second.reason, "Already qualified for this opening range")
+
+    def test_filled_fvg_excluded_expiration(self):
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065, filled=True)
+        no_fvg = self._qualify(_make_opening_range(), ())
+        filled = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(filled.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(filled.score, no_fvg.score)
+
+    def test_undersized_fvg_excluded(self):
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.10505, gap_low=1.10500)
+        no_fvg = self._qualify(_make_opening_range(), ())
+        undersized = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(undersized.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(undersized.score, no_fvg.score)
+
+    def test_non_overlapping_fvg_excluded(self):
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.1030, gap_low=1.1020)
+        no_fvg = self._qualify(_make_opening_range(), ())
+        no_overlap = self._qualify(_make_opening_range(), (gap,))
+        self.assertEqual(no_overlap.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(no_overlap.score, no_fvg.score)
+
+    def test_fvg_formed_before_range_start_excluded(self):
+        opening_range = dataclasses.replace(_make_opening_range(), range_start_index=5)
+        gap = _fvg(StructureDirection.BULLISH, start_index=3, end_index=8, gap_high=1.107, gap_low=1.1065)
+        no_fvg = self._qualify(opening_range, ())
+        formed_before_range = self._qualify(opening_range, (gap,))
+        self.assertEqual(formed_before_range.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(formed_before_range.score, no_fvg.score)
 
 
 if __name__ == "__main__":

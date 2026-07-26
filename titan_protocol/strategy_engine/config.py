@@ -84,6 +84,11 @@ class StrategyEngineConfig:
     orb_min_confirmation_candles: int = 1  # consecutive closed bars required beyond the range boundary before qualifying
     orb_max_qualifications_per_range: int = 1  # lockout limit per (pair, range_start)
 
+    # -- Opening Range Breakout FVG confirmation (ADR-035 §5/§13, Phase 3) --
+    orb_fvg_max_age_bars: int = 10  # max bars between an FVG's formation (end_index) and the breakout candidate before it's too stale to confirm
+    orb_fvg_min_size_atr_multiple: float = 0.1  # min (gap_high - gap_low) / atr for a qualifying FVG
+    orb_fvg_score_weight: float = 0.15  # weight on the binary FVG-confirmation bonus; cross-field weight-sum bound is Phase 5's scope (ADR-035 §17), not validated here
+
     def __post_init__(self) -> None:
         if self.orb_min_breakout_distance_atr_multiple <= 0:
             raise ValueError(
@@ -100,6 +105,18 @@ class StrategyEngineConfig:
         if self.orb_max_qualifications_per_range < 1:
             raise ValueError(
                 f"orb_max_qualifications_per_range must be >= 1, got {self.orb_max_qualifications_per_range}"
+            )
+        if self.orb_fvg_max_age_bars < 1:
+            raise ValueError(
+                f"orb_fvg_max_age_bars must be >= 1, got {self.orb_fvg_max_age_bars}"
+            )
+        if self.orb_fvg_min_size_atr_multiple <= 0:
+            raise ValueError(
+                f"orb_fvg_min_size_atr_multiple must be > 0, got {self.orb_fvg_min_size_atr_multiple}"
+            )
+        if not (0.0 <= self.orb_fvg_score_weight <= 1.0):
+            raise ValueError(
+                f"orb_fvg_score_weight must be within [0, 1], got {self.orb_fvg_score_weight}"
             )
 
     def approved_pairs_for(self, strategy_id: StrategyId) -> Tuple[str, ...]:

@@ -502,9 +502,43 @@ matching, age, size, overlap, and expiration") — plus:
 
 ## Validation
 
-(Not started — Implement phase. Recorded here at Plan-acceptance time
-per this project's convention; the Implement phase fills this section
-in with actual results once work begins.)
+Implemented exactly per §§1-10 above, no deviation:
+
+- `titan_protocol/strategy_engine/config.py`: 3 new fields
+  (`orb_fvg_max_age_bars`, `orb_fvg_min_size_atr_multiple`,
+  `orb_fvg_score_weight`) + 3 new `__post_init__` per-field checks, no
+  cross-field check (§2.1/§4).
+- `titan_protocol/strategy_engine/strategies/orb_breakout.py`: added
+  `StructureDirection` to the existing import line; inserted the
+  FVG-selection block verbatim from §3, between the existing score
+  computation and `qualified_result` construction; restructured
+  `strengths` into a local list per the advisory note in §3.
+- `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`:
+  extended `_breakout_evidence()` with an optional `fair_value_gaps`
+  parameter; added `_fvg()` helper; added `TestFvgConfirmation` (16
+  tests covering examples A-N) plus 3 new `TestConfigValidation` cases
+  and an extended `test_defaults_match_adr_035`.
+
+**Results:**
+- `python -m compileall` on all three touched files: clean.
+- `test_orb_breakout_foundation.py` alone: 60/60 (41 pre-existing + 19
+  new), all green — the 41 pre-existing tests are numerically
+  unaffected, confirming §6's disclosed non-regression claim empirically
+  rather than by assertion alone.
+- Full suite, `python -m unittest discover -s tests/titan_protocol`:
+  **1352/1352** (1333 baseline + 19 new), zero failures.
+- `tests/titan_protocol/strategy_engine/test_architecture.py` and both
+  `test_structural_boundary.py` files: 16/16, unchanged, zero new
+  allowlist entries required — confirmed empirically, not just by
+  inspection, matching §8/§9's claims exactly.
+- `build_default_registry()` re-checked: still exactly 5 `.register()`
+  calls (the five legacy strategies) — ORB remains unregistered.
+- `git status --porcelain`: exactly the three files named above changed
+  — no Evidence Engine file, no ADR file, no legacy strategy file, no
+  new structural-boundary allowlist entry.
+- Code Reviewer / Test Results Analyzer sign-off: implementation matches
+  the accepted Plan's algorithm, insertion point, and config contract
+  line for line; no scope expansion beyond §§1-10.
 
 ---
 

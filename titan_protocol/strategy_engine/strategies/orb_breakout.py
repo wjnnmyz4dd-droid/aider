@@ -13,7 +13,7 @@ remains no earlier than Phase 6 (ADR-035 §17).
 
 from __future__ import annotations
 
-from titan_protocol.evidence_engine.models import EvidenceSnapshot
+from titan_protocol.evidence_engine.models import EvidenceSnapshot, StructureDirection
 from titan_protocol.market_intelligence.models import MarketIntelligenceSnapshot
 from titan_protocol.strategy_state_store import OrbQualificationStore
 
@@ -133,18 +133,49 @@ class OrbBreakoutStrategy(Strategy):
         session_component = component(evidence.report, "session")
         session_value = session_component.value if session_component else 0.0
         mi_session_score = market_intelligence.pair_safety.session.session_score
-        score = clamp(0.4 * session_value + 0.3 * mi_session_score + 0.3 * evidence.volatility.volatility_score)
+
+        required_direction = StructureDirection.BULLISH if trade_intent is TradeIntent.BUY else StructureDirection.BEARISH
+        zone_low = min(range_boundary, candidate.close)
+        zone_high = max(range_boundary, candidate.close)
+
+        qualifying_fvg = None
+        for gap in evidence.fair_value_gaps:
+            if gap.direction != required_direction:
+                continue
+            if gap.filled:
+                continue
+            if gap.start_index < opening_range.range_start_index:
+                continue
+            age_bars = candidate.index - gap.end_index
+            if age_bars < 0 or age_bars > config.orb_fvg_max_age_bars:
+                continue
+            if (gap.gap_high - gap.gap_low) < config.orb_fvg_min_size_atr_multiple * evidence.volatility.atr:
+                continue
+            if gap.gap_high < zone_low or gap.gap_low > zone_high:
+                continue
+            qualifying_fvg = gap
+            break
+
+        fvg_bonus = 100.0 if qualifying_fvg is not None else 0.0
+        score = clamp(0.4 * session_value + 0.3 * mi_session_score + 0.3 * evidence.volatility.volatility_score + config.orb_fvg_score_weight * fvg_bonus)
         confidence = session_component.confidence if session_component else 0.5
 
         boundary_name = "range_high" if trade_intent is TradeIntent.BUY else "range_low"
+        strengths = [
+            f"breakout beyond {boundary_name}", "volatility expanding",
+            f"{len(confirmation_window)} confirmation candles",
+        ]
+        if qualifying_fvg is not None:
+            strengths.append(
+                f"unfilled {qualifying_fvg.direction.value.lower()} FVG confirmation "
+                f"[{qualifying_fvg.start_index}-{qualifying_fvg.end_index}]"
+            )
+
         qualified_result = QualificationResult(
             strategy_id=StrategyId.OPENING_RANGE_BREAKOUT, pair=pair, status=QualificationStatus.QUALIFIED,
             score=score, confidence=confidence,
             reason=f"Breakout beyond {boundary_name} with volatility expansion",
-            strengths=(
-                f"breakout beyond {boundary_name}", "volatility expanding",
-                f"{len(confirmation_window)} confirmation candles",
-            ),
+            strengths=tuple(strengths),
             weaknesses=(), trade_intent=trade_intent,
         )
 
