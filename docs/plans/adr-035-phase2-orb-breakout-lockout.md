@@ -1,14 +1,18 @@
 # Plan: ADR-035 Phase 2 — ORB Breakout Qualification and Persistent Per-Range Lockout
 
-Status: **Step 2A implemented and independently accepted (commit
-`dcf9b580ef6f46fd9bb8422cecb22ba794df892a`). Step 2B remains gated —
-this revision (2026-07-26) corrects a self-contradictory write-failure
-defect found in §10 by the Step 2B implementation-readiness review; the
-correction itself now requires its own independent review before Step
-2B's RPI cycle may begin (§27).** This Plan originally specified two
-separately gated RPI Implement increments (§4) rather than treating
+Status: **FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS
+REVIEW (§27).** Step 2A is implemented and independently accepted
+(commit `dcf9b580ef6f46fd9bb8422cecb22ba794df892a`). Step 2B's own
+write-failure defect (found in an earlier implementation-readiness
+review of this Plan) was corrected, that correction was independently
+re-reviewed (APPROVED WITH REQUIRED MINOR REVISIONS) and the three
+required revisions applied, and the subsequent RPI Research phase
+independently re-derived every repository fact this Plan depends on
+(disposition: STEP 2B RESEARCH COMPLETE — READY FOR PLAN FINALIZATION).
+This document is that finalization pass. This Plan originally specified
+two separately gated RPI Implement increments (§4) rather than treating
 Phase 2 as unblocked for a single combined implementation; that
-structure is unchanged by this revision.
+structure is unchanged throughout.
 
 Owner: Software Architect (RPI Plan phase, per ADR-035/ADR-024 owner
 precedent).
@@ -48,12 +52,33 @@ tests are now added to §21. None of these three points changed the
 underlying design decided by the first correction; they close gaps in
 its specification.
 
+**Plan finalization — 2026-07-26 (Plan-level only, no code touched):**
+the independent Step 2B RPI Research phase (commit `085e7e5` as its
+governance baseline) re-derived every repository fact this Plan depends
+on directly from source and confirmed all three required corrections
+present. It surfaced four items incorporated in this finalization pass:
+(1) §18's structural-boundary scope was overstated — corrected below;
+(2) §10 now explicitly documents *why* `OrbQualificationStore`
+deliberately departs from `compliance_state_store`'s own write-failure
+handling, rather than leaving that divergence unexplained; (3) §13 now
+states explicitly that ADR-035 §13's cross-field validation clause does
+not apply to any of Step 2B's 4 fields, so no implementer redundantly
+re-implements it; (4) every stale HEAD/commit reference in this document
+is updated to the actual state at finalization time. No breakout
+algorithm, lockout semantic, concurrency guarantee, persistence design,
+or registration prohibition changed — this pass closes documentation
+gaps the Research phase found, it does not revise any decision already
+reviewed and approved.
+
 Touched components (this document only): none in production code.
 `docs/plans/` only. No production code, test, ADR, or config file is
 modified by this Plan revision. `titan_protocol/strategy_engine/*`
 remains untouched by any commit to date; `titan_protocol/evidence_engine/*`
 reflects Step 2A's own implementation (commit `dcf9b58`) — both are
-exactly as they are at current HEAD `dcf9b580ef6f46fd9bb8422cecb22ba794df892a`.
+exactly as they are at current HEAD `085e7e5608dd7509c6992ab56eef9c77cbdeb232`
+(independently re-verified by the RPI Research phase; `dcf9b58` remains
+the last commit to touch either package, `085e7e5` is simply HEAD's own
+value at this finalization).
 
 ---
 
@@ -61,13 +86,13 @@ exactly as they are at current HEAD `dcf9b580ef6f46fd9bb8422cecb22ba794df892a`.
 
 ### 1.1 Governance gate (re-verified against current HEAD)
 
-- Branch: `claude/phantom-ea-visibility-cjjf3a`. HEAD: `d569de5475a71a17a9d261f3ad8366bfaa9d245e`, matches `origin`. Working tree clean before this revision.
+- Branch: `claude/phantom-ea-visibility-cjjf3a`. HEAD at Plan finalization: `085e7e5608dd7509c6992ab56eef9c77cbdeb232`, matches `origin`, working tree clean (independently re-verified by the RPI Research phase preceding this finalization pass — not merely carried forward from the original Plan reconciliation's `d569de5` snapshot, which predates Step 2A's own implementation and both write-failure corrections).
 - ADR-035: **Accepted** (2026-07-25, §§0-16/§17 only) — unaffected by this Plan.
 - ADR-036: **Accepted** (product-direction only) — retirement still gated on all 6 ADR-035 phases being implemented, tested, and independently accepted, unaffected by this Plan.
 - ADR-024 Amendment 4 (`OpeningRangeState.post_range_bars`): **Accepted** (2026-07-26, commit `d569de5`) — re-read in full this revision; the exact-equality first-candidate rule, exact subsequent-interval continuity, self-derived completion, bounded retention, sequence-relative index/`(symbol, timestamp)` identity, and multiple-range independence are all confirmed present and unambiguous in the Accepted text.
 - ADR-035 Phase 0 (`OpeningRangeState`/`opening_ranges`): implemented, unchanged.
 - ADR-035 Phase 1 (`OrbBreakoutStrategy` foundation): implemented (commit `27f231f`) and independently accepted. Re-verified this revision: `qualify()` still gates on eligibility → empty ranges → `len(opening_ranges) > 1` → `is_formed` → `is_valid`, then unconditionally `NOT_QUALIFIED`. Stateless (`vars(strategy) == {}`). Absent from `build_default_registry()` (still registers exactly the 5 legacy strategies, body unchanged — confirmed via `git log -1 -- titan_protocol/strategy_engine/` showing `27f231f` as the last touch). `git log d569de5..HEAD` is empty relative to this revision's own starting point — no Phase 2 code exists anywhere.
-- **Distinction preserved throughout this Plan (per this task's own instruction): "Amendment 4 Accepted" is an architecture/design decision (A), not proof that Amendment 4's production code exists (B).** Both increments below (§4) require their own Implement-phase work; neither is done.
+- **Distinction preserved throughout this Plan (per this task's own instruction): "Amendment 4 Accepted" is an architecture/design decision (A), not proof that Amendment 4's production code exists (B).** Both increments below (§4) required their own Implement-phase work; Step 2A's is now complete and independently accepted (commit `dcf9b58`), Step 2B's has not begun and remains gated on this finalized Plan's own independent implementation-readiness review.
 
 ### 1.2 ADR-035's exact Phase 2 contract (unchanged from prior revision, re-confirmed)
 
@@ -142,11 +167,14 @@ incomplete, or non-contiguous evidence.
 
 **This objective is now fully specifiable** (§5-§18 below) because
 Amendment 4's Accepted contract supplies every fact ADR-035 §4 needs.
-It remains **not yet implementable in one step**: Amendment 4's own code
-must land and be independently accepted first (§4, Step 2A) before
-Step 2B's `qualify()` logic — which reads `post_range_bars`, a field
-that only exists once Step 2A ships — can be written or tested against
-real evidence.
+It was **not implementable in one step**: Amendment 4's own code had to
+land and be independently accepted first (§4, Step 2A) before Step 2B's
+`qualify()` logic — which reads `post_range_bars`, a field that did not
+exist until Step 2A shipped — could be written or tested against real
+evidence. **That precondition is now satisfied** (Step 2A implemented
+and independently accepted, commit `dcf9b58`); Step 2B's own
+implementation may proceed once this finalized Plan itself passes its
+independent implementation-readiness review.
 
 ---
 
@@ -254,8 +282,8 @@ introduced (ADR-026 Hard Rule 1, unchanged).
 |---|---|---|
 | `OpeningRangeState`/`opening_ranges` | Phase 0 | Implemented |
 | Range-formed/valid gating, stateless, never `QUALIFIED` | Phase 1 | Implemented, accepted |
-| `post_range_bars`/`OpeningRangeBarObservation` evidence contract | **Step 2A** | **Accepted (design); not yet implemented** |
-| Close-beyond-range, ATR-distance, body/wick, momentum, confirmation count, lockout | **Step 2B** | **Fully specified (§5-§10); not yet implemented — gated on Step 2A** |
+| `post_range_bars`/`OpeningRangeBarObservation` evidence contract | **Step 2A** | **Implemented and independently accepted** (commit `dcf9b58`) |
+| Close-beyond-range, ATR-distance, body/wick, momentum, confirmation count, lockout | **Step 2B** | **Fully specified (§5-§10), Plan finalized; not yet implemented — gated on this finalized Plan's own independent implementation-readiness review** |
 | FVG confirmation (§5 of ADR-035) | Phase 3 | Out of scope — not designed here |
 | Session-anchor matching, news/liquidity/holiday gates, `orb_approved_pairs` hard gate | Phase 4 | Out of scope — not designed here |
 | Full `StrategyEngineConfig`/`config_loader.py` wiring, cross-field validation | Phase 5 | Out of scope — not designed here |
@@ -408,6 +436,34 @@ checked on that one initial load, atomic write via `tempfile.mkstemp()` →
 - Unsupported `schema_version` on the one initial load → same fail-closed path, no migration attempted.
 - **Write failure after the in-memory increment (corrected contract):** the in-memory increment inside `try_consume()`'s critical section happens first and is never rolled back — that increment *is* the atomic decision (§11), and is what "the decision stands" means. The subsequent disk-persist call is then attempted; if it raises, `try_consume()` catches that specific exception **inside the store** — never letting it cross the method's own boundary — and calls the module-level `_safe_log_persist_failure(exc)` helper (defined alongside `OrbQualificationStore` in `store.py`, using the module-level `_LOGGER = logging.getLogger(__name__)`, no constructor/callback dependency), which itself wraps its own `_LOGGER.exception(...)` call in a bare `except Exception: pass` so a *logging* failure can never compound the original persist failure — mirroring this codebase's own established fault-containment pattern (the positions-staleness diagnostic's `_safe_log_exception()` precedent in `deployment_windows/start.py`). `try_consume()` then returns `True` exactly as it would on a successful persist. **No exception ever crosses `try_consume()`'s boundary for a write failure.** This satisfies ADR-035/ADR-024 §18.A's actual requirement — persisted state must not be "silently swallowed" — through visible, unmissable logging, not through letting an exception propagate; §18.A's text never required the latter, and reading it that way was this Plan's own prior error, since `StrategyEngine.evaluate()`'s `qualifications = tuple(strategy.qualify(...) for strategy in self.registry.all())` has zero exception handling around each `qualify()` call (independently confirmed by direct code read during the Step 2B readiness review) — an exception escaping `try_consume()` would abort that entire evaluation cycle for all 5 legacy strategies too, a materially worse outcome than a durability gap that is loudly logged. `OrbBreakoutStrategy.qualify()` therefore needs no exception handling of its own around `try_consume()`, since the store's public contract now guarantees it never raises for this reason.
 
+**Deliberate deviation from the `compliance_state_store` precedent
+(confirmed by the RPI Research phase's direct read of
+`compliance_state_store/store.py`):** `ComplianceStateStore._save()`
+does **not** catch its own write failures — an exception during its
+`tempfile.mkstemp()`/`os.replace()` sequence propagates uncaught to its
+caller (`deployment_windows/start.py`'s `reconcile()` call site, which
+has no local try/except either). `OrbQualificationStore.try_consume()`
+deliberately does not follow that shape. The reason is call-site risk,
+not inconsistency: `ComplianceStateStore`'s callers are the Runtime
+live-cycle loop, a different architectural context from
+`StrategyEngine.evaluate()`/`evaluate_batch()`, whose own
+`qualifications = tuple(strategy.qualify(...) for strategy in
+self.registry.all())` and `results = tuple(self.evaluate(...) for pair,
+... in sorted(pairs.items()))` comprehensions have **zero** exception
+handling (confirmed by direct code read) — an exception escaping one
+strategy's `qualify()` call would abort not merely that pair's other 4
+qualifications, but the entire multi-pair `evaluate_batch()` cycle then
+in progress. Containing the write failure *inside* `try_consume()` is
+therefore this design's own correctly-justified choice for its own
+call site, not a deviation to be reconciled away — `compliance_state_store`
+is not wrong for its own call site either; the two stores simply serve
+callers with different failure tolerances. ADR-035 §18.A's own semantics
+are fully preserved either way: the in-memory qualification stands after
+a failed persist (§this section, above), and the narrow
+crash-before-the-next-successful-whole-state-write duplication risk is
+an ADR-accepted residual, not something this deviation introduces or
+must resolve.
+
 **Dependency injection:** `OrbBreakoutStrategy.__init__(self, store: OrbQualificationStore)` — the strategy's first, narrowly-scoped instance state (ADR-035 §6's own anticipated "explicit, narrow, documented exception" to Strategy Engine's stateless convention). `build_default_registry()` is unaffected since `OrbBreakoutStrategy` is not registered there (§13).
 
 **Test isolation:** tests construct `OrbQualificationStore` against a
@@ -516,6 +572,25 @@ specified for the implementation phase" — Phase 2 (Step 2B) *is* that
 implementation phase for these 4 fields, so adding validation here is
 ADR-mandated, not scope creep.
 
+**ADR-035 §13 requires no cross-field validation among Step 2B's 4
+fields (confirmed by the RPI Research phase's direct read of ADR-035
+§13's own "Cross-field validation (required)" clause):** that clause
+names exactly three checks — anchor-window-overlap, min-range-bars
+feasibility against the configured bar timeframe, and the FVG
+scoring-weight sum. All three reference fields that are either **already
+validated elsewhere** (the anchor-overlap check is
+`EvidenceEngineConfig._validate_no_overlapping_anchors()`, Phase 0,
+confirmed present and unrelated to `StrategyEngineConfig`) or
+**out of Step 2B's scope** (`orb_fvg_score_weight`, Phase 3). None of
+the three apply to `orb_min_breakout_distance_atr_multiple`,
+`orb_min_body_to_range_ratio`, `orb_min_confirmation_candles`, or
+`orb_max_qualifications_per_range`. `StrategyEngineConfig.__post_init__`
+therefore validates only each of these 4 fields' own individual range
+(the table above) — no cross-field check between them, and critically,
+**no Phase 3+ validation (the FVG weight-sum check) is pulled forward**
+merely because it lives in the same ADR §13 clause. An implementer must
+not invent a cross-field check here; none is required or authorized.
+
 **`EvidenceEngineConfig.opening_range_post_range_bar_window` (Step 2A,
 Amendment 4's own field) remains entirely independent** — no
 cross-reference to `orb_min_confirmation_candles` or any Strategy Engine
@@ -593,16 +668,35 @@ authority expansion in either increment.
 
 ## 18. Structural-Boundary Impact
 
-Both `test_structural_boundary.py` files list
-`"titan_protocol/strategy_engine/"` (and, for the `evidence_engine`
-prefix already present, Step 2A's own touched files) in their
-`_FROZEN_PREFIXES`. Each increment will need its own narrowly-scoped
-`_LATER_AUTHORIZED_EXCEPTIONS` entries for exactly the files it touches
-— Step 2A's entries for the 3 `evidence_engine` files, Step 2B's entries
-for the 3 `strategy_engine` files plus the new
-`titan_protocol/strategy_state_store/` files — following the established,
-already-precedented pattern (verified legitimate in the Phase 1
-conformance review). Not implemented here.
+**Corrected by the RPI Research phase's direct read of both
+`test_structural_boundary.py` files' actual `_LATER_AUTHORIZED_EXCEPTIONS`
+lists** (the prior Plan text overstated this section's scope):
+`titan_protocol/strategy_engine/models.py`,
+`strategy_engine/strategies/__init__.py`, and
+`strategy_engine/strategies/orb_breakout.py` are **already present** in
+both files' exception lists, added at Phase 1 (confirmed by direct
+inspection, not re-derived from this Plan's own prior claim). Step 2B
+touches exactly one `strategy_engine` file **not** already exempted:
+`titan_protocol/strategy_engine/config.py` (the 4 new fields + first
+`__post_init__`). **Exactly one new exception-list entry, in each of the
+two files, is required — not three, and not a blanket
+`strategy_engine/` re-authorization.**
+
+The new `titan_protocol/strategy_state_store/` package requires **no
+exception entry in either file**: `_FROZEN_PREFIXES` in both files
+covers only pre-existing, already-frozen pipeline-stage packages
+(`evidence_engine`, `market_intelligence`, `strategy_engine`,
+`risk_engine`, `compliance_engine`, `runtime`, `reliability`,
+`market_data_ingestion`, `news_ingestion` — confirmed by direct read);
+`strategy_state_store` is not among them and does not yet exist, so no
+file under it can trip the frozen-prefix check regardless of exception
+entries. This is a mechanism fact, not a gap — the structural-boundary
+guard exists to catch *undocumented changes to already-frozen packages*,
+and a brand-new, not-yet-frozen package is categorically outside what it
+polices. (Whether to add `titan_protocol/strategy_state_store/` to
+`_FROZEN_PREFIXES` going forward, for its own future protection once it
+exists, is a policy choice for whoever owns these test files — not a
+Step 2B implementation requirement, and not decided here.)
 
 ---
 
@@ -621,7 +715,7 @@ conformance review). Not implemented here.
 | `titan_protocol/strategy_engine/*` | OUT OF SCOPE | Not touched by Step 2A |
 | `CHANGELOG.md` | REQUIRED | Dated entry per TEAM.md §9 convention (Implement phase) |
 
-**Step 2B (Phase 2 ORB implementation, gated on Step 2A):**
+**Step 2B (Phase 2 ORB implementation — Step 2A itself is already implemented and independently accepted; Step 2B remains gated on this finalized Plan's own independent implementation-readiness review):**
 
 | File | Classification | Reason |
 |---|---|---|
@@ -632,7 +726,8 @@ conformance review). Not implemented here.
 | `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py` | REQUIRED | Extend with Step 2B's own test matrix (§20 below), renamed or extended |
 | `tests/titan_protocol/strategy_state_store/*` | REQUIRED (new) | Store unit tests |
 | `tests/titan_protocol/strategy_engine/test_architecture.py` | REQUIRED | One new `ALLOWED_UPSTREAM_PREFIXES` entry |
-| Both `test_structural_boundary.py` files | POSSIBLY REQUIRED | Narrow exception entries for the touched/new files |
+| `tests/titan_protocol/compliance_state_store/test_structural_boundary.py` | REQUIRED | One new `_LATER_AUTHORIZED_EXCEPTIONS` entry: `titan_protocol/strategy_engine/config.py` (§18 — the other 3 `strategy_engine` files are already exempted from Phase 1; `strategy_state_store/*` needs no entry) |
+| `tests/titan_protocol/news_ingestion/test_structural_boundary.py` | REQUIRED | Same one new entry, mirrored (§18) |
 | `titan_protocol/strategy_engine/strategies/{bos_fvg,liquidity_sweep_mss,range_reversal,session_breakout,trend_continuation}.py` | UNNECESSARY | No legacy strategy touched |
 | `titan_protocol/strategy_engine/strategies/registry.py`, `engine.py`, `selection.py`, `eligibility.py` | READ ONLY | No change needed; generic mechanisms already support this |
 | `titan_protocol/evidence_engine/*` | OUT OF SCOPE | Not touched by Step 2B |
@@ -687,16 +782,20 @@ tests; full existing Evidence Engine regression suite green.
 |---|---|---|
 | False breakout (rule too permissive) | HIGH | Mitigated by §5's fully-specified, conservative checks (steps 9-15) |
 | Duplicate same-range qualification | CRITICAL | Mitigated by §11/§12's atomic `try_consume()` |
-| Restart duplication | CRITICAL | Mitigated by §10's persistence design |
+| Restart duplication | CRITICAL | Mitigated by §10's persistence design **in the normal (successful-write) case**; a narrow, ADR-035 §18.A-accepted residual window remains for a crash between a failed persist and the next successful whole-state write (§10, §21) — not fully eliminated, and not claimed to be |
 | Concurrent lost update | HIGH | Mitigated by §11's single-lock atomic critical section |
 | Corrupt state treated as empty | CRITICAL | Mitigated by §10's fail-closed load path |
 | Score/confidence formula is an interim approximation | LOW | Flagged explicitly (§5.1/§6); never affects whether a trade occurs, only ranking/sizing quality |
 | Confirmation-window quality-check scope is an interpretation | LOW | Flagged explicitly (§5.1) for the Step 2B conformance review to confirm or correct |
 | Two implementation increments landing out of the specified order | MEDIUM | Mitigated by §4's explicit gate — Step 2B's own RPI cycle must not begin before Step 2A's is independently accepted |
-| Write-failure exception escaping `try_consume()` and aborting `evaluate()` for all strategies | CRITICAL | **Resolved by this correction** — `try_consume()` catches and logs the write failure internally via an exception-safe logging call and never raises past its own boundary (§10, corrected) |
+| Write-failure exception escaping `try_consume()` and aborting `evaluate()`/`evaluate_batch()` for all strategies/pairs | CRITICAL | **Resolved** — `try_consume()` catches and logs the write failure internally via an exception-safe logging call and never raises past its own boundary (§10); confirmed by the RPI Research phase's direct read that `evaluate_batch()`'s own blast radius is the entire multi-pair cycle, not just one pair, making this containment more load-bearing than originally stated, not less |
 | Multiple-range disambiguation prematurely invented | LOW | Explicitly preserved as `NOT_QUALIFIED` (§16), not touched |
 | Accidental ORB registration | LOW | Unchanged, explicitly preserved (§15) |
 | Legacy-strategy regression | LOW | No legacy file touched by either increment |
+| §18's structural-boundary scope overstated (3 exception entries claimed, only 1 per file actually needed) | LOW | **Resolved by the RPI Research phase** — corrected in §18/§19 of this finalization |
+| `OrbQualificationStore`'s internal write-failure containment left unexplained as a departure from `compliance_state_store` precedent | LOW | **Resolved** — §10 now states explicitly why the two stores differ (§10, this finalization) |
+| ADR-035 §13 cross-field validation clause misapplied to Step 2B's 4 fields | LOW | **Resolved** — §13 now states explicitly that none of ADR §13's three named cross-field checks apply to Step 2B's fields (§13, this finalization) |
+| Stale HEAD/commit references in this document | LOW (governance hygiene) | **Resolved** — updated to `085e7e5` throughout (this finalization) |
 
 ---
 
@@ -720,7 +819,7 @@ implementation-ready)
 5. `OrbBreakoutStrategy` remains unregistered through both increments — **satisfied** (§15).
 6. No legacy strategy is modified — **satisfied** (§23).
 7. A full test matrix exists for both increments — **satisfied** (§20-§21).
-8. Neither increment has begun implementation — **true as of this Plan revision.**
+8. **Updated to reflect actual state (the original criterion, "neither increment has begun implementation," is now false and would misstate Step 2A's own progress if left unchanged):** Step 2A has been implemented and independently accepted (commit `dcf9b58`); Step 2B has not begun implementation and remains correctly gated on this finalized Plan's own independent implementation-readiness review — **satisfied** for Step 2B, the only increment this finalization authorizes proceeding toward.
 
 ---
 
@@ -738,7 +837,7 @@ precisely to prevent that ordering from ever occurring in practice.
 
 ## 26. Engineering Checklist
 
-- [x] Repository evidence re-verified directly against current HEAD (`d569de5`).
+- [x] Repository evidence re-verified directly against current HEAD (`085e7e5`, at Plan finalization).
 - [x] Amendment 4's Accepted text re-read in full and relied on without restating its own proofs.
 - [x] Breakout algorithm fully specified, every threshold traced to ADR-035 §13, every ambiguity explicitly flagged.
 - [x] Worked examples (A-P) covering every load-bearing branch.
@@ -750,10 +849,12 @@ precisely to prevent that ordering from ever occurring in practice.
 - [x] Step 2A independent conformance review — complete, **ACCEPTED**.
 - [x] §10's write-failure self-contradiction — identified by the Step 2B implementation-readiness review, corrected in a prior revision (Plan-level only, no code touched).
 - [x] That correction's own independent re-review — complete: **STEP 2B PLAN APPROVED WITH REQUIRED MINOR REVISIONS** (full-dictionary persistence, the store's module-level exception-safe logger, and two durability tests covering restart duplication after a failed persist and later whole-state self-healing).
-- [x] The three required minor revisions — applied in this revision (§10, §21).
-- [ ] Step 2B's own RPI Research phase — not started; per the re-review's own next-step instruction, this revision's three additions should be re-confirmed present as part of that phase, but no further standalone Plan re-review is required before it begins.
-- [ ] Step 2B implementation — not started, gated on the above.
-- [ ] Step 2B independent conformance review — not started.
+- [x] The three required minor revisions — applied (§10, §21).
+- [x] Step 2B's own RPI Research phase — complete: every repository fact this Plan depends on independently re-derived directly from source (ORB foundation, Step 2A evidence contract, breakout-predicate ADR-vs-Plan attribution, config contract, score/confidence precedent, persistence precedent, concurrency proof, architecture/structural-boundary scope). Disposition: **STEP 2B RESEARCH COMPLETE — READY FOR PLAN FINALIZATION**.
+- [x] Plan finalization — this revision incorporates all four Research findings (§18 structural-boundary scope corrected; §10 documents the deliberate `compliance_state_store` deviation; §13 states no ADR-035 §13 cross-field validation applies; all stale HEAD references updated to `085e7e5`).
+- [ ] Step 2B implementation — not started, gated on the below.
+- [ ] Step 2B's own independent implementation-readiness review of this finalized Plan — not started; required before Step 2B's RPI Implement phase may begin.
+- [ ] Step 2B independent conformance review (post-implementation) — not started.
 
 ---
 
@@ -763,26 +864,36 @@ precisely to prevent that ordering from ever occurring in practice.
 independently passed its own conformance review with an **ACCEPTED**
 disposition. **§10's write-failure correction independently passed its
 own re-review with an APPROVED WITH REQUIRED MINOR REVISIONS
-disposition; those three revisions (full-dictionary persistence, the
-store's module-level exception-safe logger, and the two durability
-tests) are applied in this revision.** Per that re-review's own
-next-step instruction, no further standalone Plan re-review round is
-required before Step 2B's RPI cycle begins — Step 2B's own upcoming
-Research phase should simply re-confirm these three additions are
-present. §21's full test suite still cannot be *written* against real
-`post_range_bars` values until Step 2B's own RPI Implement phase starts.
+disposition; those three revisions were applied, then the RPI Research
+phase independently re-derived every repository fact this Plan depends
+on and returned STEP 2B RESEARCH COMPLETE — READY FOR PLAN
+FINALIZATION, with four documentation-level findings.** This revision
+incorporates all four: §18's structural-boundary scope is corrected to
+exactly one new exception entry per file (not three, and no entry at
+all for the new `strategy_state_store` package); §10 now explicitly
+documents why `OrbQualificationStore` deliberately departs from
+`compliance_state_store`'s own non-containing write-failure handling;
+§13 now states explicitly that none of ADR-035 §13's three named
+cross-field checks apply to Step 2B's 4 fields; every stale HEAD
+reference is updated to `085e7e5`. No breakout algorithm, lockout
+semantic, concurrency guarantee, persistence design, or registration
+prohibition was altered by this finalization pass — every one of those
+was independently re-derived and confirmed unchanged during Research
+(§5-§12, §14-§16 above). §21's full test suite still cannot be
+*written* against real `post_range_bars` values until Step 2B's own RPI
+Implement phase starts, which remains gated on an independent
+implementation-readiness review of this finalized Plan.
 
 ---
 
 ## Plan disposition
 
-**PHASE 2 PLAN — STEP 2A (AMENDMENT 4 IMPLEMENTATION) IMPLEMENTED AND
-INDEPENDENTLY ACCEPTED. §10'S WRITE-FAILURE CORRECTION INDEPENDENTLY
-RE-REVIEWED AND APPROVED WITH REQUIRED MINOR REVISIONS, NOW APPLIED.
-STEP 2B (BREAKOUT + LOCKOUT) IS FULLY SPECIFIED AND MAY PROCEED TO ITS
-OWN RPI RESEARCH PHASE.**
+**STEP 2B PLAN FINALIZED — READY FOR INDEPENDENT
+IMPLEMENTATION-READINESS REVIEW.**
 
-Next authorized action: begin Step 2B's own RPI Research phase,
-re-confirming this revision's three additions (§10, §21) are present as
-part of that phase's own governance-gate verification, per CLAUDE.md
-§1.10 and TEAM.md §9.
+Next authorized action: submit this finalized Plan for its own
+independent implementation-readiness review. Only after that review
+authorizes it may Step 2B's own RPI Implement phase begin — its own
+code, its own test suite (§21), and its own independent conformance
+review, before Phase 3 may begin in turn. Implementation is not
+authorized by this finalization pass.
