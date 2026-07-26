@@ -1,18 +1,22 @@
 # Plan: ADR-035 Phase 3 — FVG (Fair Value Gap) Confirmation for ORB
 
-Status: **FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS
-REVIEW.** The Research phase (commit `2dddac2`) is complete and is
-carried forward unchanged below. This pass adds the Plan section only —
-no production code, no test code, per this task's own instruction.
-Implementation remains prohibited until an independent
-implementation-readiness review of this Plan accepts it (mirrors the
-Step 2A/2B precedent exactly: Research → Plan → independent Plan review
-→ Implement, never Research → Implement directly).
+Status: **REVISED — READY FOR SHORT REVISION-ACCEPTANCE REVIEW.** The
+Research phase (commit `2dddac2`) and the first Plan finalization
+(commit `059f0ae`) are carried forward; this pass revises exactly the
+two items the independent implementation-readiness review required
+(see the 2026-07-26 revision note above) and touches no other section.
+No production code, no test code, per this task's own instruction.
+Implementation remains prohibited until the revision-acceptance review
+accepts this document (mirrors the Step 2A/2B precedent: Research →
+Plan → independent Plan review → revision → revision-acceptance →
+Implement, never Research → Implement directly).
 
 Owner (Plan phase): Software Architect (ADR-035/ADR-024/ADR-026 owner precedent, unchanged)
 Touched components (confirmed, unchanged from Research): `titan_protocol/strategy_engine/strategies/orb_breakout.py`, `titan_protocol/strategy_engine/config.py`, `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`. No other package. No Evidence Engine change (re-confirmed below, §8). No new structural-boundary allowlist entries (re-confirmed below, §8).
 
 **Fixed inputs this Plan does not revisit** (per this task's own explicit instruction): the Accepted ADR-035 §5/§13/§17 text, and the completed, independently-accepted Phase 2 `OrbBreakoutStrategy.qualify()`/`OrbQualificationStore` implementation (commit `6cb235c`) — including its exact score-formula literals (`0.4`/`0.3`/`0.3`), its 16-step breakout algorithm, and its lockout/persistence/concurrency behavior. Phase 3 is additive to this fixed baseline, never a revision of it.
+
+**Revision — 2026-07-26 (Plan-level only, no code touched):** the independent implementation-readiness review of this Plan found two required items: (1) the original §2.1 resolution ("zero sibling weights exist, so §13's cross-field check degenerates to a vacuous single-field check") was not adequately grounded — the review found `titan_protocol/strategy_engine/config.py`'s own module docstring ("every threshold and weight used anywhere in this package is named here") cuts against reading "sibling weights" as "configurable sibling weights only," and the consequence (an uncapped pre-clamp score) touches CLAUDE.md §2's "no score inflation" rule. Re-deriving from ADR-035 §17 directly (not merely re-arguing §13 in isolation) resolves this cleanly: **§17's own Phase 5 entry explicitly assigns "the cross-field checks named in §13 (duplicate/overlapping anchors, bar-count feasibility, weight-sum bound)" to Phase 5, not Phase 3.** §2.1 below is rewritten around this stronger, textually decisive ground; the original "degenerate case" reasoning is retained only as a secondary, no-longer-load-bearing observation. (2) The worked-examples table (§5) and test matrix (§10) lacked coverage for 3 of ADR-035 §17's 5 named Phase 3 test categories (size, overlap, expiration) plus one additional algorithm predicate (formed-before-`range_start`) — four new worked examples (K-N) and corresponding test-matrix entries are added below. No other section changes; the algorithm, insertion point, age semantics, FVG-bonus formula, file-impact matrix, and every other previously-verified claim are unchanged and were re-confirmed, not re-litigated, during this revision.
 
 ---
 
@@ -100,63 +104,77 @@ predicate itself, not as score weights.
 
 ### 2. Resolved design decisions (the three Research-phase questions)
 
-#### 2.1 Score weights / cross-field validation
+#### 2.1 Score weights / cross-field validation (revised — see revision note above)
 
 **Decision: do not promote Phase 2's existing `0.4`/`0.3`/`0.3` score
 literals into config fields. Add exactly one new field,
 `orb_fvg_score_weight: float = 0.15`, validated only against its own
-per-field range `[0.0, 1.0]`. No cross-field sum check is implemented,
-and this is not an omission — it is the correct reading of §13 given
-this Plan's fixed inputs, for the following reasons, in order:**
+per-field range `[0.0, 1.0]` in the existing `__post_init__`. No
+cross-field sum check is implemented in Phase 3. This is not an
+implementer's interpretive shortcut — it is what ADR-035's own accepted
+roadmap explicitly assigns to a later phase, established as follows:**
 
-1. This task explicitly instructs treating "the completed Phase 2 ORB
-   implementation as fixed inputs." Phase 2's score formula (including
-   its three literal coefficients) is part of that implementation,
-   already independently accepted (conformance review, commit
-   `b28ac3f`/`6cb235c`). Rescaling those literals to make room for a
-   fourth weighted term would be a behavior change to already-accepted,
-   already-shipped code — not an addition — and is out of this Plan's
-   authorized scope.
-2. The Step 2B Plan (`docs/plans/adr-035-phase2-orb-breakout-lockout.md`
-   §13, its own Plan-finalization note) already recorded, explicitly,
-   that "ADR-035 §13's cross-field validation clause does not apply to
-   any of Step 2B's 4 fields" — an acknowledgment, made at the time,
-   that the session/MI/volatility weights were not configurable fields
-   and therefore had no "sibling weights" for any future FVG weight to
-   sum against. This Plan does not silently re-open that already-decided
-   point; it inherits it.
-3. §13's cross-field clause reads: *"the weighted-scoring components in
-   §5 (`orb_fvg_score_weight` **and any sibling weights in the same
-   weighted sum**) do not sum to ≤ 1."* With zero sibling weights
-   existing as configurable fields (by #1/#2 above), this clause is not
-   violated by omission — it degenerates to, and is fully satisfied by,
-   `orb_fvg_score_weight`'s own per-field bound. A cross-field check with
-   only one field to check is not a cross-field check; nothing is lost
-   by not writing one.
-4. ADR-035 §18.B item 3 (Future design considerations, explicitly
-   non-blocking) states: *"Exact default values in §13 are proposed,
-   reasonable starting points, not empirically validated... before
-   Phase 5, not before."* This confirms the ADR itself treats §13's
-   numeric defaults, including `orb_fvg_score_weight`'s `0.15`, as
-   provisional — supporting (not requiring) exactly the reading above:
-   the binding requirement is the *structural* one (bounded, weighted,
-   never disqualifying), which this design satisfies; the specific
-   numbers are not frozen by the ADR.
-5. **Consequence, stated plainly:** the existing three terms can already
-   sum to 100 at their own maximum (`0.4+0.3+0.3=1.0` against inputs
-   each bounded `[0,100]`); adding `orb_fvg_score_weight * fvg_bonus`
-   (max `0.15*100=15`) on top can push the pre-clamp value to at most
-   115, absorbed by the existing `clamp(value, 0.0, 100.0)` call that
-   already wraps this formula today. This is intentional, not a defect:
-   ADR-035 §5 itself calls the FVG contribution "a bounded scoring
-   bonus," not a fourth weighted-average term requiring renormalization
-   — "bonus" language is consistent with additive headroom absorbed by
-   an existing ceiling, not with a strict weighted-average identity.
-   **Recorded as a non-blocking open item for a possible future,
-   separately-scoped follow-up** (§6 below): promoting all four weights
-   to config fields with a real cross-field sum check remains available
-   if a later phase wants it; Phase 3 does not need it and does not
-   invent it now.
+1. **Primary ground, textually decisive:** ADR-035 §17's own Phase 5
+   entry reads, verbatim: *"Phase 5 — Configuration: §13's fields wired
+   through `StrategyEngineConfig`, `config_loader.py`, and the example
+   config, each with startup fail-closed validation and **the
+   cross-field checks named in §13 (duplicate/overlapping anchors,
+   bar-count feasibility, weight-sum bound)**, with unit tests for every
+   validation path."* The weight-sum bound is one of exactly three
+   named cross-field checks in §13, and the ADR's own phased roadmap
+   assigns all three, as a set, to Phase 5 — not Phase 2 (which already
+   wired 4 of §13's fields with only per-field validation, no cross-field
+   check, without objection) and not Phase 3. This is not an inference
+   from silence or an implementer's convenient reading of "sibling
+   weights" — it is the ADR's own explicit phase assignment, re-read and
+   confirmed directly from `docs/adr/ADR-035-orb-strategy.md` line
+   744-748 during this revision. Phase 3 wiring `orb_fvg_score_weight`'s
+   own per-field range check now, while deferring the cross-field
+   weight-sum bound to Phase 5, is squarely consistent with — not a
+   deviation from — how Phase 2 already treated its own 4 fields.
+2. **Consequence for the "sibling weights" wording:** because the
+   cross-field check itself is out of Phase 3's scope by #1, this Plan
+   no longer needs to resolve whether "sibling weights in the same
+   weighted sum" (§13's phrase) means "configurable fields only" or
+   "the formula's actual coefficients regardless of storage." That
+   question is real (the review correctly identified it as genuinely
+   contestable, and `config.py`'s own docstring — *"every threshold and
+   weight used anywhere in this package is named here... no magic
+   numbers"* — arguably favors the stricter reading) but it is now a
+   **Phase 5 question**, to be settled when Phase 5 actually implements
+   the weight-sum bound check across whatever set of weights exists by
+   then (which may by that point include promoting Phase 2's three
+   literals to named fields specifically so the check has real inputs
+   to validate — a legitimate, in-scope Phase 5 decision this Plan does
+   not need to make or foreclose).
+3. **Preserving Phase 2 behavior, per this task's explicit instruction:**
+   Phase 2's score formula (including its three literal coefficients)
+   is unmodified — no rescaling, no promotion to config fields, no
+   behavior change to already-accepted, already-shipped code
+   (`b28ac3f`/`6cb235c`). Nothing in #1 requires touching it: Phase 5,
+   not Phase 3, is where §13's cross-field weight-sum bound — and, if
+   Phase 5's own Plan decides it's needed, promotion of the three
+   literals — would be addressed.
+4. ADR-035 §18.B item 3 confirms §13's exact numeric *defaults*
+   (including `orb_fvg_score_weight`'s `0.15`) are explicitly
+   "proposed... not empirically validated... before Phase 5, not
+   before" — consistent with, and additional support for, treating the
+   weight-sum *bound* as a Phase 5-scoped concern rather than something
+   Phase 3 must invent an early answer for.
+5. **Consequence, stated plainly (unchanged from the prior revision,
+   now resting on firmer ground):** the existing three terms already
+   sum to `1.0` at their own maximum against `[0,100]`-scale inputs;
+   `orb_fvg_score_weight * fvg_bonus` (max `0.15*100=15` at the default)
+   can push the pre-clamp value to at most `115`, absorbed by the
+   existing `clamp(value, 0.0, 100.0)` call this formula already uses
+   today. This is a known, disclosed, currently-uncapped-by-cross-field-
+   check behavior, not a hidden one — recorded here and left for Phase
+   5 to bound formally, exactly as ADR-035 §17 itself schedules.
+6. **No ADR conflict, no amendment required:** ADR-035's own text fully
+   authorizes this sequencing. There is no scoring-contract change to
+   negotiate and nothing for this Plan to escalate — the ADR already
+   decided which phase owns the cross-field weight-sum check, and it is
+   not this one.
 
 #### 2.2 FVG bonus formula
 
@@ -283,6 +301,12 @@ score = clamp(0.4 * session_value + 0.3 * mi_session_score + 0.3 * evidence.vola
 `strengths` gains one additional entry, appended only when
 `qualifying_fvg is not None`, e.g. `f"unfilled {qualifying_fvg.direction.value.lower()} FVG confirmation [{qualifying_fvg.start_index}-{qualifying_fvg.end_index}]"`
 — mirrors `BosFvgStrategy`'s own strengths-text pattern (Research §3).
+Advisory implementation note (mechanical, not a design decision): the
+current code builds `strengths` as an inline tuple literal inside the
+`QualificationResult(...)` call; the Implement phase will need to build
+it as a local variable first so the FVG entry can be conditionally
+appended — an ordinary refactor of the constructor call, not a new
+decision this Plan needs to make.
 `weaknesses` gains no corresponding entry on absence (absence is neutral,
 never a weakness, per §5's "never ignored... never mandatory" framing).
 `confidence` is **not** modified by this insertion — see §5 (Risks) for
@@ -319,9 +343,12 @@ validated in the existing single `__post_init__`, no new method):
 |---|---|---|---|
 | `orb_fvg_max_age_bars` | `int` | `10` | `>= 1` (ADR-035 §13 safe range) |
 | `orb_fvg_min_size_atr_multiple` | `float` | `0.1` | `> 0` (ADR-035 §13 safe range) |
-| `orb_fvg_score_weight` | `float` | `0.15` | `0.0 <= x <= 1.0` (ADR-035 §13 safe range; no cross-field check, §2.1) |
+| `orb_fvg_score_weight` | `float` | `0.15` | `0.0 <= x <= 1.0` (ADR-035 §13 safe range; cross-field weight-sum bound explicitly deferred to Phase 5 per ADR-035 §17, §2.1) |
 
-No cross-field validation function is added (§2.1). No change to
+No cross-field validation function is added — ADR-035 §17 assigns "the
+cross-field checks named in §13 (duplicate/overlapping anchors,
+bar-count feasibility, weight-sum bound)" to Phase 5 as a set, not
+Phase 3 (§2.1). No change to
 `approved_pairs_for()` or any other existing method. No change to
 `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` or `_ORB_APPROVED_CONFIG` (the test
 fixture) — these three fields have no interaction with pair eligibility.
@@ -348,13 +375,21 @@ Shared fixture values throughout: `opening_range.range_start_index = 0`,
 | I′ | Weight boundary, high | `orb_fvg_score_weight=1.0` | config accepts (boundary); max FVG contribution `1.0*100=100`; combined with the existing three terms' own max (`0.4+0.3+0.3=1.0` against 100-scale inputs, i.e. up to `100`), pre-clamp total can reach `200`, capped by the existing `clamp(value, 0.0, 100.0)` call to `100` — never invalid, never an exception |
 | I″ | Weight out of range | `orb_fvg_score_weight=1.01` or `-0.01` | `ValueError` at `StrategyEngineConfig.__post_init__` — fails closed at startup, never at evaluation time |
 | J | Otherwise-valid qualification + lockout interaction | genuine bullish breakout, qualifying FVG present, `orb_max_qualifications_per_range=1` | 1st `qualify()`: `QUALIFIED`, score boosted, `try_consume()` → `True` → returns `QUALIFIED`. 2nd `qualify()` on the identical `(pair, range_start)`: Phase 2 checks and FVG bonus computation are identical, `qualified_result` is rebuilt, but `try_consume()` → `False` → final result is `NOT_QUALIFIED` / `"Already qualified for this opening range"`, exactly Step 2B's existing behavior, **completely unaffected by FVG presence or absence** |
+| K | Filled FVG, otherwise fully eligible (expiration) | `direction=BULLISH, filled=True, start_index=2, end_index=8` (age `2<=3`), `gap_high=1.107, gap_low=1.1065` (size `0.0005>=0.0001`, overlaps `[1.105,1.108]`) | identical to example G in every field except `filled`; excluded at predicate 2 (`not gap.filled`) before size/overlap are even reached — `fvg_bonus=0.0` |
+| L | FVG size below `orb_fvg_min_size_atr_multiple * atr` | `direction=BULLISH, filled=False, start_index=2, end_index=8, gap_high=1.10505, gap_low=1.10500` | size `= 0.00005 < 0.0001` (threshold) → excluded at predicate 5, even though the gap sits entirely inside the overlap zone `[1.105,1.108]` and would otherwise pass predicate 6 |
+| M | FVG outside the breakout-price overlap zone | `direction=BULLISH, filled=False, start_index=2, end_index=8, gap_high=1.1030, gap_low=1.1020` | size `= 0.0010 >= 0.0001` ✓ (passes predicate 5); zone `=[1.105,1.108]`, `gap_high(1.1030) < zone_low(1.105)` → no overlap → excluded at predicate 6 |
+| N | `gap.start_index < opening_range.range_start_index` | `opening_range.range_start_index=5` (overriding the shared fixture's `0` for this example only); `direction=BULLISH, filled=False, start_index=3, end_index=8, gap_high=1.107, gap_low=1.1065` | age, size, and overlap would all pass (identical geometry to example G) — excluded solely at predicate 3 (`3 < 5`): an FVG that fully formed before this opening range began is unrelated context, never confirmation of this breakout (ADR-035 §5, verbatim) |
 
 ### 6. Risks / open questions (non-blocking, disclosed)
 
-- **§2.1's degenerate cross-field check** (no sibling weights exist) is
-  a deliberate reading, not an evasion — recorded here as the one place
-  a future phase could revisit if all four weights are ever promoted to
-  config fields together. Not required for Phase 3, not invented now.
+- **§2.1's weight-sum cross-field check is deferred to Phase 5**, per
+  ADR-035 §17's own explicit phase assignment (not an implementer
+  interpretation of "sibling weights") — recorded here as the item
+  Phase 5's own Plan must pick up, including deciding whether Phase 2's
+  three literals should be promoted to named config fields at that
+  point so the weight-sum bound has real inputs to validate. Not
+  required for Phase 3, not silently skipped either — explicitly
+  scheduled.
 - **`confidence` is not adjusted by FVG confirmation**, despite ADR-035
   §10's more general framing ("confidence... from range-quality/
   FVG-confirmation strength"). §5 — the section specifically titled "FVG
@@ -393,16 +428,22 @@ Shared fixture values throughout: `opening_range.range_start_index = 0`,
   only (§2.2), by explicit decision, not oversight.
 - Does not promote Phase 2's existing score-formula literals to config
   fields (§2.1).
+- Does not implement ADR-035 §13's cross-field weight-sum bound check
+  — ADR-035 §17 explicitly assigns it, alongside the anchor-overlap and
+  bar-count-feasibility cross-field checks, to Phase 5, not Phase 3
+  (§2.1).
 
 ### 8. Architectural-compliance confirmation (re-verified this pass, not merely carried from Research)
 
 - Against ADR-001's pipeline: unchanged — Strategy Engine remains the
   sole stage touched; no cross-stage reach.
 - Against ADR-035 itself: §5's mechanism, §13's three named fields
-  (values as specified, cross-field clause resolved per §2.1), and §17's
-  Phase 3 scope ("§5's weighted scoring addition... unit tests covering
-  direction matching, age, size, overlap, and expiration" — all five
-  covered in §5 of this Plan).
+  (values as specified; the cross-field weight-sum clause is Phase 5's
+  scope per §17's own text, not resolved by interpretation here, §2.1),
+  and §17's Phase 3 scope ("§5's weighted scoring addition... unit tests
+  covering direction matching, age, size, overlap, and expiration" — all
+  five now covered by examples A-N in §5 of this Plan, closing the gap
+  the implementation-readiness review found).
 - Against ADR-026 (Strategy Engine) Hard Rules: no trade-decision
   vocabulary added, no position sizing/price level introduced, no new
   randomness, no shared mutable eligibility state — `test_architecture.py`
@@ -432,7 +473,11 @@ Shared fixture values throughout: `opening_range.range_start_index = 0`,
 
 New test class in `test_orb_breakout_foundation.py` (exact name deferred
 to Implement phase, e.g. `TestFvgConfirmation`), covering, at minimum,
-examples A-J from §5 above, plus:
+examples A-N from §5 above — including K (expiration/`filled=True`), L
+(size below threshold), M (no overlap), and N (formed before
+`range_start_index`), closing the gap the implementation-readiness
+review found against ADR-035 §17's named test categories ("direction
+matching, age, size, overlap, and expiration") — plus:
 - Config validation: `orb_fvg_max_age_bars < 1`, `orb_fvg_min_size_atr_multiple
   <= 0`, and `orb_fvg_score_weight` outside `[0,1]` each raise
   `ValueError` (mirrors `TestConfigValidation`'s existing pattern).
@@ -454,13 +499,18 @@ examples A-J from §5 above, plus:
 ## Validation
 
 (Not started — Implement phase. This Plan authorizes no implementation;
-an independent implementation-readiness review of this Plan must accept
+the short revision-acceptance review of this revised Plan must accept
 it first, per this project's established Phase 2 precedent.)
 
 ---
 
-**Disposition: PHASE 3 PLAN FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS REVIEW** (ADR-035 Phase 3, FVG Confirmation).
+**Disposition: PHASE 3 PLAN REVISED — READY FOR SHORT REVISION-ACCEPTANCE REVIEW** (ADR-035 Phase 3, FVG Confirmation).
 
-The three Research-phase questions (§4 of Research) are resolved with evidence in Plan §2.1-§2.3 above, not invented: score-weight cross-field validation (§2.1), the `fvg_bonus` formula (§2.2), and the FVG age reference index (§2.3). The adversarial re-read (this pass) found and corrected two defects before this disposition was set: a stale disposition line inherited from the Research pass, and an arithmetic error in worked example I′ — both fixed in place, not left standing.
+This revision addresses both required findings from the independent implementation-readiness review:
 
-**Implementation is not authorized by this document.** Per this project's established Phase 2 precedent, an independent implementation-readiness review of this finalized Plan must accept it before `/rpi:implement` may begin.
+- **Finding 1 (HIGH, score-weight contract):** resolved on firmer ground than the original Plan — ADR-035 §17's own Phase 5 entry explicitly assigns "the cross-field checks named in §13 (duplicate/overlapping anchors, bar-count feasibility, weight-sum bound)" to Phase 5, independently re-confirmed at `docs/adr/ADR-035-orb-strategy.md` lines 744-748. Phase 3 therefore adds `orb_fvg_score_weight` with only its own per-field range validation, exactly mirroring how Phase 2 wired its own 4 fields; the cross-field weight-sum bound (and any decision to promote Phase 2's three literals to named fields) is explicitly deferred to Phase 5, not silently skipped or argued away by an implementer's reading of "sibling weights." No ADR conflict exists; no amendment is required.
+- **Finding 2 (MEDIUM, test coverage):** four worked adversarial examples (K: filled/expiration, L: undersized, M: no-overlap, N: formed-before-`range_start`) added to §5, closing the gap against ADR-035 §17's five named test categories, with a corresponding §10 test-matrix update.
+
+No other section was revised. The already-approved Phase 3 contracts are unchanged and re-confirmed during this pass: FVG confirmation remains score-only and cannot disqualify an otherwise-qualified breakout; age uses the verified shared bar-index space and fails closed on a negative age; Phase 2's qualification algorithm and `OrbQualificationStore`'s lockout/persistence/concurrency semantics are untouched; no Evidence Engine change; ORB remains unregistered (`titan_protocol/strategy_engine/strategies/__init__.py` re-checked, still 5 `.register()` calls only); no legacy strategy is touched.
+
+**Implementation is not authorized by this document.** Per this project's established precedent, the short revision-acceptance review must accept this document before `/rpi:implement` may begin. Phase 4 remains unauthorized regardless of this revision's outcome.
