@@ -36,6 +36,90 @@ interface and TradeIntent discipline ORB must conform to exactly.
 `ADR-025-market-intelligence-engine.md` (Accepted) — session/news
 facts ORB consumes, never recomputes.
 
+**Amendment 1 (Proposed, 2026-07-26 — not yet Accepted): Phase 4
+formation-time news-blackout staged limitation.** Triggered by an
+independent implementation-readiness review of the Phase 4 Plan
+(`docs/plans/adr-035-phase4-mi-eligibility-integration.md`), which found
+that Phase 4's design checks `pair_safety.news.blackout_active` only at
+breakout-evaluation time, on every cycle — never retroactively at the
+opening range's own formation window — while §2's "News restrictions"
+row requires NOT_QUALIFIED "both during range formation and at breakout
+evaluation," and neither §17's Phase 4 entry nor §18 discloses or
+authorizes this as a staged limitation. This amendment resolves that
+gap explicitly rather than leaving it as an undisclosed deviation.
+
+*Why the gap cannot be closed within Phase 4 without violating this
+project's own architecture boundaries or inventing unavailable state:*
+`OrbBreakoutStrategy.qualify()` is stateless by design (ADR-026) and
+observes only the current cycle's `MarketIntelligenceSnapshot` —
+`OpeningRangeState` (Evidence Engine, ADR-024) carries no news-related
+field, so there is no repository mechanism recording "was a blackout
+active while this specific range was forming." Two paths to close this
+without inventing state were independently checked and both rejected:
+(a) reconstructing formation-time blackout status inside Strategy
+Engine from the current snapshot's `pair_safety.news.{active_events,
+recent_events,upcoming_events}` — rejected, because doing so requires
+duplicating Market Intelligence's own blackout-window arithmetic
+(`pre_news_blackout_minutes`/`post_news_blackout_minutes`/per-pair
+overrides/central-bank-category rules, `titan_protocol/market_intelligence/news.py`)
+inside Strategy Engine, violating the "Market Intelligence owns event
+interpretation" ownership split this codebase already enforces
+elsewhere (`tests/titan_protocol/news_ingestion/test_structural_boundary.py`'s
+prohibition on reimplementing MI's blackout logic outside MI) — and is
+unreliable regardless, since `active_events`/`recent_events`'s own
+bucket windows are sized independently of, and are frequently narrower
+than, the actual blackout pre/post windows, so a formation-time-relevant
+event can silently age out of every bucket before breakout evaluation,
+producing exactly the false confidence a fail-closed design must avoid;
+(b) amending Evidence Engine to persist a formation-time blackout flag
+on `OpeningRangeState` — rejected for this amendment's scope because it
+requires Evidence Engine to newly depend on Market Intelligence's output
+(a dependency that does not exist anywhere in the current architecture,
+both engines today independently consume only external inputs), which
+is new cross-engine coupling requiring its own dedicated architectural
+review, not something to fold into Phase 4's existing scope.
+
+**Authorization:** for Phase 4 only, evaluation-time-only news-blackout
+enforcement (checking `pair_safety.news.blackout_active` once, on every
+cycle, immediately after the market-closed/holiday gates and before
+opening-range selection logic) is explicitly authorized as a staged
+limitation. This narrows §2/§14's news-blackout requirement for Phase 4
+specifically; it does not alter §2/§14 for any other gate, and it does
+not authorize omitting the evaluation-time check itself.
+
+**Safety consequence, stated plainly:** if a blackout was active at any
+point during an opening range's formation window but has cleared by the
+time a breakout candidate is evaluated, ORB can still produce a
+`QUALIFIED` result for that range on that basis alone — the range's
+underlying price action may have been shaped by the news event even
+though the check performed at evaluation time reports no active
+blackout. This residual exposure is partially bounded by ORB's existing,
+unrelated gates (ATR-relative breakout distance, body/wick ratio,
+confirmation-candle count, volatility expansion) which independently
+filter low-quality moves regardless of their cause, and by whatever
+downstream Risk/Compliance-layer news-sensitivity exists — but those are
+incidental mitigations, not a substitute for the ADR's own stated
+requirement.
+
+**Closing the gap (deferred, not designed here, not yet scheduled):** a
+future, dedicated RPI Research pass must scope one of — (i) a new,
+small, per-`(pair, range_start)` persisted history mechanism, in
+convention analogous to `OrbQualificationStore`, that accumulates
+"was `blackout_active` ever `True`" across the cycles spanning a range's
+own formation window, queried by `OrbBreakoutStrategy` at evaluation
+time; or (ii) a reviewed, explicit Evidence-Engine dependency on Market
+Intelligence's news output. Neither design is chosen here. This work is
+recorded as **Phase 7 — Formation-Time News-Blackout Closure (not yet
+scheduled; no RPI Research performed)**, appended to, not folded into,
+the phased roadmap in §17 — following this project's own "never
+silently move an item between phases" discipline (§17's own precedent
+for the Amendment 4/lockout-persistence gaps).
+
+**Status of this amendment: Proposed.** It requires its own independent
+review and formal Acceptance before the Phase 4 Plan that depends on it
+may proceed to implementation. It does not itself authorize any code
+change.
+
 ---
 
 ## 0. Scope discipline and verified current state (read first)
@@ -740,7 +824,10 @@ is unchanged, only this clarification is added).**
 - **Phase 4 — Market Intelligence/eligibility integration:** session
   anchor matching (using §3's corrected identification rule), news/
   liquidity/holiday gates, eligibility hard gate, with unit tests for
-  each gate.
+  each gate. **News-blackout enforcement is evaluation-time-only for
+  this phase, a staged limitation requiring Amendment 1's independent
+  review and Acceptance before Phase 4 implementation may proceed — see
+  Amendment 1, above, and Phase 7, below.**
 - **Phase 5 — Configuration:** §13's fields wired through
   `StrategyEngineConfig`, `config_loader.py`, and the example config,
   each with startup fail-closed validation and the cross-field checks
@@ -753,6 +840,14 @@ is unchanged, only this clarification is added).**
   safety, and every edge case in §15 — the cross-phase pass that only
   full end-to-end wiring makes possible, not the first point at which
   any test exists.
+- **Phase 7 — Formation-time news-blackout closure (not yet scheduled,
+  proposed by Amendment 1, above; no RPI Research performed):** design
+  and implement whichever mechanism closes the gap Amendment 1
+  authorizes Phase 4 to leave open — a persisted per-`(pair,
+  range_start)` formation-window blackout history, or a reviewed
+  Evidence-Engine dependency on Market Intelligence's news output.
+  Requires its own Research → Plan → Implement pass and its own Accepted
+  ADR-035 amendment (or further amendment) before any code changes.
 
 Each phase requires its own review before the next begins, per this
 project's established RPI (Research → Plan → Implement) workflow
