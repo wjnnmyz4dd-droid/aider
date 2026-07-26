@@ -176,6 +176,14 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         "titan_protocol/strategy_engine/models.py",
         "titan_protocol/strategy_engine/strategies/__init__.py",
         "titan_protocol/strategy_engine/strategies/orb_breakout.py",
+        # ADR-035 Phase 2 Step 2B (later, separately-authorized): ORB
+        # breakout qualification + persistent lockout. config.py gains 4
+        # new orb_* fields + its first __post_init__ (validating only
+        # those 4 fields); orb_breakout.py implements the full ADR-035 §4
+        # algorithm and now depends on the new strategy_state_store
+        # package for OrbQualificationStore -- no news_ingestion behavior
+        # touched.
+        "titan_protocol/strategy_engine/config.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_phase(self):

@@ -26,7 +26,9 @@ FORBIDDEN_IDENTIFIERS = {
 }
 
 FORBIDDEN_IMPORT_PREFIXES = ("phantom_pipeline", "titan_protocol.bridge")
-ALLOWED_UPSTREAM_PREFIXES = ("titan_protocol.evidence_engine", "titan_protocol.market_intelligence")
+ALLOWED_UPSTREAM_PREFIXES = (
+    "titan_protocol.evidence_engine", "titan_protocol.market_intelligence", "titan_protocol.strategy_state_store",
+)
 
 
 def _source_files():

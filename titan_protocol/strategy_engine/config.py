@@ -78,6 +78,30 @@ class StrategyEngineConfig:
     # -- Selection cascade --
     score_tie_tolerance: float = 0.5  # scores within this margin are considered tied at a cascade step
 
+    # -- Opening Range Breakout (ADR-035 §4/§13, Phase 2 Step 2B) --
+    orb_min_breakout_distance_atr_multiple: float = 0.15  # min abs(close - range_boundary) / atr for a genuine breakout
+    orb_min_body_to_range_ratio: float = 0.5  # min abs(close - open) / (high - low) on the breakout bar, rejects mostly-wick bars
+    orb_min_confirmation_candles: int = 1  # consecutive closed bars required beyond the range boundary before qualifying
+    orb_max_qualifications_per_range: int = 1  # lockout limit per (pair, range_start)
+
+    def __post_init__(self) -> None:
+        if self.orb_min_breakout_distance_atr_multiple <= 0:
+            raise ValueError(
+                f"orb_min_breakout_distance_atr_multiple must be > 0, got {self.orb_min_breakout_distance_atr_multiple}"
+            )
+        if not (0.0 <= self.orb_min_body_to_range_ratio <= 1.0):
+            raise ValueError(
+                f"orb_min_body_to_range_ratio must be within [0, 1], got {self.orb_min_body_to_range_ratio}"
+            )
+        if self.orb_min_confirmation_candles < 1:
+            raise ValueError(
+                f"orb_min_confirmation_candles must be >= 1, got {self.orb_min_confirmation_candles}"
+            )
+        if self.orb_max_qualifications_per_range < 1:
+            raise ValueError(
+                f"orb_max_qualifications_per_range must be >= 1, got {self.orb_max_qualifications_per_range}"
+            )
+
     def approved_pairs_for(self, strategy_id: StrategyId) -> Tuple[str, ...]:
         for sid, pairs in self.approved_pairs_by_strategy:
             if sid == strategy_id:

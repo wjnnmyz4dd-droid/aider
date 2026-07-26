@@ -15,6 +15,72 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-26 (ADR-035 Phase 2 Step 2B — ORB breakout qualification + persistent lockout)
+
+### Added
+- `titan_protocol/strategy_engine/config.py` -- 4 new `StrategyEngineConfig`
+  fields (`orb_min_breakout_distance_atr_multiple=0.15`,
+  `orb_min_body_to_range_ratio=0.5`, `orb_min_confirmation_candles=1`,
+  `orb_max_qualifications_per_range=1`, all from ADR-035 §13) plus the
+  config's first `__post_init__`, validating exactly these 4 fields.
+- `titan_protocol/strategy_state_store/` -- new sibling package:
+  `models.py` (`PersistedOrbQualificationState`, `CorruptStateError`),
+  `config.py` (`StrategyStateStoreConfig`), `store.py`
+  (`OrbQualificationStore`). `try_consume(pair, range_start, max_allowed)`
+  is the sole public method: an in-memory `entries` dict, loaded from
+  disk once at construction, is the sole authority for the process's
+  lifetime; every successful call persists the complete dict (never a
+  per-key delta), so a later successful write for any key durably
+  flushes an earlier key's failed increment too. A disk-persist failure
+  is caught and logged inside `try_consume()` via a module-level
+  `_safe_log_persist_failure()` helper and never raises -- the in-memory
+  increment already stands (ADR-035 §18.A). Corrupt/unreadable state
+  fails closed at construction (`CorruptStateError`, with `.bak`
+  recovery attempted first).
+- `titan_protocol/strategy_engine/strategies/orb_breakout.py` --
+  `OrbBreakoutStrategy.qualify()` now implements the full ADR-035 §4
+  breakout algorithm: post-range-evidence presence, degenerate-geometry
+  fail-closed check, close-beyond-range direction determination (close
+  only, never a wick), volatility-expansion momentum gate, ATR-relative
+  breakout-distance threshold (fail-closed on non-positive ATR),
+  body/wick ratio, confirmation-candle count and direction-consistency,
+  then atomic lockout consumption via the new
+  `OrbQualificationStore.try_consume()` as the sole terminal gate.
+  `OrbBreakoutStrategy` gains its first instance state, `_store`
+  (injected via `__init__`), the one narrow exception to Strategy
+  Engine's stateless convention ADR-035 §6 anticipated. Still absent
+  from `build_default_registry()`.
+- `tests/titan_protocol/strategy_state_store/test_store.py` -- 18 new
+  tests: bootstrap, first-consume/limit/independence-by-pair-and-range,
+  restart survival, corrupt-state/backup-recovery/unsupported-schema
+  fail-closed, write-failure and logging-failure containment (`try_consume()`
+  never raises), same-process authority after a failed persist, the
+  ADR-035 §18.A-accepted restart-duplication residual risk (tested as a
+  known fact, not a silent assumption), later whole-state self-healing,
+  and same-key/different-key concurrency.
+- `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py` --
+  extended (Phase 1 tests carried forward, now injecting a real
+  temp-file-backed store) with the full breakout-predicate matrix,
+  score/confidence/trade_intent invariants, and lockout-via-strategy
+  tests (first consume, second-attempt denial, non-consuming paths,
+  independent range/pair keys, `max_allowed > 1`), plus config-validation
+  tests for the 4 new fields.
+- `tests/titan_protocol/strategy_engine/test_architecture.py` -- one new
+  `ALLOWED_UPSTREAM_PREFIXES` entry, `titan_protocol.strategy_state_store`.
+- Both `test_structural_boundary.py` files (`compliance_state_store`,
+  `news_ingestion`) -- one new `_LATER_AUTHORIZED_EXCEPTIONS` entry each,
+  `titan_protocol/strategy_engine/config.py` (the only previously-frozen
+  file this change touches that Phase 1 hadn't already exempted; the new
+  `strategy_state_store` package needs no entry since it isn't a frozen
+  prefix).
+
+This is Step 2B of the ADR-035 Phase 2 Plan
+(`docs/plans/adr-035-phase2-orb-breakout-lockout.md`), implementing the
+Plan's own independently-reviewed and finalized design (commit `2d58265`)
+exactly. `OrbBreakoutStrategy` remains unregistered, no default approved
+pairs are added, and no legacy strategy is touched. Full regression
+suite: 1329/1329 (1285 baseline + 44 new).
+
 ## 2026-07-26 (ADR-024 Amendment 4 — ORB Phase 2 Step 2A: post-range evidence)
 
 ### Added
