@@ -42,6 +42,66 @@ and a new `fair_value_gaps` field on `EvidenceSnapshot` (not on
 from the same single analysis pass. Purely additive; the full
 pre-amendment-2 suite passes unmodified.
 
+**Amendment 3 (2026-07-25, bookkeeping correction -- this document was
+never updated at the time, ADR-035 §3 flagged the gap): documents the
+already-implemented `OpeningRangeState`/`opening_ranges` addition
+(ADR-035 §3, ADR-035 Phase 0, commit `ee976f4`).** Same trigger class as
+Amendments 1-2 (a downstream consumer -- ADR-035's Opening Range
+Breakout strategy -- needing a market-evidence fact this engine did not
+yet compute), same resolution ("expand the `EvidenceSnapshot`, not
+create a second analyzer"), same additive-only discipline: adds
+`OpeningRangeState` to `models.py` and a new `opening_range.py` module
+(`compute_opening_ranges()`), plus the `opening_ranges` field on
+`EvidenceSnapshot` (default `()`), computed from the same single
+analysis pass inside `_analyze()`. Purely additive; the full
+pre-amendment-3 suite passed unmodified at the time of Phase 0's
+original implementation. **This entry records history that was already
+Accepted and already implemented at the time ADR-035 itself was
+Accepted (2026-07-25) -- it is not a new decision, only the missing
+bookkeeping entry ADR-035 §3/§19 already identified as owed to this
+document.** ADR-035's own text previously mislabeled this addition
+"Amendment 2" in three places before a clerical-numbering correction
+made this session; this is the corresponding, previously-missing entry
+in *this* document, not a new one.
+
+**Amendment 4 (2026-07-26, Proposed -- not yet Accepted, requires
+independent review before any implementation): adds a bounded,
+per-opening-range post-range bar-observation fact, closing the
+evidence-contract gap discovered during ADR-035 Phase 2 RPI planning.**
+See `docs/plans/adr-035-phase2-orb-breakout-lockout.md` for the full
+research record. In summary: ADR-035 §4's breakout-qualification rule
+(close beyond the opening range, body/wick ratio, confirmation-candle
+count) requires each qualifying bar's own OHLC, and no field on
+`EvidenceSnapshot` today exposes any bar's OHLC after `evaluate_snapshot()`
+discards `bars` at the end of `_analyze()` -- confirmed by direct
+tracing, not assumed. Proposed addition: `OpeningRangeState` gains a new
+field, `post_range_bars: Tuple[OpeningRangeBarObservation, ...] = ()` --
+the closed bars (already guaranteed closed by
+`market_data_ingestion.normalization.normalize()`'s own documented
+contract of never normalizing a forming bar -- verified, not assumed)
+whose `timestamp >= range_end`, bounded to a new
+`EvidenceEngineConfig.opening_range_post_range_bar_window` (proposed
+default 5, validated `>= 1` in `__post_init__`, following this config's
+own existing validation convention), each carrying `index` (the same
+bar-sequence index space as `range_start_index`/`range_end_index`/
+`FairValueGap.start_index`/`end_index` -- directly comparable, no second
+identity system), `timestamp`, `open`, `high`, `low`, `close`. No
+`is_closed` flag is needed on the observation itself (every `Bar`
+Evidence Engine ever receives is already closed, by the same verified
+upstream contract) and no `volume` is exposed (not required by any
+ADR-035 §4 rule). This is a pure, objective, direction-agnostic fact --
+it does not compute "is this a breakout," does not pick a direction, and
+does not apply any of ADR-035 §13's Strategy-Engine-owned thresholds;
+those decisions remain entirely Strategy Engine's, in Phase 2's own,
+still-separate implementation. Computed inside the existing
+`compute_opening_ranges()`/`_compute_single_range()` pass (Phase 0's own
+module), reusing the same `bars`/`range_end_index` already in scope --
+no second traversal. `evaluate()` is unaffected; only
+`evaluate_snapshot()`'s existing `opening_ranges` output gains the new,
+defaulted field. Requires its own independent review and Acceptance
+before ADR-035 Phase 2 implementation may begin (CLAUDE.md §1.10); this
+entry documents the proposal, not an acceptance.
+
 Owner: Software Architect (per `.claude/agents/TEAM.md`'s precedent for
 cross-cutting evaluation components — same accountable role as
 ADR-002/ADR-004)

@@ -3,7 +3,13 @@
 Status: **Blocked — Evidence Contract Insufficient** (Research complete;
 Phase 2 cannot be planned to an implementation-ready state until a
 companion Evidence Engine amendment is proposed and Accepted — see §5,
-§8, §25, §31).
+§8, §25, §31). **Update (2026-07-26):** the required amendment has now
+been specified and proposed — `docs/adr/ADR-024-evidence-engine.md`
+Amendment 4 (Proposed, not yet Accepted) and a corresponding note in
+`docs/adr/ADR-035-orb-strategy.md` §17 Phase 2. This Plan remains
+**Blocked** until Amendment 4 is independently reviewed and Accepted
+(CLAUDE.md §1.10) — proposing an amendment is not the same as accepting
+one, and no Phase 2 implementation is authorized by this update.
 
 Owner: Software Architect (RPI Research/Plan phases, per ADR-035 owner
 precedent).

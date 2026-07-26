@@ -705,6 +705,20 @@ is unchanged, only this clarification is added).**
   body/wick ratio, momentum, confirmation-candle count) — the first
   phase at which `qualify()` can produce `QUALIFIED`, and therefore the
   first phase at which the §6 session-lockout has anything to protect.
+  **Newly-discovered precondition (RPI Research, 2026-07-26, see
+  `docs/plans/adr-035-phase2-orb-breakout-lockout.md`): §4's rules
+  require bar-level OHLC evidence (the most recent closed bar's close,
+  the breakout bar's own body/high/low) that no field on
+  `EvidenceSnapshot` exposes today — `evaluate_snapshot()` discards
+  `bars` after its analysis pass, and no existing field substitutes.
+  This gates Phase 2 implementation the same way item 2 below gates it
+  on persistence design: a proposed `ADR-024-evidence-engine.md`
+  Amendment 4 (Proposed, not yet Accepted — see that document) must be
+  independently reviewed and Accepted before Phase 2 implementation may
+  begin. This ADR's own Acceptance (2026-07-25) did not anticipate this
+  gap; it is recorded here, not silently absorbed into Phase 2's
+  existing text, per this project's "never silently move an item
+  between phases" discipline.**
   **§18.A item 2's persistence requirement gates this phase, not Phase
   1:** the lockout state must survive a process restart (resolved this
   session — see §18.A item 2), owned by Strategy Engine, requiring its
