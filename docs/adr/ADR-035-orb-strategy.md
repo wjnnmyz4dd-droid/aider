@@ -36,10 +36,23 @@ interface and TradeIntent discipline ORB must conform to exactly.
 `ADR-025-market-intelligence-engine.md` (Accepted) — session/news
 facts ORB consumes, never recomputes.
 
-**Amendment 1 (Proposed, 2026-07-26 — not yet Accepted): Phase 4
-formation-time news-blackout staged limitation.** Triggered by an
-independent implementation-readiness review of the Phase 4 Plan
-(`docs/plans/adr-035-phase4-mi-eligibility-integration.md`), which found
+**Amendment 1 (2026-07-26, Accepted 2026-07-26 — history preserved
+below, not backdated): Phase 4 formation-time news-blackout staged
+limitation.** First drafted Proposed, this session, in response to an
+independent implementation-readiness review of the Phase 4 Plan that
+found the gap this amendment records. An independent "ADR-035 Amendment
+1 — Independent Acceptance Review" then evaluated the Proposed text and
+returned **ACCEPTED WITH REQUIRED MINOR REVISIONS**: two factual
+imprecisions in this amendment's own supporting rationale (the
+bucket-window comparison in path (a) below, and the engine-isolation
+claim in path (b) below) — not its operative contract (Authorization,
+Safety consequence, and Phase 7 deferral, all below, were found sound
+and unchanged by that review). Both revisions are applied in place
+below; this entry now formally records Acceptance.
+
+The original trigger, unchanged: an independent implementation-readiness
+review of the Phase 4 Plan
+(`docs/plans/adr-035-phase4-mi-eligibility-integration.md`) found
 that Phase 4's design checks `pair_safety.news.blackout_active` only at
 breakout-evaluation time, on every cycle — never retroactively at the
 opening range's own formation window — while §2's "News restrictions"
@@ -58,26 +71,47 @@ active while this specific range was forming." Two paths to close this
 without inventing state were independently checked and both rejected:
 (a) reconstructing formation-time blackout status inside Strategy
 Engine from the current snapshot's `pair_safety.news.{active_events,
-recent_events,upcoming_events}` — rejected, because doing so requires
-duplicating Market Intelligence's own blackout-window arithmetic
-(`pre_news_blackout_minutes`/`post_news_blackout_minutes`/per-pair
-overrides/central-bank-category rules, `titan_protocol/market_intelligence/news.py`)
-inside Strategy Engine, violating the "Market Intelligence owns event
-interpretation" ownership split this codebase already enforces
-elsewhere (`tests/titan_protocol/news_ingestion/test_structural_boundary.py`'s
-prohibition on reimplementing MI's blackout logic outside MI) — and is
-unreliable regardless, since `active_events`/`recent_events`'s own
-bucket windows are sized independently of, and are frequently narrower
-than, the actual blackout pre/post windows, so a formation-time-relevant
-event can silently age out of every bucket before breakout evaluation,
-producing exactly the false confidence a fail-closed design must avoid;
+recent_events,upcoming_events}` — rejected. **The load-bearing reason is
+an ownership-boundary violation, not a data-availability one:** doing
+this requires duplicating Market Intelligence's own blackout-window
+arithmetic (`pre_news_blackout_minutes`/`post_news_blackout_minutes`/
+per-pair overrides/central-bank-category rules,
+`titan_protocol/market_intelligence/news.py`) inside Strategy Engine,
+violating the "Market Intelligence owns event interpretation" ownership
+split this codebase already enforces elsewhere
+(`tests/titan_protocol/news_ingestion/test_structural_boundary.py`'s
+prohibition on reimplementing MI's blackout logic outside MI) — Strategy
+Engine must not duplicate Market Intelligence's blackout-window
+interpretation, regardless of whether the underlying data happens to be
+present. **Secondary, corrected observation (re-verified against
+`titan_protocol/market_intelligence/config.py`'s actual defaults,
+2026-07-26):** under default `MarketIntelligenceConfig` values
+(`recent_event_window_minutes=60.0` against a default ORB range's own
+~55-minute span from `range_start` to its last evaluable post-range
+candidate), the available event buckets may in fact be *wider* than the
+relevant opening-range span, not narrower — the earlier claim that
+events "frequently" age out was overstated. What remains true, and is
+the only claim this Plan relies on: reconstruction cannot be *guaranteed*
+reliable across operator-configured window sizes or for events released
+sufficiently before `range_start`, so even where data happens to be
+visible, using it would still mean Strategy Engine silently taking on
+Market Intelligence's own interpretive judgment about what counts as
+"still relevant" — which is precisely the ownership violation above,
+not an independent reason on its own;
 (b) amending Evidence Engine to persist a formation-time blackout flag
-on `OpeningRangeState` — rejected for this amendment's scope because it
-requires Evidence Engine to newly depend on Market Intelligence's output
-(a dependency that does not exist anywhere in the current architecture,
-both engines today independently consume only external inputs), which
-is new cross-engine coupling requiring its own dedicated architectural
-review, not something to fold into Phase 4's existing scope.
+on `OpeningRangeState` — rejected for this amendment's scope. **Engine-
+dependency fact, corrected (2026-07-26):** Market Intelligence already
+has one existing, one-directional, type-only dependency on Evidence
+Engine — `titan_protocol/market_intelligence/models.py` imports
+`SessionName` from `titan_protocol.evidence_engine.models` — so it is
+not accurate to say the two engines "independently consume only
+external inputs." The precise, relevant fact is narrower and remains
+true: Evidence Engine does not currently consume Market Intelligence's
+*news output* in either direction, and introducing that dependency (or
+an equivalent persisted formation-time fact) would constitute a new
+contract outside Phase 4's authorized architecture, requiring its own
+dedicated architectural review, not something to fold into Phase 4's
+existing scope.
 
 **Authorization:** for Phase 4 only, evaluation-time-only news-blackout
 enforcement (checking `pair_safety.news.blackout_active` once, on every
@@ -115,10 +149,17 @@ the phased roadmap in §17 — following this project's own "never
 silently move an item between phases" discipline (§17's own precedent
 for the Amendment 4/lockout-persistence gaps).
 
-**Status of this amendment: Proposed.** It requires its own independent
-review and formal Acceptance before the Phase 4 Plan that depends on it
-may proceed to implementation. It does not itself authorize any code
-change.
+**Status of this amendment: Accepted (2026-07-26).** History preserved,
+not rewritten: drafted Proposed this session; independently reviewed
+("ADR-035 Amendment 1 — Independent Acceptance Review," disposition
+**ACCEPTED WITH REQUIRED MINOR REVISIONS**); the two required revisions
+(the bucket-window comparison and the engine-isolation claim, both
+above) applied; Accepted here as a separate, subsequent governance
+action from that review. **This Acceptance formally records the staged
+limitation and its governing contract — it does not itself authorize
+Phase 4 implementation.** The Phase 4 Plan that depends on this
+amendment still requires its own, separate, fresh independent
+implementation-readiness re-review before `/rpi:implement` may begin.
 
 ---
 
@@ -825,9 +866,12 @@ is unchanged, only this clarification is added).**
   anchor matching (using §3's corrected identification rule), news/
   liquidity/holiday gates, eligibility hard gate, with unit tests for
   each gate. **News-blackout enforcement is evaluation-time-only for
-  this phase, a staged limitation requiring Amendment 1's independent
-  review and Acceptance before Phase 4 implementation may proceed — see
-  Amendment 1, above, and Phase 7, below.**
+  this phase, a staged limitation authorized by Amendment 1 (Accepted
+  2026-07-26, above). Amendment 1's Acceptance formally records this
+  limitation's contract — it does not itself authorize Phase 4
+  implementation; the Phase 4 Plan still requires its own, separate,
+  fresh independent implementation-readiness re-review — see Amendment
+  1, above, and Phase 7, below.**
 - **Phase 5 — Configuration:** §13's fields wired through
   `StrategyEngineConfig`, `config_loader.py`, and the example config,
   each with startup fail-closed validation and the cross-field checks
