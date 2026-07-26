@@ -6,6 +6,7 @@ from __future__ import annotations
 from .base import Strategy
 from .bos_fvg import BosFvgStrategy
 from .liquidity_sweep_mss import LiquiditySweepMssStrategy
+from .orb_breakout import OrbBreakoutStrategy
 from .range_reversal import RangeReversalStrategy
 from .registry import DuplicateStrategyError, StrategyRegistry
 from .session_breakout import SessionBreakoutStrategy
@@ -32,5 +33,6 @@ __all__ = [
     "TrendContinuationStrategy",
     "SessionBreakoutStrategy",
     "RangeReversalStrategy",
+    "OrbBreakoutStrategy",
     "build_default_registry",
 ]

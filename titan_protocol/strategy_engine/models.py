@@ -26,6 +26,7 @@ class StrategyId(Enum):
     TREND_CONTINUATION = "TREND_CONTINUATION"
     SESSION_BREAKOUT = "SESSION_BREAKOUT"
     RANGE_REVERSAL = "RANGE_REVERSAL"
+    OPENING_RANGE_BREAKOUT = "OPENING_RANGE_BREAKOUT"  # ADR-035 Phase 1 -- foundation only, not yet production-registered (ADR-035 SS17)
 
 
 class MarketRegime(Enum):

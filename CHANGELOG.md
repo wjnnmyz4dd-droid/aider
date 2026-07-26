@@ -15,6 +15,48 @@ gated by that workflow, as part of `CLAUDE.md` §4's existing
 
 ## [Unreleased]
 
+## 2026-07-26 (ADR-035 Phase 1 — ORB Strategy foundation)
+
+### Added
+- `titan_protocol/strategy_engine/models.py` -- `StrategyId.OPENING_RANGE_BREAKOUT`,
+  a new enum member (foundation only, not yet production-registered).
+- `titan_protocol/strategy_engine/strategies/orb_breakout.py` (new
+  module) -- `OrbBreakoutStrategy`, a stateless `Strategy` that consumes
+  `EvidenceSnapshot.opening_ranges` (ADR-035 Phase 0) for range-formed/
+  valid gating only. No breakout-qualification rule exists yet (Phase 2's
+  own scope), so `qualify()` returns `NOT_QUALIFIED` on every path,
+  including a genuinely formed and valid opening range -- a valid range
+  is evidence availability, never a breakout signal.
+- `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`
+  -- `StrategyId` membership, `Strategy` interface conformance,
+  statelessness, generic eligibility fail-closed behavior, opening-range
+  absence/unformed/invalid/formed-and-valid/multiple-range coverage (11
+  tests), including the dedicated
+  `test_formed_valid_opening_range_still_not_qualified_without_breakout_logic`.
+
+### Changed
+- `titan_protocol/strategy_engine/strategies/__init__.py` -- exports
+  `OrbBreakoutStrategy`; `build_default_registry()` is unchanged
+  (`OrbBreakoutStrategy` is not registered -- still exactly the five
+  legacy strategies).
+- `tests/titan_protocol/compliance_state_store/test_structural_boundary.py`,
+  `tests/titan_protocol/news_ingestion/test_structural_boundary.py` --
+  extended `_LATER_AUTHORIZED_EXCEPTIONS` for the three files above
+  (same precedented pattern used for ADR-035 Phase 0).
+
+### Why
+Phase 1 of ADR-035 (Accepted): establishes the minimum Strategy Engine
+structure ORB needs -- a `StrategyId` and a conformant, foundation-level
+strategy -- without pulling forward breakout qualification (Phase 2),
+FVG confirmation (Phase 3), Market Intelligence integration (Phase 4),
+remaining configuration (Phase 5), the session-lockout mechanism (moved
+to Phase 2 during governance review, since Phase 1 can never produce a
+`QUALIFIED` result for it to protect), or production registration (no
+earlier than Phase 6). Implements the independently reviewed Phase 1 RPI
+Plan (`docs/plans/adr-035-phase1-orb-strategy-foundation.md`) exactly.
+All five legacy strategies remain registered, unmodified, and passing;
+ADR-036's retirement roadmap remains dormant.
+
 ## 2026-07-25 (ADR-035 Phase 0 — Evidence Engine amendment: OpeningRangeState)
 
 ### Added

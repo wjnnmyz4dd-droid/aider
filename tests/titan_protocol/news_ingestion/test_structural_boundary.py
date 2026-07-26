@@ -167,6 +167,15 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         "titan_protocol/evidence_engine/engine.py",
         "titan_protocol/evidence_engine/models.py",
         "titan_protocol/evidence_engine/opening_range.py",
+        # ADR-035 Phase 1 (later, separately-authorized): ORB Strategy
+        # foundation -- adds StrategyId.OPENING_RANGE_BREAKOUT and the
+        # new, stateless OrbBreakoutStrategy (range-formed/valid gating
+        # only, never QUALIFIED). Additive only -- new enum member, new
+        # strategy module, one new package export, not registered in
+        # build_default_registry() -- no news_ingestion behavior touched.
+        "titan_protocol/strategy_engine/models.py",
+        "titan_protocol/strategy_engine/strategies/__init__.py",
+        "titan_protocol/strategy_engine/strategies/orb_breakout.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_phase(self):
