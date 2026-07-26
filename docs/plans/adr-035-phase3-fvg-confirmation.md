@@ -1,15 +1,19 @@
 # Plan: ADR-035 Phase 3 — FVG (Fair Value Gap) Confirmation for ORB
 
-Status: **REVISED — READY FOR SHORT REVISION-ACCEPTANCE REVIEW.** The
-Research phase (commit `2dddac2`) and the first Plan finalization
-(commit `059f0ae`) are carried forward; this pass revises exactly the
-two items the independent implementation-readiness review required
-(see the 2026-07-26 revision note above) and touches no other section.
-No production code, no test code, per this task's own instruction.
-Implementation remains prohibited until the revision-acceptance review
-accepts this document (mirrors the Step 2A/2B precedent: Research →
-Plan → independent Plan review → revision → revision-acceptance →
-Implement, never Research → Implement directly).
+Status: **ACCEPTED — IMPLEMENTATION AUTHORIZED.** The Research phase
+(commit `2dddac2`), first Plan finalization (commit `059f0ae`), and
+the revision addressing both required findings (commit `391bc8c`) are
+carried forward. The short revision-acceptance review confirmed both
+findings genuinely resolved: (1) Finding 1 is resolved by ADR-035 §17
+assigning the weight-sum cross-field validation to Phase 5, while
+Phase 3 validates `orb_fvg_score_weight` only individually; (2) Finding
+2 is fully covered by the K-N adversarial examples and their
+corresponding test commitments. This document now authorizes
+implementation of exactly what §§1-10 of the Plan below specify — the
+three new ORB config fields (§4), the FVG-selection block inserted at
+the exact point specified (§3), and the test coverage specified
+(§5/§10) — nothing beyond that scope. Phase 4 remains separately gated
+and is not authorized by this acceptance.
 
 Owner (Plan phase): Software Architect (ADR-035/ADR-024/ADR-026 owner precedent, unchanged)
 Touched components (confirmed, unchanged from Research): `titan_protocol/strategy_engine/strategies/orb_breakout.py`, `titan_protocol/strategy_engine/config.py`, `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`. No other package. No Evidence Engine change (re-confirmed below, §8). No new structural-boundary allowlist entries (re-confirmed below, §8).
@@ -498,19 +502,21 @@ matching, age, size, overlap, and expiration") — plus:
 
 ## Validation
 
-(Not started — Implement phase. This Plan authorizes no implementation;
-the short revision-acceptance review of this revised Plan must accept
-it first, per this project's established Phase 2 precedent.)
+(Not started — Implement phase. Recorded here at Plan-acceptance time
+per this project's convention; the Implement phase fills this section
+in with actual results once work begins.)
 
 ---
 
-**Disposition: PHASE 3 PLAN REVISED — READY FOR SHORT REVISION-ACCEPTANCE REVIEW** (ADR-035 Phase 3, FVG Confirmation).
+**Disposition: PHASE 3 PLAN ACCEPTED — IMPLEMENTATION AUTHORIZED** (ADR-035 Phase 3, FVG Confirmation).
 
-This revision addresses both required findings from the independent implementation-readiness review:
+The short revision-acceptance review confirmed both required findings genuinely resolved, not merely restated:
 
-- **Finding 1 (HIGH, score-weight contract):** resolved on firmer ground than the original Plan — ADR-035 §17's own Phase 5 entry explicitly assigns "the cross-field checks named in §13 (duplicate/overlapping anchors, bar-count feasibility, weight-sum bound)" to Phase 5, independently re-confirmed at `docs/adr/ADR-035-orb-strategy.md` lines 744-748. Phase 3 therefore adds `orb_fvg_score_weight` with only its own per-field range validation, exactly mirroring how Phase 2 wired its own 4 fields; the cross-field weight-sum bound (and any decision to promote Phase 2's three literals to named fields) is explicitly deferred to Phase 5, not silently skipped or argued away by an implementer's reading of "sibling weights." No ADR conflict exists; no amendment is required.
-- **Finding 2 (MEDIUM, test coverage):** four worked adversarial examples (K: filled/expiration, L: undersized, M: no-overlap, N: formed-before-`range_start`) added to §5, closing the gap against ADR-035 §17's five named test categories, with a corresponding §10 test-matrix update.
+- **Finding 1 (HIGH, score-weight contract) — resolved:** ADR-035 §17's own Phase 5 entry explicitly assigns "the cross-field checks named in §13 (duplicate/overlapping anchors, bar-count feasibility, weight-sum bound)" to Phase 5, independently confirmed at `docs/adr/ADR-035-orb-strategy.md` lines 744-748. Phase 3 adds `orb_fvg_score_weight` with only its own per-field range validation, exactly mirroring how Phase 2 wired its own 4 fields; the cross-field weight-sum bound (and any decision to promote Phase 2's three literals to named fields) is explicitly deferred to Phase 5. No ADR conflict; no amendment required.
+- **Finding 2 (MEDIUM, test coverage) — resolved:** worked adversarial examples K (filled/expiration), L (undersized), M (no-overlap), and N (formed-before-`range_start`) close the gap against ADR-035 §17's five named test categories, with a corresponding §10 test-matrix commitment.
 
-No other section was revised. The already-approved Phase 3 contracts are unchanged and re-confirmed during this pass: FVG confirmation remains score-only and cannot disqualify an otherwise-qualified breakout; age uses the verified shared bar-index space and fails closed on a negative age; Phase 2's qualification algorithm and `OrbQualificationStore`'s lockout/persistence/concurrency semantics are untouched; no Evidence Engine change; ORB remains unregistered (`titan_protocol/strategy_engine/strategies/__init__.py` re-checked, still 5 `.register()` calls only); no legacy strategy is touched.
+Both findings are genuinely resolved, not restated — this is the basis for authorizing implementation now. The already-approved Phase 3 contracts remain unchanged: FVG confirmation is score-only and cannot disqualify an otherwise-qualified breakout; age uses the verified shared bar-index space and fails closed on a negative age; Phase 2's qualification algorithm and `OrbQualificationStore`'s lockout/persistence/concurrency semantics are untouched; no Evidence Engine change; ORB remains unregistered; no legacy strategy is touched.
+
+**This Plan (§§1-10) is the sole authorization for the Implement phase.** Implementation must match it exactly — the three new config fields (§4), the FVG-selection algorithm at the exact insertion point specified (§3), and the test coverage specified (§5/§10), nothing beyond that scope. Phase 4 is not authorized by this disposition.
 
 **Implementation is not authorized by this document.** Per this project's established precedent, the short revision-acceptance review must accept this document before `/rpi:implement` may begin. Phase 4 remains unauthorized regardless of this revision's outcome.
