@@ -141,6 +141,9 @@ from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.models import CycleOutcome
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.engine import StrategyEngine
+from titan_protocol.strategy_engine.strategies import build_default_registry
+from titan_protocol.strategy_state_store.config import StrategyStateStoreConfig
+from titan_protocol.strategy_state_store.store import OrbQualificationStore
 
 from config_loader import ConfigError, build_trading_profile, is_process_alive, load_settings
 
@@ -1191,7 +1194,18 @@ def run_foreground(config_path: Path) -> int:
 
     evidence_engine = EvidenceEngine(settings.evidence_config)
     market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
-    strategy_engine = StrategyEngine(strategy_config)
+    # ADR-035 Phase 6: Opening Range Breakout now competes in the real
+    # selection cascade -- state_file mirrors compliance_state_store's
+    # and in_flight_commands' own settings.state_dir-relative convention
+    # a few lines below. A corrupt/unreadable state file fails closed
+    # at construction (uncaught here), matching ComplianceStateStore's
+    # existing treatment -- startup refuses rather than silently
+    # resetting consumed-qualification history.
+    orb_qualification_store = OrbQualificationStore(
+        StrategyStateStoreConfig(state_file=settings.state_dir / "orb_qualifications.json")
+    )
+    strategy_registry = build_default_registry(orb_qualification_store)
+    strategy_engine = StrategyEngine(strategy_config, registry=strategy_registry)
     risk_engine = RiskEngine(settings.risk_config)
     compliance_engine = ComplianceEngine(settings.compliance_config)
     # Run Status diagnostics (item 10): the position-limit invariant an
