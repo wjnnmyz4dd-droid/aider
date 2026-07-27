@@ -1,40 +1,60 @@
 # Plan: ADR-035 Phase 4 — Market Intelligence / Eligibility Integration for ORB
 
-Status: **REVISED (2026-07-26) — PHASE 4 REMAINS BLOCKED, PENDING
-ADR-035 AMENDMENT 1 INDEPENDENT REVIEW AND ACCEPTANCE.** This revision
-responds to an independent implementation-readiness review of the prior
-finalized Plan (commit `b550a97`), which returned **PHASE 4 PLAN
-REQUIRES MAJOR REVISION** on three findings. Two are resolved directly
-in this revision, within the existing Accepted contract (§3's `is_holiday`
-gate addition; §2/§9/§6's tie-record correction). The third —
-formation-time news-blackout enforcement — cannot be resolved within
-Phase 4's existing scope without either violating this project's
-Evidence-Engine/Strategy-Engine/Market-Intelligence ownership boundaries
-or inventing unavailable historical state (see §9 and the newly-drafted
-`ADR-035-orb-strategy.md` Amendment 1, **Proposed**, not yet Accepted).
-Implementation of this Plan remains prohibited until Amendment 1 is
-independently reviewed and formally Accepted, and this revised Plan then
-receives its own independent implementation-readiness re-review — no
-step of that sequence may be skipped or compressed.
+Status: **REVISED AGAIN (2026-07-26) — PHASE 4 PLAN REVISED, READY FOR
+FOCUSED RE-REVIEW.** `ADR-035-orb-strategy.md` Amendment 1 (formation-time
+news-blackout staged limitation) is now formally **Accepted** (commit
+`9b7d255`) — the governance gate this Plan was previously blocked on is
+satisfied; see the Revision record below for its full history. A
+subsequent independent implementation-readiness review (this same
+session) then reviewed this Plan itself against the now-Accepted
+Amendment 1 and returned **PHASE 4 PLAN APPROVED WITH REQUIRED MINOR
+REVISIONS** — two findings, both addressed in this pass: (1) several
+places in this document still described Amendment 1 as Proposed/pending,
+now corrected throughout to reflect its Accepted status; (2) ADR-035
+§13's `orb_min_range_atr_ratio` field had no assigned implementation
+phase anywhere in this project's history — re-derived from evidence and
+added to Phase 4's own scope as a sixth gate (§3a). Every other design
+decision in this Plan (selection formula §1, tie handling §2, the five
+MI gates §3, predicate order §4, config §5, worked examples §6,
+boundaries §7) is carried forward unchanged from the version that
+review already found sound.
 
 Owner (Plan phase): Software Architect (ADR-035/ADR-025/ADR-026 owner precedent, unchanged)
 Touched components (confirmed, expanded by one file from Research's anticipation — see §11): `titan_protocol/strategy_engine/strategies/orb_breakout.py`, `titan_protocol/strategy_engine/config.py`, `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`, `tests/titan_protocol/strategy_engine/_fixtures.py`. No other package. No Evidence Engine change, no Market Intelligence Engine change (both re-confirmed unnecessary below). No new structural-boundary allowlist entries (re-confirmed below, §10).
 
-**Plan finalization — resolves both Research-flagged open questions with evidence, not invention (§§1-2 below):** (1) the exact "currently relevant" opening-range selection formula, derived from `compute_opening_ranges()`'s actual recomputation behavior and ADR-035 §3/§15's own words, not assumed; (2) explicit fail-closed behavior for a genuine multi-match — retained as defense-in-depth; **corrected this revision: the anchor-overlap guarantee this decision references already exists in production (§2, §9), it is not a still-open Phase 5 gap as originally claimed.** Also finalizes the Market Intelligence eligibility gate set (§3, **revised this pass to add an `is_holiday` gate**), an explicit predicate order (§4, renumbered), and disclosed, evidence-grounded scope limitations (§9) that this Plan does not silently paper over.
+**Plan finalization — resolves both Research-flagged open questions with evidence, not invention (§§1-2 below):** (1) the exact "currently relevant" opening-range selection formula, derived from `compute_opening_ranges()`'s actual recomputation behavior and ADR-035 §3/§15's own words, not assumed; (2) explicit fail-closed behavior for a genuine multi-match — retained as defense-in-depth; the anchor-overlap guarantee this decision references already exists in production (§2, §9), it is not a Phase 5 gap. Also finalizes the Market Intelligence eligibility gate set (§3, five gates including `is_holiday`) plus the range-quality gate (§3a, `orb_min_range_atr_ratio`, new this pass), an explicit predicate order (§4, renumbered again this pass), and disclosed, evidence-grounded scope limitations (§9) that this Plan does not silently paper over.
 
-**Revision record (2026-07-26):** an independent implementation-readiness
-review of the prior Plan (commit `b550a97`) found three issues, addressed
-here: (1) formation-time news-blackout enforcement was silently narrowed
-to evaluation-time-only with no ADR-level authorization — resolved by
-drafting `ADR-035-orb-strategy.md` Amendment 1 (Proposed), see §9; (2)
-`is_holiday` was excluded from the MI eligibility gate set on a
-misreading of ADR-035 §2's "Holiday handling" row — resolved by adding
-the gate, see §3/§4/§6/§10/§11; (3) the tie/multi-match Risk Register
-entry incorrectly claimed the anchor-overlap guarantee "does not yet
-exist" — resolved by correcting the record against directly re-verified
-source, see §2/§9/§6 Example D. Every other section of the prior Plan
-was independently re-confirmed unaffected by this revision and is
-carried forward unchanged.
+**Revision record (2026-07-26, first pass — history, unchanged from
+that pass):** an independent implementation-readiness review of the
+prior Plan (commit `b550a97`) found three issues, addressed here: (1)
+formation-time news-blackout enforcement was silently narrowed to
+evaluation-time-only with no ADR-level authorization — resolved by
+drafting `ADR-035-orb-strategy.md` Amendment 1 (Proposed, its status
+*at that time*), see §9; (2) `is_holiday` was excluded from the MI
+eligibility gate set on a misreading of ADR-035 §2's "Holiday handling"
+row — resolved by adding the gate, see §3/§4/§6/§10/§11; (3) the
+tie/multi-match Risk Register entry incorrectly claimed the
+anchor-overlap guarantee "does not yet exist" — resolved by correcting
+the record against directly re-verified source, see §2/§9/§6 Example D.
+Every other section of the prior Plan was independently re-confirmed
+unaffected by that revision and was carried forward unchanged.
+
+**Revision record (2026-07-26, second pass — current):** two further
+events since the first pass, both reflected throughout this document
+now: (a) `ADR-035-orb-strategy.md` Amendment 1 was independently
+reviewed ("ADR-035 Amendment 1 — Independent Acceptance Review,"
+disposition **ACCEPTED WITH REQUIRED MINOR REVISIONS**), its own two
+required corrections applied, and formally recorded **Accepted** at
+commit `9b7d255` — every reference to Amendment 1 in this document is
+updated below to reflect that status; the first pass's own historical
+description of Amendment 1 as "Proposed" (immediately above, and
+elsewhere marked "at that time") is preserved as accurate history, not
+rewritten. (b) A fresh independent implementation-readiness review of
+this Plan against the now-Accepted Amendment 1 returned **PHASE 4 PLAN
+APPROVED WITH REQUIRED MINOR REVISIONS**: the stale Amendment 1 language
+just described, and `orb_min_range_atr_ratio`'s previously-unassigned
+phase ownership — resolved this pass by adding it to Phase 4 as a sixth
+gate (§3a, evidence-derived, not chosen merely to minimize changes).
 
 ---
 
@@ -176,6 +196,41 @@ Five gates (was four — `is_holiday` added this revision), all reusing already-
 
 **Gate order, a disclosed Plan decision (ADR-035 does not mandate one):** market-closed → news blackout → spread → liquidity, running immediately after the existing `check_eligibility()` pair-whitelist gate and before the opening-range/session-anchor logic. Rationale: these are pair/market-level facts independent of any specific range's state ("is this pair tradeable in this market condition at all right now"), logically prior to "which range, if any, is currently relevant" — matching ADR-035 §2's own framing of both as "Market eligibility" facts, and matching §17's own listing order ("news/liquidity/holiday gates, eligibility hard gate" as one grouped concern preceding the breakout-specific logic named separately in §4/§5, already implemented).
 
+### 3a. Range-quality gate — `orb_min_range_atr_ratio` (new this pass, resolves independent-review finding)
+
+**Disposition, re-derived from evidence, not chosen to minimize changes: include `orb_min_range_atr_ratio` in Phase 4 as a sixth gate (disposition A).**
+
+**Evidence trail, independently re-checked this pass:**
+
+- ADR-035 §2's "Minimum volatility" row: *"Configurable `orb_min_range_atr_ratio` — the formed range's width relative to `evidence.volatility.atr` must clear this floor, or the range is judged too narrow to be a real opening range."* §13 lists it: `float`, default `0.5`, safe range `> 0`.
+- Not implemented anywhere in current `orb_breakout.py` — confirmed by direct read; `OpeningRangeState.is_valid` checks only bar count and temporal-gap continuity, never range width vs. ATR.
+- Phase 2's own Plan explicitly deferred it, on the record: *"Deferred, not Step 2B's scope: ... `orb_min_range_atr_ratio` ... — Phase 3/4/5 per §7"* (`docs/plans/adr-035-phase2-orb-breakout-lockout.md`). Phase 3 (FVG-only scope) did not address it.
+- Of §2's nine market-eligibility rows (instruments, sessions, days, minimum volatility, maximum spread, news, holiday, weekend, low-liquidity), **every row except "Minimum volatility" already has a concrete home** — either an already-implemented generic mechanism (pair whitelist, weekend/no-check), or this Plan's own five gates (§3). "Minimum volatility" is the one remaining, unassigned row in the exact table Phase 4 exists to complete.
+- §17's Phase 4 entry names "news/liquidity/holiday gates" without naming "minimum volatility" explicitly — but §17's Phase 5 entry describes wiring `StrategyEngineConfig` fields through `config_loader.py`/the example config plus cross-field validation, not first-time gate-logic implementation inside `qualify()`. Every existing precedent (Phase 2's four gates, Phase 3's FVG block, Phase 4's own five MI gates) adds new gate logic and its own config field together, in the same phase that consumes it — Phase 5 has never been the phase that introduces new `qualify()` logic. This field needs no new engine dependency either: `evidence.volatility.atr` and `opening_range.range_high`/`range_low` are already read elsewhere in this exact algorithm, so it is *simpler* to add than any of the four newly-added MI gates, which each needed genuinely new field access (Research §4).
+- **Conclusion:** Phase 4 is the correct, evidence-derived owner. Deferring to Phase 5 would be inconsistent with every established precedent for how gate logic and its config field arrive together, and would leave §2's eligibility table incomplete for a phase whose own stated purpose is completing exactly that table.
+
+**Config field:** `orb_min_range_atr_ratio: float = 0.5`, validated `> 0` in the existing `__post_init__` (mirrors `orb_min_breakout_distance_atr_multiple`'s existing validation pattern exactly).
+
+**Calculation:** `range_width = opening_range.range_high - opening_range.range_low`; `ratio = range_width / evidence.volatility.atr`, computed only once `evidence.volatility.atr > 0` is confirmed (see fail-closed behavior below).
+
+**Operator/boundary semantics:** strict `<`, mirroring the minimum-liquidity-score convention exactly — `if ratio < config.orb_min_range_atr_ratio: NOT_QUALIFIED`. A ratio exactly at the threshold passes (inclusive boundary).
+
+**Fail-closed behavior for invalid ATR:** `evidence.volatility.atr <= 0` would either raise `ZeroDivisionError` (atr `== 0`) or produce a sign-flipped, meaningless ratio (atr `< 0`) — both unacceptable. A dedicated guard, distinct from the later breakout-distance ATR guard (different reason string, so log/test disambiguation is never ambiguous about which check fired): `if evidence.volatility.atr <= 0: return _not_qualified(pair, "Insufficient volatility evidence to assess range quality (non-positive ATR)")`. Two textually-similar one-line guards for two genuinely separate computations (range-quality vs. breakout-distance) is not duplicate logic in the CLAUDE.md §1.3 sense — each guards its own independent division, and Minimal Change Engineer's own tolerance ("three similar lines before extracting a fourth") is not yet reached at two.
+
+**`NOT_QUALIFIED` reason (main rejection):** `f"Range width/ATR ratio {ratio:.2f} below minimum {config.orb_min_range_atr_ratio}"`.
+
+**Predicate position:** immediately after the existing `is_valid` check, before post-range-bars presence (§4, new step 12) — grouping it with `is_valid` as the second of two "is this opening range itself a legitimate one" checks (bar-count/gap-continuity, then width-vs-volatility), conceptually prior to and independent of any specific breakout candidate. See §4 for the renumbered algorithm.
+
+**Test impact on three existing tests (documented here, not silently absorbed):** `TestAtrDistance`'s shared range fixture (`_RANGE_HIGH=1.105`, `_RANGE_LOW=1.095`, width `0.010`) combined with the default `orb_min_range_atr_ratio=0.5` means an `atr` of `0.03` (used by `test_distance_below_threshold_is_not_qualified` and `test_bearish_distance_below_threshold_is_not_qualified`) yields ratio `0.333 < 0.5`, and `atr=0.0` (used by `test_non_positive_atr_is_not_qualified`) trips the new gate's own ATR guard — both **before** the algorithm ever reaches the later, breakout-distance-specific checks those three tests were written to isolate. Per this file's own established idiom (e.g. `TestConfirmationCount`'s local `orb_min_confirmation_candles` override), the minimal fix is a **local `StrategyEngineConfig` override** on those three tests only (e.g. `orb_min_range_atr_ratio=0.01`, the smallest value clearing the `> 0` validation floor), added at the Implement phase — their existing fixture ATR values and existing reason-string assertions remain unchanged. No other existing test is affected (every other test in the file either uses `atr=0.001`/`0.0005` against the same `0.010` width, giving ratios ≥ 10 that clear the default threshold comfortably, or fails before range-width is ever evaluated — e.g. `is_formed`/`is_valid`/tie/absence cases, all positioned earlier in the algorithm).
+
+**Worked examples (extend §6):**
+
+| # | Scenario | Outcome |
+|---|---|---|
+| L | `range width=0.010`, `atr=0.02` (ratio exactly `0.5`, the default minimum) | passes (inclusive boundary, `<` is strict) |
+| L′ | `range width=0.010`, `atr=0.03` (ratio `0.333`) | `NOT_QUALIFIED`, `"Range width/ATR ratio 0.33 below minimum 0.5"` |
+| M | `atr=0.0`, otherwise a fully qualifying breakout | `NOT_QUALIFIED`, `"Insufficient volatility evidence to assess range quality (non-positive ATR)"` — fires before post-range-bars presence is ever checked |
+
 ### 4. Exact algorithm and predicate order
 
 Full ordering inside `OrbBreakoutStrategy.qualify()`, from the top (unchanged code in plain text, new code in **bold** markers):
@@ -191,29 +246,31 @@ Full ordering inside `OrbBreakoutStrategy.qualify()`, from the top (unchanged co
 9. **NEW** — `latest_range_end = max(r.range_end for r in formed_ranges)`; `currently_relevant = [r for r in formed_ranges if r.range_end == latest_range_end]`; `if len(currently_relevant) > 1: return _not_qualified(pair, "Multiple opening ranges are simultaneously relevant (unreachable under current anchor-overlap validation; retained as defense-in-depth)")` — **reason string corrected this revision, see §2.**
 10. `opening_range = currently_relevant[0]` (single element at this point, since step 9 has already ruled out ties).
 11. `if not opening_range.is_valid: return _not_qualified(pair, "Opening range invalidated by a data gap or insufficient bar count")` — **unchanged code, now applied to the selected range** rather than `opening_ranges[0]`.
-12. Post-range-bars presence, degenerate geometry, direction determination, momentum, ATR-distance, body/wick ratio, confirmation count, confirmation direction-consistency (Phase 2, steps unchanged, unreachable code touched).
-13. Score/confidence computation, FVG-selection block, `strengths` construction (Phase 3, unchanged).
-14. `qualified_result` construction (unchanged).
-15. `try_consume()` lockout — **unchanged**, still the sole terminal side-effecting gate, still consuming `(pair, opening_range.range_start)` for whichever range was selected in step 9-10.
+12. **NEW (this pass, §3a)** — range-quality gate: `if evidence.volatility.atr <= 0: return _not_qualified(pair, "Insufficient volatility evidence to assess range quality (non-positive ATR)")`; `ratio = (opening_range.range_high - opening_range.range_low) / evidence.volatility.atr`; `if ratio < config.orb_min_range_atr_ratio: return _not_qualified(pair, f"Range width/ATR ratio {ratio:.2f} below minimum {config.orb_min_range_atr_ratio}")`.
+13. Post-range-bars presence, degenerate geometry, direction determination, momentum, ATR-distance, body/wick ratio, confirmation count, confirmation direction-consistency (Phase 2, steps unchanged in content and relative order, unreachable code touched — only their absolute step numbers shift).
+14. Score/confidence computation, FVG-selection block, `strengths` construction (Phase 3, unchanged).
+15. `qualified_result` construction (unchanged).
+16. `try_consume()` lockout — **unchanged**, still the sole terminal side-effecting gate, still consuming `(pair, opening_range.range_start)` for whichever range was selected in step 9-10.
 
-**No new `NOT_QUALIFIED` return is inserted after step 11** — every Phase 4 addition is either a pre-range-state eligibility gate (steps 2-6) or part of range *selection* (steps 8-9), never a change to Phase 2's breakout algorithm or Phase 3's FVG logic, both of which remain byte-for-byte as implemented in commit `bf2285b`.
+**One new `NOT_QUALIFIED` return is inserted after step 11 (step 12, §3a) — corrected this pass.** The prior text claimed no new return existed after step 11; that is no longer true now that the range-quality gate (§3a) is added, resolving an independent-review finding that this field had no assigned implementation phase anywhere in this project's history. Every other Phase 4 addition remains either a pre-range-state eligibility gate (steps 2-6) or part of range *selection* (steps 8-9); the new step 12 gate is range-level (like step 11's `is_valid`), still never a change to Phase 2's breakout algorithm or Phase 3's FVG logic, both of which remain byte-for-byte as implemented in commit `bf2285b`, now at steps 13-14.
 
-**Formation-time news-blackout enforcement remains out of scope for this algorithm, per Amendment 1 (Proposed):** step 4's news-blackout gate is evaluation-time-only, on every cycle — it is not a change from the prior revision's design, only its governance status changed (§9).
+**Formation-time news-blackout enforcement remains out of scope for this algorithm, per Amendment 1 (Accepted, commit `9b7d255`):** step 4's news-blackout gate is evaluation-time-only, on every cycle — unchanged from the prior revision's design; only its governance status has changed, from Proposed to formally Accepted (§9).
 
 ### 5. Config contract and validation
 
-Two new `StrategyEngineConfig` fields, following the exact pattern of all 7 existing `orb_*` fields (defaulted dataclass field, inline comment, validated in the single existing `__post_init__`, no cross-field check — neither field is a weight, so Phase 3's weight-sum deferral question does not apply here):
+**Three** new `StrategyEngineConfig` fields (was two — `orb_min_range_atr_ratio` added this pass, §3a), following the exact pattern of all 7 existing `orb_*` fields (defaulted dataclass field, inline comment, validated in the single existing `__post_init__`, no cross-field check — none of the three is a weight, so Phase 3's weight-sum deferral question does not apply here):
 
 | Field | Type | Default | Validation |
 |---|---|---|---|
+| `orb_min_range_atr_ratio` | `float` | `0.5` | `> 0` (ADR-035 §13 safe range) |
 | `orb_max_spread_pips` | `float` | `3.0` | `> 0` (ADR-035 §13 safe range) |
 | `orb_min_liquidity_score` | `float` | `60.0` | `0.0 <= x <= 100.0` (ADR-035 §13 safe range) |
 
-No change to `approved_pairs_for()`, `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, or `_ORB_APPROVED_CONFIG` — these two fields have no interaction with pair eligibility.
+No change to `approved_pairs_for()`, `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, or `_ORB_APPROVED_CONFIG` — none of the three fields has any interaction with pair eligibility.
 
 ### 6. Worked adversarial examples
 
-Shared fixture convention: two anchors, London (`range_start=07:00Z`, `range_end=07:30Z`) and New York (`range_start=12:00Z`, `range_end=12:30Z`), both `is_valid=True` unless stated otherwise. `orb_max_spread_pips=3.0`, `orb_min_liquidity_score=60.0` (defaults).
+Shared fixture convention: two anchors, London (`range_start=07:00Z`, `range_end=07:30Z`) and New York (`range_start=12:00Z`, `range_end=12:30Z`), both `is_valid=True` unless stated otherwise. `orb_min_range_atr_ratio=0.5`, `orb_max_spread_pips=3.0`, `orb_min_liquidity_score=60.0` (defaults). Examples L/L′/M (range-quality gate) are listed in §3a.
 
 | # | Scenario | Outcome |
 |---|---|---|
@@ -229,43 +286,44 @@ Shared fixture convention: two anchors, London (`range_start=07:00Z`, `range_end
 | H′ | `current_spread=3.5` | `NOT_QUALIFIED`, `"Spread 3.5 exceeds maximum 3.0"` (chosen deliberately clear of `.1f`-rounding ambiguity — a value like `3.01` would display as `"3.0"`, cosmetically appearing not to exceed `3.0`, even though the underlying `>` comparison is exact and correct) |
 | I | `liquidity_score=60.0` exactly (== `orb_min_liquidity_score`) | passes (inclusive boundary, `<` is strict) |
 | I′ | `liquidity_score=59.9` | `NOT_QUALIFIED`, `"Liquidity score 59.9 below minimum 60.0"` |
-| J | All four MI gates pass, single relevant range, otherwise-qualifying breakout with a qualifying FVG present | `QUALIFIED` — confirms Phase 2's breakout algorithm and Phase 3's FVG/score logic are fully preserved end-to-end with Phase 4's gates layered in front, and the lockout still consumes `(pair, opening_range.range_start)` for the selected range |
+| J | **Corrected this pass (was "four MI gates," stale since the `is_holiday` addition).** All five MI gates pass (§3), the range-quality gate passes (§3a), single relevant range, otherwise-qualifying breakout with a qualifying FVG present | `QUALIFIED` — confirms Phase 2's breakout algorithm and Phase 3's FVG/score logic are fully preserved end-to-end with all six of Phase 4's gates layered in front, and the lockout still consumes `(pair, opening_range.range_start)` for the selected range |
 | K | Same as J, second `qualify()` call on the identical selected range | `NOT_QUALIFIED`, `"Already qualified for this opening range"` — lockout behavior unaffected by multi-range selection |
 
 ### 7. Boundaries — what this Plan explicitly does NOT do
 
 - Does not add a new Strategy Engine session-anchor config field — `EvidenceEngineConfig.opening_range_anchors` (Phase 0) already owns this, confirmed sufficient (Research §1).
 - Does not modify Evidence Engine or Market Intelligence Engine in any way — every field needed already exists (Research §3).
-- Does not implement ADR-035 §13's anchor-overlap cross-field validation — that is explicitly Phase 5's scope (§17), unchanged by this Plan; §2 above specifies Phase 4's own required fail-closed behavior for the window before that validation exists, which is not the same thing as implementing the validation itself.
+- Does not implement a new, `StrategyEngineConfig`-scoped anchor-overlap cross-field check — ADR-035 §13's table originally named this as a `StrategyEngineConfig` concern, and that literal, Strategy-Engine-scoped check remains Phase 5's nominal scope (§17), unchanged by this Plan. **Corrected wording (this pass, for consistency with §2/§9):** a functionally-equivalent check already exists today, just on a different config object — `EvidenceEngineConfig.__post_init__`'s `_validate_no_overlapping_anchors()` (§2). This Plan does not implement Phase 5's own literal, differently-scoped check; it does not follow that no equivalent protection exists in the meantime (it does, per §2/§9).
 - Does not modify any of Phase 2's breakout-qualification steps, Phase 3's FVG-confirmation logic, or `OrbQualificationStore`'s persistence/concurrency semantics.
 - Does not register `OrbBreakoutStrategy` in `build_default_registry()` — registration remains no earlier than Phase 6 (ADR-035 §17).
 - Does not touch any of the five legacy strategies.
-- **Revised this pass:** does check `is_holiday` (§3, added this revision). Does not check `is_early_close` (ADR-035 §15 explicitly covers this via bar absence — no gate needed), `broker_maintenance`, or `trading_halted` (§2's new explicit Plan decision — no ADR-035 text names either as an ORB gate, and no existing strategy checks them).
-- **Does not implement formation-time news-blackout enforcement** — evaluation-time-only enforcement for Phase 4 requires `ADR-035-orb-strategy.md` Amendment 1 (Proposed, drafted this pass) to be independently reviewed and Accepted before this Plan may proceed to implementation (§9). Closing the underlying gap is out of scope for Phase 4 entirely — deferred to a new, unscheduled Phase 7 (Amendment 1).
+- Does check `is_holiday` (§3) and `orb_min_range_atr_ratio` (§3a, **new this pass**). Does not check `is_early_close` (ADR-035 §15 explicitly covers this via bar absence — no gate needed), `broker_maintenance`, or `trading_halted` (§2's explicit Plan decision — no ADR-035 text names either as an ORB gate, and no existing strategy checks them).
+- **Does not implement formation-time news-blackout enforcement** — evaluation-time-only enforcement for Phase 4 is authorized by `ADR-035-orb-strategy.md` Amendment 1, now formally **Accepted** (commit `9b7d255`, corrected this pass — see §9). Closing the underlying gap is out of scope for Phase 4 entirely — deferred to a new, unscheduled Phase 7 (Amendment 1).
 - Does not add a fallback mechanism that selects an older, valid range when the most-recently-formed range is invalid, or when a tie is detected — both are explicit, disclosed "no closest guess" decisions (§§1-2), not omissions.
 
 ### 8. Architectural-compliance confirmation (re-verified this pass, not merely carried from Research)
 
 - Against ADR-001's pipeline: unchanged — Strategy Engine remains the sole stage touched.
-- Against ADR-035 itself: §2's five eligibility facts (pairs, sessions/anchors, spread, news, liquidity) and §3's Identification rule are now both fully specified (§§1-4 above); §17's Phase 4 scope ("session anchor matching... news/liquidity/holiday gates, eligibility hard gate, with unit tests for each gate") is fully covered.
+- Against ADR-035 itself: §2's market-eligibility table is now **fully** specified — every row has a concrete home: pairs (existing generic mechanism), sessions/anchors (Phase 0 + this Plan's selection formula, §1), minimum volatility (`orb_min_range_atr_ratio`, §3a, **new this pass** — the one row with no prior owner anywhere in this project's history), maximum spread, news, holiday (§3), weekend (no check needed, upstream gating), low-liquidity (§3). §3's Identification rule is fully specified (§§1-4 above); §17's Phase 4 scope ("session anchor matching... news/liquidity/holiday gates, eligibility hard gate, with unit tests for each gate") is fully covered, extended this pass to also close the one previously-unassigned eligibility row (§3a).
 - Against ADR-026 (Strategy Engine) Hard Rules: no trade-decision vocabulary added, no position sizing/price level introduced, no new randomness, no shared mutable eligibility state, no interface change to `Strategy.qualify()` (§1 confirms the `now`-parameter question is moot — the final algorithm needs no fresh `now`).
 - `tests/titan_protocol/strategy_engine/test_architecture.py`: `titan_protocol.market_intelligence` already an allowed upstream prefix (used since Step 2B) — no new prefix needed, since Phase 4 introduces no new upstream import at all (re-confirmed: no new `import` line is required in `orb_breakout.py` for this phase, unlike Phase 3's `StructureDirection` addition).
 - Both `test_structural_boundary.py` files: `_LATER_AUTHORIZED_EXCEPTIONS` already contain `titan_protocol/strategy_engine/config.py` and `titan_protocol/strategy_engine/strategies/orb_breakout.py` — the only two production files this Plan touches. **Re-confirmed, not assumed: zero new allowlist entries required.**
 
 ### 9. Risk register / disclosed limitations (revised this pass)
 
-- **News-blackout timing gap — escalated to governance this revision, no longer a Plan-level disclosure alone.** ADR-035 §2 states news restrictions apply *"both during range formation and at breakout evaluation."* `OrbBreakoutStrategy.qualify()` is stateless (ADR-026) and only observes the *current* cycle's `MarketIntelligenceSnapshot` — there is no repository mechanism to record "was a blackout active while this specific range was forming" retroactively on `OpeningRangeState` (confirmed: the model has no news-related field). An independent implementation-readiness review of the prior Plan found that disclosing this gap in a Risk Register entry alone is insufficient governance action for a deviation from explicit Accepted-ADR text — recording a Plan-level limitation does not authorize it. **Resolution this revision:** two candidate closures were independently evaluated and both rejected as being outside Phase 4's own scope without further architectural review — (a) reconstructing formation-time blackout status inside Strategy Engine from `pair_safety.news.{active_events,recent_events,upcoming_events}`, rejected because it requires duplicating Market Intelligence's own blackout-window arithmetic inside Strategy Engine (an ownership-boundary violation) and is unreliable regardless (the bucket windows are sized independently of, and often narrower than, the actual blackout windows, so a formation-time-relevant event can silently age out of view before evaluation); (b) an Evidence-Engine dependency on Market Intelligence's news output to persist a formation-time flag on `OpeningRangeState`, rejected for this Plan's scope because Evidence Engine and Market Intelligence have no dependency relationship today and creating one is new architecture requiring its own review. **`ADR-035-orb-strategy.md` Amendment 1 (Proposed, drafted this pass, not yet Accepted) formally authorizes evaluation-time-only enforcement for Phase 4 as a staged limitation**, states the safety consequence in the ADR's own text, and assigns closing the gap to a new, explicitly unscheduled **Phase 7** — not folded into Phase 4, Phase 5, or Phase 6. **This Plan's implementation remains blocked until Amendment 1 receives its own independent review and formal Acceptance.**
-- **Genuine multi-match — corrected this revision, no longer characterized as a live risk.** The prior text here claimed multi-match was "a real, reachable pre-Phase-5 state, not merely theoretical." Independent review found this claim factually wrong: `EvidenceEngineConfig.__post_init__` already validates no anchor overlap/coincidence (current production code, not Phase 5 — re-verified in §2, including a direct, executed reproduction). The tie-handling logic is retained as defense-in-depth against an unreachable-today condition (a possible future regression, or a hand-constructed `EvidenceSnapshot` bypassing config validation), not because operators can, today, trigger it through misconfiguration.
-- **`trading_halted`/`broker_maintenance_active` — new explicit Plan decision this revision (§2):** neither is checked by Phase 4, grounded in repository-wide precedent (no existing strategy checks either field) and the absence of either from ADR-035 §2/§14's ORB-specific text. Ownership remains with downstream layers. Disclosed here, not silently omitted.
-- **Gate ordering (§3) is a disclosed Plan decision**, not an ADR mandate — a future amendment could reorder these five gates without contradicting ADR-035's own text, since it does not specify an order.
+- **News-blackout timing gap — governance action complete, status updated this pass.** ADR-035 §2 states news restrictions apply *"both during range formation and at breakout evaluation."* `OrbBreakoutStrategy.qualify()` is stateless (ADR-026) and only observes the *current* cycle's `MarketIntelligenceSnapshot` — there is no repository mechanism to record "was a blackout active while this specific range was forming" retroactively on `OpeningRangeState` (confirmed: the model has no news-related field). An independent implementation-readiness review of the prior Plan found that disclosing this gap in a Risk Register entry alone was insufficient governance action for a deviation from explicit Accepted-ADR text — recording a Plan-level limitation does not authorize it. **Resolution (unchanged from the prior pass):** two candidate closures were independently evaluated and both rejected as being outside Phase 4's own scope without further architectural review — (a) reconstructing formation-time blackout status inside Strategy Engine from `pair_safety.news.{active_events,recent_events,upcoming_events}`, rejected because it requires duplicating Market Intelligence's own blackout-window arithmetic inside Strategy Engine (an ownership-boundary violation) and is unreliable regardless (the bucket windows are sized independently of, and often narrower than, the actual blackout windows, so a formation-time-relevant event can silently age out of view before evaluation); (b) an Evidence-Engine dependency on Market Intelligence's news output to persist a formation-time flag on `OpeningRangeState`, rejected for this Plan's scope because Evidence Engine and Market Intelligence have no dependency relationship today and creating one is new architecture requiring its own review. **Status update, this pass:** `ADR-035-orb-strategy.md` Amendment 1, which formally authorizes evaluation-time-only enforcement for Phase 4 as a staged limitation, states the safety consequence in the ADR's own text, and assigns closing the gap to a new, explicitly unscheduled **Phase 7** — was independently reviewed ("ADR-035 Amendment 1 — Independent Acceptance Review," disposition ACCEPTED WITH REQUIRED MINOR REVISIONS) and is now formally **Accepted** (commit `9b7d255`). **This Plan's implementation remains blocked until this Plan itself — not Amendment 1 — receives a fresh independent implementation-readiness re-review reflecting the two revisions made this pass.**
+- **Genuine multi-match — corrected in the prior pass, unchanged this pass.** The original text here claimed multi-match was "a real, reachable pre-Phase-5 state, not merely theoretical." Independent review found this claim factually wrong: `EvidenceEngineConfig.__post_init__` already validates no anchor overlap/coincidence (current production code, not Phase 5 — re-verified in §2, including a direct, executed reproduction). The tie-handling logic is retained as defense-in-depth against an unreachable-today condition (a possible future regression, or a hand-constructed `EvidenceSnapshot` bypassing config validation), not because operators can, today, trigger it through misconfiguration.
+- **`trading_halted`/`broker_maintenance_active` — explicit Plan decision, unchanged this pass (§2):** neither is checked by Phase 4, grounded in repository-wide precedent (no existing strategy checks either field) and the absence of either from ADR-035 §2/§14's ORB-specific text. Ownership remains with downstream layers. Disclosed here, not silently omitted.
+- **`orb_min_range_atr_ratio` had no assigned implementation phase anywhere in this project's history — new finding this pass, resolved.** Independent review found the field (ADR-035 §2 "Minimum volatility," §13) was never picked up by Phase 2 (which explicitly deferred it to "Phase 3/4/5"), Phase 3 (FVG-only scope), or this Plan's own prior passes, despite this Plan's Research explicitly claiming to check for exactly this kind of gap. Resolved this pass by adding it to Phase 4 as a sixth gate (§3a), re-derived from evidence rather than chosen to minimize changes.
+- **Gate ordering (§3) is a disclosed Plan decision**, not an ADR mandate — a future amendment could reorder these five Market Intelligence gates without contradicting ADR-035's own text, since it does not specify an order. (The range-quality gate, §3a, is separately positioned by its own data dependency — see §3a/§4.)
 
 ### 10. File-impact matrix
 
 | File | Change | Structural-boundary status |
 |---|---|---|
-| `titan_protocol/strategy_engine/config.py` | Add 2 fields + 2 `__post_init__` checks | Already allowlisted (both boundary tests) |
-| `titan_protocol/strategy_engine/strategies/orb_breakout.py` | Add 5 MI eligibility gates (was 4 — `is_holiday` added this revision) + multi-range selection logic (§4); no new imports | Already allowlisted (both boundary tests) |
-| `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py` | Update `TestMultipleRanges`'s expected reason string (its existing fixture is already a genuine tie under the new rule — see below, reason string corrected this revision); add new test classes for range-selection (examples A-E, D corrected this revision) and MI eligibility gates (examples F-K, plus new F′ for `is_holiday`) | Not a frozen-prefix file |
+| `titan_protocol/strategy_engine/config.py` | Add 3 fields (was 2 — `orb_min_range_atr_ratio` added this pass, §3a) + 3 `__post_init__` checks | Already allowlisted (both boundary tests) |
+| `titan_protocol/strategy_engine/strategies/orb_breakout.py` | Add 5 MI eligibility gates (§3) + 1 range-quality gate (§3a, **new this pass**) + multi-range selection logic (§4); no new imports | Already allowlisted (both boundary tests) |
+| `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py` | Update `TestMultipleRanges`'s expected reason string (its existing fixture is already a genuine tie under the new rule); add new test classes for range-selection (examples A-E), MI eligibility gates (examples F-K), and the range-quality gate (examples L/L′/M, **new this pass**, §3a). **New this pass:** add a local `orb_min_range_atr_ratio` config override to `TestAtrDistance`'s two below-threshold tests and its non-positive-ATR test (§3a) — no assertion changes, override only |
 | `tests/titan_protocol/strategy_engine/_fixtures.py` | Extend `make_liquidity_intelligence()` with two new optional parameters, `current_spread: float = 1.0` and `average_spread: float = 1.0`, defaulting to today's hardcoded values (zero behavior change for every existing caller) — needed because no existing fixture exposes spread as an override, only `liquidity_score`. **New this revision:** also extend `make_market_safety_status()` with one new optional parameter, `holiday: bool = False`, threading into `MarketSafetyStatus.is_holiday` (currently hardcoded `False` with no override — confirmed by direct re-read), zero behavior change for every existing caller | Not a frozen-prefix file; disclosed here as a small, backward-compatible, shared-fixture addition |
 | Evidence Engine (any file) | **None** — confirmed sufficient as-is (§8, Research §3) | N/A |
 | Market Intelligence Engine (any file) | **None** — confirmed sufficient as-is (§8, Research §3) | N/A |
@@ -280,26 +338,30 @@ Shared fixture convention: two anchors, London (`range_start=07:00Z`, `range_end
 
 - Update `TestMultipleRanges`'s expected `reason` to the corrected tie message (§2/§10).
 - New test class (name deferred to Implement phase, e.g. `TestRangeSelection`) covering examples A-E from §6: NY-selected-over-London, single-range-unaffected, none-yet-formed, genuine-tie (D, documented as defense-in-depth, not operator-reachable), selected-range-invalid.
-- New test class (e.g. `TestMarketIntelligenceEligibility`) covering examples F, F′ (new — `is_holiday`), G-K from §6: market-closed, holiday, news-blackout, spread-boundary (both sides), liquidity-boundary (both sides), full-pass-through-to-QUALIFIED, lockout-unaffected.
-- Config validation: `orb_max_spread_pips <= 0` and `orb_min_liquidity_score` outside `[0, 100]` each raise `ValueError` (mirrors `TestConfigValidation`'s existing pattern); extend `test_defaults_match_adr_035` for both new fields' defaults (`3.0`, `60.0`).
-- Full regression: all 60 currently-passing tests in this file must remain green; only `TestMultipleRanges`'s one reason-string assertion is expected to change — no other existing test's outcome should change, to be proven by running the suite, not assumed.
+- New test class (e.g. `TestMarketIntelligenceEligibility`) covering examples F, F′ (`is_holiday`), G-K from §6: market-closed, holiday, news-blackout, spread-boundary (both sides), liquidity-boundary (both sides), full-pass-through-to-QUALIFIED, lockout-unaffected.
+- **New this pass:** new test class (e.g. `TestRangeQualityGate`) covering examples L/L′/M from §3a: exactly-at-threshold passes, below-threshold rejects with the exact reason string, non-positive-ATR rejects with its own distinct reason string, fired before post-range-bars presence is ever checked.
+- **New this pass:** add a local `orb_min_range_atr_ratio` config override (e.g. `0.01`) to `TestAtrDistance.test_distance_below_threshold_is_not_qualified`, `test_bearish_distance_below_threshold_is_not_qualified`, and `test_non_positive_atr_is_not_qualified` (§3a) — their existing fixture values and reason-string assertions remain unchanged; only their config object gains one additional field.
+- Config validation: `orb_min_range_atr_ratio <= 0` (**new this pass**), `orb_max_spread_pips <= 0`, and `orb_min_liquidity_score` outside `[0, 100]` each raise `ValueError` (mirrors `TestConfigValidation`'s existing pattern); extend `test_defaults_match_adr_035` for all three new fields' defaults (`0.5`, `3.0`, `60.0`).
+- Full regression: all 60 currently-passing tests in this file must remain green; `TestMultipleRanges`'s one reason-string assertion is expected to change, and `TestAtrDistance`'s three affected tests need the config-override addition described above (no assertion changes) — no other existing test's outcome should change, to be proven by running the suite, not assumed.
 - Full suite: `python -m unittest discover -s tests/titan_protocol` (1352/1352 baseline) plus the new tests, zero failures.
 - `python -m compileall` on all four touched files.
 - `tests/titan_protocol/strategy_engine/test_architecture.py` and both `test_structural_boundary.py` files re-run green with zero new allowlist entries.
 - `build_default_registry()` re-confirmed at exactly 5 `.register()` calls — ORB still absent.
-- **Deferred, not this Plan's scope:** formation-time news-blackout closure (Phase 7, Amendment 1) will need its own dedicated test coverage once that phase is Researched, Planned, and its own governing amendment Accepted — not enumerated here.
+- **Deferred, not this Plan's scope:** formation-time news-blackout closure (Phase 7, Amendment 1, now Accepted) will need its own dedicated test coverage once that phase is Researched and Planned — not enumerated here.
 
 ## Validation
 
 (Not started — Implement phase. This Plan authorizes no implementation.
-Beyond the prior requirement of an independent implementation-readiness
-review accepting this Plan, implementation is additionally blocked on
-`ADR-035-orb-strategy.md` Amendment 1 receiving its own independent
-review and formal Acceptance — see Disposition.)
+`ADR-035-orb-strategy.md` Amendment 1 is now formally **Accepted**
+(commit `9b7d255`) — that gate is satisfied. Implementation remains
+blocked on this Plan itself receiving a fresh independent
+implementation-readiness re-review, confirming the two revisions made
+this pass (§3a's new gate; the Amendment 1 status corrections
+throughout) — see Disposition.)
 
 ---
 
-## Adversarial re-read (this revision)
+## Adversarial re-read (first pass, 2026-07-26 — history, unchanged)
 
 Performed against the complete, revised governance/Plan text (this
 document plus the new ADR-035 Amendment 1) for contradictions:
@@ -338,33 +400,85 @@ document plus the new ADR-035 Amendment 1) for contradictions:
   re-verified via `git status --porcelain` showing only
   `docs/adr/ADR-035-orb-strategy.md` and this Plan file changed.
 
-No contradiction found. This revision resolves findings 2 and 3 from
-the independent implementation-readiness review directly; finding 1
-(formation-time news-blackout) is escalated to Amendment 1 (Proposed),
-not resolved within this Plan's own text, per the review's explicit
-instruction not to silently weaken the ADR's requirement.
+No contradiction found (at that pass). That revision resolved findings 2
+and 3 from the first independent implementation-readiness review
+directly; finding 1 (formation-time news-blackout) was escalated to
+Amendment 1 (Proposed, its status *at that time*), not resolved within
+this Plan's own text, per that review's explicit instruction not to
+silently weaken the ADR's requirement.
 
 ---
 
-**Disposition: PHASE 4 REMAINS BLOCKED — ADR-035 AMENDMENT PROPOSED FOR INDEPENDENT REVIEW.**
+## Adversarial re-read (second pass, current)
 
-Two of the three findings from the independent implementation-readiness
-review (commit `b550a97`) are resolved directly within the existing
-Accepted contract: the `is_holiday` gate is added (§3/§4/§6/§10/§11),
-and the tie/multi-match record is corrected against independently
-re-verified source (§2/§9/§6 Example D), including an explicit,
-evidence-grounded Plan decision on `trading_halted`/`broker_maintenance_active`
-(§2/§9). The third finding — formation-time news-blackout enforcement —
-cannot be resolved within Phase 4's existing scope without either
-violating this project's Evidence-Engine/Strategy-Engine/Market-Intelligence
-ownership boundaries or inventing unavailable historical state (§9); it
-is addressed by drafting `ADR-035-orb-strategy.md` Amendment 1
-(**Proposed**, not Accepted), which explicitly authorizes evaluation-time-only
-enforcement for Phase 4 as a staged limitation, states its safety
-consequence, and assigns closing the gap to a new, unscheduled Phase 7.
+Performed against the complete, current governance/Plan text (this
+document, fully re-read top to bottom, plus the now-Accepted ADR-035
+Amendment 1) for contradictions, specifically checking the two items
+this pass was tasked with:
 
-**Phase 4 implementation remains prohibited** until Amendment 1
-receives its own independent review and is formally Accepted, after
-which this revised Plan must itself receive a fresh independent
-implementation-readiness re-review before `/rpi:implement` may begin.
-**Phase 5 remains unauthorized regardless of this revision's outcome.**
+- **`orb_min_range_atr_ratio` disposition verified against ADR-035:**
+  re-read §2's "Minimum volatility" row and §13's field table directly;
+  re-read Phase 1's and Phase 2's own Plan documents' explicit
+  "Deferred... Phase 3/4/5" language; re-confirmed no existing
+  `orb_breakout.py` code or prior Phase 4 Plan text addressed it.
+  Disposition A (include in Phase 4, §3a) is grounded in this evidence,
+  not chosen to minimize the diff — re-verified the alternative
+  (Phase 5) would be inconsistent with every other phase's own
+  established precedent of adding a gate and its config field together.
+- **Amendment 1 status verified current everywhere:** searched every
+  occurrence of "Amendment 1," "Proposed," and "pending" in this
+  document. Every current-state reference (Status header, §3a, §4, §7,
+  §9, Validation, Disposition) now reads Accepted, commit `9b7d255`.
+  The two historical references (the first-pass Revision record, the
+  first-pass Adversarial re-read heading) are preserved with explicit
+  "at that time"/"history, unchanged" framing, not rewritten as though
+  Amendment 1 had always been Accepted.
+- **No previously-accepted Phase 4 design decision was accidentally
+  altered:** §1 (selection formula), §2 (tie handling), §3 (five MI
+  gates, their fields/operators/reason strings/order), the `is_holiday`
+  addition, and the `trading_halted`/`broker_maintenance_active`
+  decision are byte-for-byte unchanged from the version the fresh
+  implementation-readiness review already found sound — confirmed by
+  re-reading each section directly, not assumed from memory.
+- **Phase 2 breakout/lockout and Phase 3 FVG behavior confirmed outside
+  this revision:** the new §3a gate is inserted as step 12, strictly
+  between the existing `is_valid` check (step 11) and the Phase 2 bundle
+  (now step 13, unchanged in content and relative order) — re-confirmed
+  against the live algorithm text that no Phase 2 or Phase 3 line was
+  reworded, reordered relative to itself, or removed.
+- **Phase 5 and Phase 7 confirmed still unauthorized:** neither is
+  scheduled, designed, or implemented by this pass; §3a explicitly
+  states Phase 5 was considered and rejected as the range-quality gate's
+  home, not silently assumed to remain Phase 5's responsibility for
+  something else.
+- **Residual staleness swept for, beyond the two named findings:** also
+  found and corrected, during this same re-read, two smaller
+  inconsistencies not explicitly named by the review but contradicting
+  already-corrected content elsewhere in this document: §7's anchor-
+  overlap bullet still implied the validation "does not yet exist"
+  (contradicting §2/§9's own correction) — reworded for consistency;
+  Example J still said "four MI gates" (stale since the `is_holiday`
+  addition, before this pass even started) — corrected to five MI gates
+  plus the new range-quality gate.
+
+No contradiction found in the current text.
+
+---
+
+**Disposition: PHASE 4 PLAN REVISED — READY FOR FOCUSED RE-REVIEW.**
+
+`ADR-035-orb-strategy.md` Amendment 1 is formally **Accepted** (commit
+`9b7d255`); this Plan now reflects that status consistently throughout.
+`orb_min_range_atr_ratio` (ADR-035 §2/§13), which had no assigned
+implementation phase anywhere in this project's history, is added to
+Phase 4 as a sixth gate (§3a), re-derived from evidence rather than
+chosen to minimize changes. Every other design decision in this Plan —
+the selection formula (§1), tie handling (§2), the five Market
+Intelligence gates (§3), the predicate order (§4, renumbered again this
+pass), the config contract (§5), and the worked examples (§6) — is
+carried forward unchanged from the version already found sound.
+
+**Phase 4 implementation remains prohibited** until this Plan receives
+a focused independent re-review confirming both revisions in this pass
+are resolved. **Phase 5 and Phase 7 remain unauthorized regardless of
+this revision's outcome.**
