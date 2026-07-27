@@ -1,6 +1,15 @@
 # Plan: ADR-035 Phase 5 — Configuration Wiring and Cross-Field Validation
 
-Status: **PLAN FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS REVIEW.**
+Status: **PLAN REVISED — IMPLEMENTATION AUTHORIZED.**
+An independent implementation-readiness review returned "PHASE 5 PLAN
+APPROVED WITH REQUIRED MINOR REVISIONS" (two required items: strengthen
+§13's score-weight evidence trail against ADR-035 §13's own
+`orb_fvg_score_weight` table-row language; add an explicit example-config
+default-value contract, §14). Both are applied below (§13, §14, §19); two
+optional documentation clarifications (§14, §15) are also applied. The
+substantive Phase 5 design — Option A, the config-loader contract, the
+cross-field-validation contract, the file-impact matrix — is unchanged;
+no design decision was reopened.
 Owner (Plan phase): Software Architect (ADR-035/ADR-025/ADR-026 owner precedent, unchanged)
 Touched components (final — resolved below, §13): `titan_protocol/evidence_engine/config.py`
 (new cross-field feasibility check only, zero new fields), `titan_protocol/strategy_engine/config.py`
@@ -462,7 +471,36 @@ unchecked):**
    weighed against the "§13 never named these fields" argument at Phase
    3 time and did not change that Plan's own conclusion. Nothing in this
    Research changes that balance.
-6. **Consequence: no Accepted-ADR contradiction, no amendment
+6. **§13's own table row for `orb_fvg_score_weight` — not merely §5's
+   looser prose — must be addressed directly, since it is the strongest
+   textual anchor for Option B and an independent implementation-
+   readiness review correctly identified that the prior version of this
+   evidence trail did not engage it.** The Safe-Range cell reads,
+   verbatim: `"0-1 (bounded, sums with other weights ≤ 1)"` (ADR-035
+   §13, the row for `orb_fvg_score_weight`). Read in isolation, this
+   phrase can suggest that sibling *configurable* weight fields were
+   meant to exist for `orb_fvg_score_weight` to sum against. Reconciled
+   explicitly, not explained away: (a) this is a Safe-Range *value*
+   describing the field's own bound and how it interacts with whatever
+   else contributes to the same sum — it is not itself a second field
+   declaration, and no other row in the same 14-row table names such a
+   field, then or now; (b) §17's Phase 5 entry — the ADR's own operative
+   assignment of which phase resolves this exact question — reads "§13's
+   fields wired..." (the fields the table already lists), not "§13's
+   fields, plus any further fields this phrase implies should be added";
+   (c) the accepted Phase 2 and Phase 3 governance record already read
+   this identical ambiguity (Phase 3's Plan §2.1 explicitly flagged it as
+   "genuinely contestable" under direct independent-review challenge) and
+   both times concluded the table's actual field list controls, not the
+   Safe-Range cell's descriptive wording — a conclusion this Plan does
+   not invent, but re-applies for the third and now dispositive time,
+   Phase 5 being the phase the ADR itself names to close it. The phrase
+   is therefore read as accurately describing today's degenerate case —
+   a weighted sum with exactly one config-declared member, whose own
+   `[0, 1]` bound *is* the sum bound for that one-element set — not as a
+   standing requirement to manufacture additional fields so the sentence
+   describes a richer set than the ADR's table ever specified.
+7. **Consequence: no Accepted-ADR contradiction, no amendment
    required.** ADR-035's own text (§13's authoritative table + §17's
    "wire §13's fields" framing) is internally consistent with Option A
    once §5's looser prose is read as descriptive rather than as a
@@ -487,11 +525,24 @@ per-field bound is the sum bound."* No other code change.
 
 **Narrow scope statement:** Phase 5 wires exactly the `orb_*`/
 `opening_range_*` fields ADR-035 §13 already names (mapped to their real
-owners per Research §2), using the exact `dataclasses.replace()`-over-
-defaults idiom `config_loader.py` already established for
+owners per Research §2), extending the exact `dataclasses.replace()`-
+over-defaults idiom `config_loader.py` already established for
 `compliance_config` (`deployment_windows/config_loader.py` lines
-401-416) — no new parsing primitive, no new config-loading mechanism, no
-change to any other engine's section. `orb_approved_pairs` is
+401-415) — no new parsing primitive, no new config-loading mechanism, no
+change to any other engine's section. **Precision on what is and isn't
+already precedented (independent-review finding, addressed directly):**
+the `dataclasses.replace()`-over-defaults construction pattern, and the
+general "catch `ValueError`, re-raise as `ConfigError`" idiom, both
+already exist in this file (the latter demonstrated once, wrapping
+`profile_for()`'s `ValueError` for `compliance.rule_profile_name`). What
+does *not* yet exist verbatim is that specific combination applied to a
+`ValueError` raised by `EvidenceEngineConfig`'s/`StrategyEngineConfig`'s
+own `__post_init__` via a `dataclasses.replace()` call. This Plan
+extends the same two established idioms to a new combination, rather
+than claiming an exact prior instance — independently confirmed safe
+regardless of novelty, since `dataclasses.replace()` always re-invokes
+`__post_init__` (verified directly: it cannot construct an object that
+bypasses the dataclass's own validation). `orb_approved_pairs` is
 **explicitly excluded** (§16).
 
 Two new top-level JSON sections, each documented with a `_maps_to` note
@@ -559,6 +610,62 @@ both fields to `DeploymentSettings` and updates all three call sites
 `settings`-sourced object) — required, not optional, for the wiring to
 have any effect.
 
+**Example-config default-value contract (required — closes a gap an
+independent implementation-readiness review found unaddressed):** the
+shipped `titan_protocol_config.example.json`'s new `"strategy_engine"`
+and `"evidence_engine"` sections **must populate every field in both
+tables above with that field's exact current Python dataclass
+default** — `0.15`/`0.5`/`1`/`1`/`10`/`0.1`/`0.15`/`0.5`/`3.0`/`60.0` for
+the ten `orb_*` fields, and `[]` (JSON rendering of `()`)/`30`/`3`/`300`
+for the four `opening_range_*`/`expected_bar_interval_seconds` fields —
+**no illustrative, non-default, or "worked example" values** (e.g. a
+sample two-anchor `opening_range_anchors` configuration), however
+pedagogically tempting.
+
+Grounded in repository evidence, not asserted: `tests/deployment_windows/
+_fixtures.py::write_config()` builds every existing `config_loader` test
+from a full copy of the shipped example JSON (`load_example_config()`),
+overriding only `"bridge"` and `"compliance"` — every other section,
+including the two new ones, flows through unmodified into every existing
+test's config. `deployment_windows/install.py` (`_CONFIG_TEMPLATE_PATH`)
+uses the identical file as its literal fresh-install template. If either
+new section shipped with a non-default value — worse, a hand-written
+"illustrative" anchor pair that happened to violate the overlap or
+feasibility check — every one of the 19 existing `config_loader` tests
+that don't touch these sections would silently start exercising
+non-default behavior, or fail closed outright, neither of which any
+existing test was written to expect or diagnose. This is not a
+hypothetical: the same risk pattern is already resolved, consistently,
+by every existing section this file ships — independently re-verified
+this pass by comparing the shipped `"risk"` section's values field-by-
+field against `RiskEngineConfig()`'s real Python defaults (e.g.
+`minimum_evidence_score: 65.0`, `portfolio_heat_limit_r: 6.0` — an exact
+match in every field checked); the `"compliance"` and `"reliability"`
+sections follow the identical convention. Phase 5's two new sections
+must follow the same convention, not deviate from it.
+
+**Consequence for omission and for an operator's own edits:** because the
+shipped values equal the Python defaults exactly, an operator who deletes
+either new section entirely, or who never edits it, gets byte-identical
+behavior to today (§14's "Section-absent behavior" above) — the shipped
+file is simply the *documented, inert* form of what already happens by
+default, exactly like every other partial section in this file. Only an
+operator's own deliberate edit changes behavior; the file's own act of
+existing does not.
+
+**Test-contract addition (§19):** Implement must add a direct test (not
+merely rely on the existing 19-test regression run to catch a violation
+after the fact) asserting that every value under the shipped
+`"strategy_engine"`/`"evidence_engine"` sections in
+`titan_protocol_config.example.json` equals the corresponding
+`StrategyEngineConfig()`/`EvidenceEngineConfig()` field's real Python
+default — e.g. `self.assertEqual(example["strategy_engine"]["orb_fvg_score_weight"],
+StrategyEngineConfig().orb_fvg_score_weight)` for each of the 14 wired
+fields, executed once, directly against the parsed example file. This
+makes drift between the shipped example and the engine defaults a
+same-commit, self-diagnosing failure rather than something only the
+broader regression suite might happen to surface.
+
 **Pre-existing, disclosed, non-blocking consistency note (not a new
 Phase 5 risk):** `expected_bar_interval_seconds` is Evidence Engine's own
 independent concept (already documented in its own docstring as
@@ -609,7 +716,18 @@ timeframe vocabularies is out of ADR-035's scope entirely (§16).
    (not `< 6`), `min_bars=7` fails closed. Non-exact-division case:
    `duration_minutes=22`, `expected_bar_interval_seconds=300` (1320s) →
    `max_possible_bars = ceil(1320/300) = 5`; `min_bars=5` passes,
-   `min_bars=6` fails closed.
+   `min_bars=6` fails closed. **Ordering/division-safety note (clarifies
+   why the placement above is required, not merely convenient):** the
+   current `__post_init__` (re-read directly) already validates
+   `opening_range_duration_minutes > 0`, `opening_range_min_bars >= 1`,
+   and `expected_bar_interval_seconds > 0` individually, in that order,
+   *before* `_validate_no_overlapping_anchors` is ever called. Placing
+   the new feasibility check immediately after that call (i.e. last)
+   means all three of its own inputs are already guaranteed positive by
+   the time it runs — the ceiling-division computation can never divide
+   by zero or operate on a non-positive duration. This ordering is not
+   optional; it is what makes the new check itself safe to add without
+   its own redundant defensive guards.
 3. **Weight-sum bound — resolved per §13 above.** No new validation
    function; the existing `orb_fvg_score_weight` per-field bound is
    documented, via one comment, as satisfying this requirement for the
@@ -763,6 +881,15 @@ bounds — state explicitly in the Implement report if touched or not):**
   config file) produces `DeploymentSettings.strategy_config ==
   StrategyEngineConfig()` and `.evidence_config == EvidenceEngineConfig()`
   exactly.
+- **Example-config default parity (new, required — §14):** a direct test
+  loading the shipped `titan_protocol_config.example.json` (not a
+  temp-file copy) and asserting every value under `"strategy_engine"`/
+  `"evidence_engine"` equals the corresponding
+  `StrategyEngineConfig()`/`EvidenceEngineConfig()` field's real default —
+  makes any future drift between the shipped file and the engine
+  defaults a same-commit, self-diagnosing failure, not something only
+  discovered indirectly via the 19 pre-existing tests that happen to load
+  the same file.
 
 **Score behavior (proving Option A introduced zero change):** no new
 test required — the existing `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py`
@@ -831,29 +958,88 @@ unmodified at Implement time.
 
 No adversarial finding requires a further revision to this Plan.
 
+### 21. Revision record — required minor revisions applied
+
+An independent implementation-readiness review of the version of this
+Plan finalized at §§13-20 above returned **"PHASE 5 PLAN APPROVED WITH
+REQUIRED MINOR REVISIONS"** (two required items; two optional
+clarifications; no blocking finding; Option A and every other
+substantive decision independently confirmed sound). Applied this pass,
+design unchanged:
+
+- **F1 (required):** §13's evidence trail gained a new item explicitly
+  quoting and reconciling ADR-035 §13's own `orb_fvg_score_weight`
+  table-row language ("0-1 (bounded, sums with other weights ≤ 1)") —
+  the strongest textual anchor for Option B, previously addressed only
+  via the weaker §5 prose. Reconciled without reopening the decision:
+  the phrase describes today's degenerate one-weight case, not a
+  standing requirement to manufacture additional fields.
+- **F2 (required):** §14 gained an explicit "Example-config
+  default-value contract" requiring the shipped
+  `titan_protocol_config.example.json`'s new `"strategy_engine"`/
+  `"evidence_engine"` sections to populate every field at its exact
+  Python default (no illustrative/non-default values), grounded in the
+  independently-verified fact that `write_config()`
+  (`tests/deployment_windows/_fixtures.py`) and `install.py` both
+  consume this same shipped file, and in the codebase's own established
+  exact-default convention (re-verified: the shipped `"risk"` section
+  matches `RiskEngineConfig()`'s real defaults field-by-field). §19
+  gained a corresponding required test asserting this parity directly,
+  rather than relying only on the broader regression suite to surface a
+  violation.
+- **F3 (optional, applied):** §15 item 2 gained a clarifying paragraph
+  explaining that the new feasibility check's placement (after the
+  existing individual per-field guards) is what makes its own
+  ceiling-division computation safe from division-by-zero/negative-
+  duration inputs — not merely a stylistic ordering choice.
+- **F4 (optional, applied):** §14's opening paragraph now describes the
+  `dataclasses.replace()`-over-defaults and `ValueError`→`ConfigError`
+  idioms as being *extended* to a new combination (wrapping a
+  `__post_init__`-raised `ValueError` from a `dataclasses.replace()`
+  call on `EvidenceEngineConfig`/`StrategyEngineConfig`), rather than
+  claiming an exact prior instance of that specific combination already
+  exists — the underlying safety property remains independently
+  confirmed regardless.
+
+**Adversarially re-read against these four changes specifically:** no
+contradiction introduced with §§13-20 — Option A, the 0.4/0.3/0.3
+literals, `orb_fvg_score_weight`'s runtime behavior, the 14-field
+inventory, field ownership, anchor-overlap ownership, the feasibility
+formula/boundary semantics, `DeploymentSettings` propagation, and the
+`start.py`/`health_check.py`/`install.py` requirements are all
+unchanged, re-confirmed by direct re-read of §§13-20 after applying F1-F4.
+No stale governance language was introduced; the header `Status` line
+and this section both now correctly describe the Plan as revised, not
+merely "finalized, pending review." No new Phase 6/7 scope was added —
+the OUT OF SCOPE list (§18) is unchanged.
+
 ## Validation
 
 (Not started — Implement phase. This Plan authorizes no implementation.)
 
 ---
 
-**Disposition: PHASE 5 PLAN FINALIZED — READY FOR INDEPENDENT
-IMPLEMENTATION-READINESS REVIEW.**
+**Disposition: PHASE 5 PLAN REVISED — IMPLEMENTATION AUTHORIZED.**
 
 Every implementation-significant question this task named has been
 resolved with evidence, not invented: the score-weight contract (Option
-A, §13, with a full textual trail across ADR-035 §5/§13/§17 and both
-already-accepted Phase 2/3 Plans); the configuration-loader's exact
-per-field contract (§14); all three §13 cross-field rules (§15); the
-final field inventory, confirming zero new dataclass fields anywhere
-(§16); preservation requirements, satisfied by construction (§17); a
+A, §13, now including explicit reconciliation of ADR-035 §13's own
+table-row language, per F1); the configuration-loader's exact per-field
+contract, including the required example-config default-value parity
+contract (§14, per F2); all three §13 cross-field rules, including the
+division-safety ordering rationale (§15, per F3); the final field
+inventory, confirming zero new dataclass fields anywhere (§16);
+preservation requirements, satisfied by construction (§17); a
 REQUIRED/POSSIBLY-REQUIRED/READ-ONLY/OUT-OF-SCOPE file-impact matrix
-(§18); a full test/validation matrix (§19); and an adversarial re-read
-that surfaced no further revision (§20). No Accepted-ADR contradiction
-was found — ADR-035's own text already authorizes every decision made
-here, and no governance action (amendment or otherwise) is required
-before Implement.
+(§18); a full test/validation matrix including the new example-config
+parity test (§19); an adversarial re-read that surfaced no further
+revision (§20); and a revision record documenting exactly how the
+independent review's two required and two optional items were applied
+without reopening any settled design decision (§21). No Accepted-ADR
+contradiction was found — ADR-035's own text already authorizes every
+decision made here, and no governance action (amendment or otherwise)
+is required before Implement.
 
-**Phase 5 implementation remains prohibited** until this Plan receives
-its own independent implementation-readiness review. **Phase 6 and
-Phase 7 remain unauthorized regardless of this Plan's disposition.**
+**Phase 5 implementation is authorized against this revised Plan.**
+**Phase 6 and Phase 7 remain separately gated and unauthorized
+regardless of this disposition.**
