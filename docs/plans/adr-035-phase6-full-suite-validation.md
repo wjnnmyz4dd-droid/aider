@@ -1,11 +1,23 @@
 # Plan: ADR-035 Phase 6 — Full-Suite Validation
 
-Status: **PLAN FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS
-REVIEW.** Research (below) is complete. All four Research-phase open
-questions (§5) are now resolved with direct repository evidence in the
-Plan section (§P1-P4). Implementation is **not authorized** by this
-Plan-finalization pass — it requires its own independent
-implementation-readiness review first, per this project's RPI gate.
+Status: **PLAN REVISED — IMPLEMENTATION AUTHORIZED.** An independent
+implementation-readiness review of the finalized Plan (commit `68e977e`)
+returned "PHASE 6 PLAN APPROVED WITH REQUIRED MINOR REVISIONS" — two
+findings, both resolved in this pass: **F1** (`deployment_windows/install.py`'s
+own `StrategyEngine` construction site was not inventoried by the file-impact
+matrix — resolved in §P3a: confirmed construction-only, explicitly
+recorded as NO CHANGE REQUIRED, not silently omitted); **F2** (the §15/
+integration test matrix required ORB to be pair-eligible to exercise its
+own qualification logic through the real `StrategyEngine`, but the Plan
+never specified the test-only mechanism that achieves this without
+touching the production default — resolved in §P7a: the existing
+`make_config(approved_pairs_by_strategy=...)` override mechanism is now
+specified explicitly, with the exact test items that require it named).
+No design decision already settled in P1-P3/P6 was reopened — both
+findings were documentation/specification gaps, not production-code
+defects, and both are addressed without changing anything about the
+already-verified-sound registration/eligibility/store/exception-safety
+design.
 
 Owner (Research phase): Software Architect (ADR-035/ADR-025/ADR-026
 owner precedent, unchanged from Phases 2-5).
@@ -18,8 +30,9 @@ Touched components (final, per the Plan section's file-impact matrix,
 registry passed to `StrategyEngine`), and new test coverage only — no
 existing test file is modified (§P4 supersedes Research's provisional
 guess that `test_engine.py`/`test_regression.py` would need updating).
-**Not in scope:** the anchor hour/minute range-validation residual risk
-flagged in the Phase 5 conformance review (a separate,
+`deployment_windows/install.py` is explicitly READ ONLY / NO CHANGE
+REQUIRED (§P3a). **Not in scope:** the anchor hour/minute range-validation
+residual risk flagged in the Phase 5 conformance review (a separate,
 independently-scoped follow-up, explicitly excluded, §P13), Phase 7's
 formation-time news-blackout closure, `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
 (left unchanged, §P2), `config_loader.py`/the example JSON (no change
@@ -642,6 +655,63 @@ pass): `build_default_registry` from `titan_protocol.strategy_engine.strategies`
 `StrategyStateStoreConfig` from `titan_protocol.strategy_state_store.config`,
 `OrbQualificationStore` from `titan_protocol.strategy_state_store.store`.
 
+### P3a. `deployment_windows/install.py`'s own `StrategyEngine` construction site (resolves independent-review finding F1)
+
+A repo-wide grep for every production call site of `StrategyEngine(`/
+`build_default_registry(` (re-run this pass, not reused from Research or
+the prior Plan draft) surfaces a **third** production construction site
+neither the original Plan nor the Research artifact inventoried:
+`deployment_windows/install.py::step_verify_runtime()`, line 301:
+`strategy_engine = StrategyEngine(settings.strategy_config)`.
+
+**Direct re-read of `step_verify_runtime()` in full (`install.py` lines
+290-312):** the function constructs `EvidenceEngine`, `MarketIntelligenceEngine`,
+`StrategyEngine`, `RiskEngine`, `ComplianceEngine`, and a `RuntimeOrchestrator`
+inside one `try/except Exception`, and returns `StepReport("Verify Runtime",
+_OK, "Constructed all 5 core engines (Evidence, Market Intelligence,
+Strategy, Risk, Compliance) and the RuntimeOrchestrator with no error")`
+on success. It **never calls `.evaluate()`/`.evaluate_batch()`** on any
+engine, never touches `strategy_engine.registry` after construction, and
+its own success message explicitly names its scope as "5 core engines" —
+this is a one-shot, construction-only smoke check exercised during
+`install.py`'s pre-flight verification, not a code path that ever
+qualifies a strategy or reaches the selection cascade.
+
+**Decision: leave `install.py` unchanged. Explicitly recorded as READ
+ONLY / NO CHANGE REQUIRED**, for the reason above — this is not "changed
+for symmetry with `start.py`," it is a considered non-change grounded in
+what the function actually does:
+- `StrategyEngine.__init__` never touches `orb_qualification_store` or
+  any store — it only stores `self.registry` (either the caller-supplied
+  one or the zero-argument `build_default_registry()` default, §P1).
+  Construction cannot fail differently with ORB registered vs. not,
+  since ORB's own constructor is never invoked here at all under the
+  unchanged zero-argument path.
+- `step_verify_runtime()`'s own purpose (per its literal success message)
+  is to prove the five *core engines* construct without error — it is
+  not, and was never, a check that ORB is registered, eligible, or
+  reachable. Extending it to construct a real `OrbQualificationStore`
+  and a six-strategy registry would be new scope this function's own
+  stated purpose does not call for, and would require `install.py` to
+  also decide a state-file path and directory-creation sequencing
+  identical to `start.py`'s (§P3) purely to duplicate a check `start.py`
+  itself already performs at real startup — CLAUDE.md §6's "smallest
+  correct change" and "tolerate... before extracting an abstraction"
+  both argue against duplicating that wiring here for a construction-only
+  smoke test that has no way to observe ORB's behavior regardless.
+- No other file in `install.py` references `StrategyRegistry`,
+  `build_default_registry`, or `OrbQualificationStore` (confirmed by
+  grep) — this is the only surface in that file this finding could
+  possibly touch, and it does not need to.
+
+**File-impact matrix correction:** `deployment_windows/install.py` is
+added to §P11's table as **READ ONLY / NO CHANGE REQUIRED**, with this
+reasoning, rather than being absent from the matrix as it was in the
+prior Plan draft. No other Plan claim that "all `StrategyEngine`
+production construction sites were inventoried" survives unqualified —
+this section is the corrected, complete inventory of all three
+(`engine.py`'s own default-substitution line, `start.py`, `install.py`).
+
 ### P4. Resolution — existing five-strategy test assumptions (Research question 4)
 
 **Refined conclusion, superseding Research's provisional guess:**
@@ -732,6 +802,88 @@ qualifications synthetically" adversarial concern, §P9).
 | Broker time differences | No new ORB-specific test — explicitly another package's concern (`market_data_ingestion`, ADR-033), confirmed out of ADR-035's own scope by §15's text | N/A (out of scope) |
 | Partial trading days / early close | New test: an early-close day with `MarketSafetyInputs.early_closes` set, confirming the range never forms and ORB fails closed to `NOT_QUALIFIED`, five legacy strategies unaffected | Integration (new) |
 
+Every "Integration (new)" row above requires ORB to be pair-eligible for
+at least the test's own fixture pair — under the unchanged production
+default (P2), `check_eligibility()` intercepts every one of these cases
+at `orb_breakout.py` line 78 before any of the row's own logic (opening
+range, FVG, breakout distance, lockout) ever runs. **§P7a, immediately
+below, specifies the exact, test-only mechanism every one of these rows
+must use** — none of them are implementable as literally described
+without it.
+
+### P7a. Test-only ORB eligibility mechanism (resolves independent-review finding F2)
+
+**The production default must never change.** `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+(`strategy_engine/config.py`) keeps zero `OPENING_RANGE_BREAKOUT` entry,
+exactly as P2 resolved — this section specifies how *tests* reach past
+that gate, never how production does.
+
+**Mechanism, re-confirmed sufficient by direct inspection this pass:**
+`tests/titan_protocol/strategy_engine/_fixtures.py::make_config(**overrides)`
+(read in full again this pass) is exactly `return StrategyEngineConfig(**overrides)`
+— an unrestricted passthrough to every field the dataclass exposes,
+already the established idiom every existing test in this file uses to
+override any `StrategyEngineConfig` field without touching a shared
+default. No change to `_fixtures.py` is needed; `make_config` already
+accepts `approved_pairs_by_strategy` today. Any new Phase 6 test that
+needs ORB to be reachable constructs its own config exactly like this,
+entirely inside the new test module, never inside `_fixtures.py` or any
+production file:
+
+```python
+from titan_protocol.strategy_engine.config import DEFAULT_APPROVED_PAIRS_BY_STRATEGY
+from titan_protocol.strategy_engine.models import StrategyId
+
+_TEST_ORB_APPROVED_PAIRS = DEFAULT_APPROVED_PAIRS_BY_STRATEGY + (
+    (StrategyId.OPENING_RANGE_BREAKOUT, ("EURUSD",)),
+)
+
+config = make_config(approved_pairs_by_strategy=_TEST_ORB_APPROVED_PAIRS)
+```
+
+This starts from the *real* `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` tuple
+(imported, not re-typed by hand, so it can never silently drift from
+the production default it's supposed to extend) and appends exactly one
+additional entry, for exactly one test-chosen pair. It is a plain
+Python value passed into a test-local `StrategyEngineConfig` instance —
+it cannot leak into `deployment_windows/config_loader.py`, the example
+JSON, or any deployment artifact, because nothing in this mechanism
+writes to or reads from any of those; the override exists only for the
+lifetime of the test's own `config` object.
+
+**The three-way test/production separation this Plan requires, stated
+explicitly:**
+1. **Production** (`start.py`, real installs): `build_default_registry(store)`
+   registers ORB; `StrategyEngineConfig()`'s own default
+   `approved_pairs_by_strategy` (i.e. `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`,
+   unmodified) leaves ORB `NOT_ELIGIBLE` for every pair. No test file,
+   fixture, or override touches this.
+2. **Tests that verify the production default itself** (§P8 item 6):
+   must construct `StrategyEngineConfig()`/`make_config()` with **no**
+   `approved_pairs_by_strategy` override — i.e. the real, unmodified
+   default — and assert ORB is `NOT_ELIGIBLE`. Using the P7a override in
+   this specific test would defeat its own purpose (it would prove
+   nothing about the production default), so this test is explicitly
+   the one place the override must **not** appear.
+3. **Tests that exercise ORB's breakout/FVG/lockout logic** (every
+   "Integration (new)" row in §P7's table, plus §P8 items 2, 7, 8): use
+   the §P7a override, applied only to that test's own `config` object,
+   to reach past `check_eligibility()` for one chosen test pair — while
+   still constructing the registry via the real
+   `build_default_registry(store)` factory (never a hand-assembled
+   `StrategyRegistry()`), per §P4's own requirement.
+
+**Exact P7/P8 items requiring the §P7a override:** §P7's rows for "Gap
+open before/inside range window," "Missing candles / temporal gap,"
+"Session reconnect mid-range," "Holiday sessions," "Multiple ranges /
+anchor overlap," and "Partial trading days / early close" (six of the
+eight table rows — DST and broker-time-differences are out of scope
+and need no test at all, §P7); and §P8 items 2 (real six-strategy
+regression proof), 7 (the same six §P7 rows), and 8 (lockout/persistence
+through the real engine). §P8 item 6 (the `NOT_ELIGIBLE`-under-default
+proof) is the one item that must explicitly **not** use it, per point 2
+above.
+
 ### P8. Required new test coverage (summary list)
 
 1. `build_default_registry(store)` returns exactly 6 strategies,
@@ -744,7 +896,11 @@ qualifications synthetically" adversarial concern, §P9).
    the same evidence/MI/config inputs — the literal regression proof
    §17 asks for, at the behavioral level (in addition to the file-level
    `git diff --stat` proof, which needs no test since it is a source
-   fact, not a runtime one).
+   fact, not a runtime one). This item does **not** need the §P7a
+   override — the unmodified production default is sufficient here,
+   since the point is proving the *other five* strategies are
+   unaffected by ORB's mere presence, regardless of ORB's own
+   eligibility outcome.
 3. `git diff --stat` against the pre-Phase-6 baseline shows zero change
    to any of the five legacy strategy files (a Validation-phase check,
    recorded here as a Plan requirement so Implement knows to verify it).
@@ -755,13 +911,16 @@ qualifications synthetically" adversarial concern, §P9).
    `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, evaluate any pair, and assert
    ORB's own qualification result is `NOT_ELIGIBLE` — proving Phase 6's
    stated zero-blast-radius consequence rather than leaving it assumed.
-7. §15 edge-case tests per §P7's table.
+7. §15 edge-case tests per §P7's table — using the §P7a test-only
+   eligibility override for the six rows §P7a names.
 8. A lockout/persistence test through the *real* engine construction
    path (not `_OrbTestCase`'s existing unit-level store) — confirming
    `try_consume()`'s existing max-qualifications-per-range behavior
    still holds when ORB is reached via `build_default_registry(store)`
    rather than constructed directly, i.e. that no wiring step silently
-   substitutes a different/fresh store mid-test.
+   substitutes a different/fresh store mid-test. Requires the §P7a
+   override (ORB must be eligible for the test's chosen pair, or
+   `try_consume()` is never reached at all).
 
 ### P9. Preservation requirements
 
@@ -807,6 +966,7 @@ no allowlist change either.
 | `titan_protocol/strategy_engine/strategies/orb_breakout.py` | **No change** | Explicitly excluded |
 | `titan_protocol/strategy_state_store/*.py` | **No change** | Explicitly excluded |
 | `titan_protocol/strategy_engine/eligibility.py`, `selection.py` | **No change** | Explicitly excluded |
+| `deployment_windows/install.py` | **No change** — `step_verify_runtime()`'s `StrategyEngine(settings.strategy_config)` (line 301) is construction-only, never calls `.evaluate()`, and its own success message scopes it to "5 core engines"; extending it to the six-strategy path would duplicate `start.py`'s wiring for a check that can't observe ORB's behavior regardless (§P3a) | READ ONLY / NO CHANGE REQUIRED (§P3a, resolves independent-review finding F1) |
 | Five legacy strategy files | **No change** — regression-proof target | Explicitly excluded |
 | `tests/titan_protocol/strategy_engine/test_engine.py`, `test_regression.py` | **No change** (P4, superseding Research's guess) | Explicitly excluded |
 | Any ADR file | **No change** | Explicitly excluded |
@@ -919,6 +1079,66 @@ git diff --stat <phase-6-base-commit> HEAD -- titan_protocol/strategy_engine/str
 No new issue was found in this adversarial pass beyond what P1-P13
 already resolve. This Plan is assessed as internally consistent and
 fully evidence-grounded against current repository state.
+
+### P15. Post-revision re-check (F1/F2 applied) — confirms no new blocker
+
+Performed after §P3a/§P7a were added, specifically re-checking each item
+the independent review's revision request named:
+
+- `build_default_registry()` with no store: still exactly the five
+  legacy strategies — unchanged by §P3a/§P7a, neither of which touches
+  `build_default_registry()`'s own body beyond P1's already-approved
+  `if orb_qualification_store is not None` gate.
+- `build_default_registry(store)`: still registers exactly six
+  strategies (five legacy, unconditionally, plus ORB, conditionally on
+  `store`) — unchanged.
+- Production `start.py` still supplies the one real
+  `OrbQualificationStore` (§P3), now with `install.py`'s parallel
+  construction site explicitly dispositioned (§P3a) rather than left
+  unaddressed — no second construction path was introduced.
+- Production ORB eligibility: still `NOT_ELIGIBLE` for every pair under
+  the unchanged `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` — §P7a's override
+  is textually confined to test-module-local `config` objects and is
+  never referenced from any production file in this Plan.
+- Test-only eligibility cannot leak into production: confirmed by
+  construction — §P7a's override lives in a Python literal inside a
+  test module, imports the real `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+  rather than re-typing it (so it can only ever *extend*, never
+  silently diverge from, the true production default), and is never
+  passed to `config_loader.py`, `install.py`, or `start.py` anywhere in
+  this Plan.
+- Qualifying ORB behavior, FVG score-only behavior, and lockout are now
+  reachable in the designated tests: §P7a's override makes ORB eligible
+  for one test-chosen pair, after which `orb_breakout.py`'s existing
+  breakout/FVG/lockout logic (unmodified, §P9) runs exactly as it does
+  today when called directly — the override changes only which pairs
+  clear the eligibility gate, not any qualification logic itself.
+- The same `OrbQualificationStore` instance reaches
+  `OrbBreakoutStrategy`: unchanged from §P1/§P3 — one instance,
+  constructed once, passed into `build_default_registry(store)`, which
+  passes it directly into `OrbBreakoutStrategy(store)`'s constructor;
+  §P7a's config override is orthogonal to this (it changes eligibility
+  data, not store wiring) and does not introduce a second store anywhere.
+- `install.py`'s construction site: now has an explicit, evidence-based
+  recorded disposition (§P3a, READ ONLY / NO CHANGE REQUIRED) instead of
+  being absent from the Plan.
+- No other `StrategyEngine`/`build_default_registry` production
+  construction site remains unaccounted for: the repo-wide re-grep this
+  pass found exactly three (`engine.py`'s own default-substitution line,
+  `start.py`, `install.py`) — all three now have an explicit disposition
+  in this Plan (P1/P3, P3, P3a respectively).
+- All five legacy strategy files remain untouched: §P3a/§P7a add no new
+  reference to any of them; the file-impact matrix (§P11) still lists
+  them as the zero-diff regression target.
+- Phase 7 and the anchor hour/minute validation follow-up remain out of
+  scope: neither §P3a nor §P7a references either; §P13's exclusions are
+  unchanged and still accurate.
+
+No design decision already settled in P1-P3/P6 was reopened by this
+revision — both findings were resolved by adding explicit specification
+(§P3a, §P7a) and one file-impact-matrix row, not by changing any
+already-verified production-code design. No new blocker was discovered
+in this re-check.
 
 ## Validation
 
