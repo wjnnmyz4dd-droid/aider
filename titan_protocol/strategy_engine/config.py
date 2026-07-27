@@ -123,6 +123,12 @@ class StrategyEngineConfig:
             raise ValueError(
                 f"orb_fvg_score_weight must be within [0, 1], got {self.orb_fvg_score_weight}"
             )
+        # Satisfies ADR-035 §13's weight-sum-bound requirement: this is the only
+        # score-formula weight ADR-035 §13's own Configuration table ever names as
+        # a config field (Phase 2/3 Plans, already Accepted, explicitly declined
+        # to invent additional fields for the formula's other three literal
+        # coefficients); for the one weight the ADR's authorized field set
+        # contains, this per-field bound is the sum bound (Phase 5, ADR-035 §17).
         if self.orb_min_range_atr_ratio <= 0:
             raise ValueError(
                 f"orb_min_range_atr_ratio must be > 0, got {self.orb_min_range_atr_ratio}"

@@ -118,7 +118,6 @@ from titan_protocol.compliance_state_store.config import ComplianceStateStoreCon
 from titan_protocol.compliance_state_store.models import CorruptStateError, PersistedComplianceState
 from titan_protocol.compliance_state_store.store import ComplianceStateStore
 from titan_protocol.compliance_state_store.store import to_account_state as _compliance_state_to_account_state
-from titan_protocol.evidence_engine.config import EvidenceEngineConfig
 from titan_protocol.evidence_engine.engine import EvidenceEngine
 from titan_protocol.market_data_ingestion.config import MarketDataIngestionConfig
 from titan_protocol.market_data_ingestion.engine import MarketDataIngestionEngine
@@ -141,7 +140,6 @@ from titan_protocol.runtime.in_flight_store import InFlightCommandStore, InFligh
 from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.models import CycleOutcome
 from titan_protocol.runtime.validation import validate_profile
-from titan_protocol.strategy_engine.config import StrategyEngineConfig
 from titan_protocol.strategy_engine.engine import StrategyEngine
 
 from config_loader import ConfigError, build_trading_profile, is_process_alive, load_settings
@@ -1123,7 +1121,7 @@ def run_foreground(config_path: Path) -> int:
 
     logger.info("Titan Protocol deployment layer starting (pid=%s, config=%s)", os.getpid(), config_path)
 
-    strategy_config = StrategyEngineConfig()
+    strategy_config = settings.strategy_config
     try:
         profile = build_trading_profile(settings)
     except ConfigError as exc:
@@ -1191,7 +1189,7 @@ def run_foreground(config_path: Path) -> int:
     server_thread.start()
     logger.info("Bridge HTTP service listening on %s:%s", settings.bridge_host, active_bridge_port)
 
-    evidence_engine = EvidenceEngine(EvidenceEngineConfig())
+    evidence_engine = EvidenceEngine(settings.evidence_config)
     market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
     strategy_engine = StrategyEngine(strategy_config)
     risk_engine = RiskEngine(settings.risk_config)

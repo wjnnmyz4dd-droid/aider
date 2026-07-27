@@ -9,7 +9,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.deployment_windows._fixtures import write_config
+from tests.deployment_windows._fixtures import load_example_config, write_config
+from titan_protocol.evidence_engine.config import EvidenceEngineConfig
+from titan_protocol.evidence_engine.models import SessionName
+from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
 from config_loader import ConfigError, load_settings
 
@@ -159,6 +162,238 @@ class TestFlatAccountEquityToleranceConfigurability(unittest.TestCase):
             config_path = write_config(Path(tmp), compliance_overrides={"flat_account_equity_tolerance": -0.5})
             with self.assertRaises(ConfigError):
                 load_settings(config_path)
+
+
+class TestStrategyEngineConfigurability(unittest.TestCase):
+    """ADR-035 Phase 5: `strategy_engine.orb_*` fields wired through
+    `StrategyEngineConfig`, and actually reaching `DeploymentSettings`,
+    not merely parsed and discarded."""
+
+    def test_defaults_when_section_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), remove_sections=["strategy_engine"])
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config, StrategyEngineConfig())
+
+    def test_defaults_when_key_absent_within_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={})
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config, StrategyEngineConfig())
+
+    def test_explicit_value_is_honored_and_reaches_deployment_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp), strategy_engine_overrides={"orb_max_spread_pips": 5.0, "orb_min_confirmation_candles": 2},
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config.orb_max_spread_pips, 5.0)
+            self.assertEqual(settings.strategy_config.orb_min_confirmation_candles, 2)
+            # Every other field keeps its default -- only the two overridden above changed.
+            self.assertEqual(settings.strategy_config.orb_min_liquidity_score, StrategyEngineConfig().orb_min_liquidity_score)
+
+    def test_invalid_value_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={"orb_max_spread_pips": 0.0})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_malformed_type_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={"orb_min_confirmation_candles": "2"})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_orb_fvg_score_weight_lower_boundary_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={"orb_fvg_score_weight": 0.0})
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config.orb_fvg_score_weight, 0.0)
+
+    def test_orb_fvg_score_weight_upper_boundary_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={"orb_fvg_score_weight": 1.0})
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config.orb_fvg_score_weight, 1.0)
+
+    def test_orb_fvg_score_weight_above_upper_boundary_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={"orb_fvg_score_weight": 1.01})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_orb_fvg_score_weight_below_lower_boundary_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), strategy_engine_overrides={"orb_fvg_score_weight": -0.01})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+
+class TestEvidenceEngineConfigurability(unittest.TestCase):
+    """ADR-035 Phase 5: `evidence_engine.opening_range_*` fields wired
+    through `EvidenceEngineConfig`, and actually reaching
+    `DeploymentSettings`."""
+
+    def test_defaults_when_section_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), remove_sections=["evidence_engine"])
+            settings = load_settings(config_path)
+            self.assertEqual(settings.evidence_config, EvidenceEngineConfig())
+
+    def test_explicit_value_is_honored_and_reaches_deployment_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={"opening_range_duration_minutes": 60, "opening_range_min_bars": 2},
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(settings.evidence_config.opening_range_duration_minutes, 60)
+            self.assertEqual(settings.evidence_config.opening_range_min_bars, 2)
+            self.assertEqual(
+                settings.evidence_config.expected_bar_interval_seconds, EvidenceEngineConfig().expected_bar_interval_seconds
+            )
+
+    def test_invalid_duration_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), evidence_engine_overrides={"opening_range_duration_minutes": 0})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_bar_count_feasibility_exact_boundary_passes_through_deployment_config(self):
+        # duration=30min=1800s, interval=300s (both defaults) -> max_possible_bars=6.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), evidence_engine_overrides={"opening_range_min_bars": 6})
+            settings = load_settings(config_path)
+            self.assertEqual(settings.evidence_config.opening_range_min_bars, 6)
+
+    def test_bar_count_one_above_maximum_fails_closed_through_deployment_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), evidence_engine_overrides={"opening_range_min_bars": 7})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_exact_division_duration_interval_boundary_through_deployment_config(self):
+        # duration=22min=1320s, interval=300s -> ceil(1320/300)=5.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={"opening_range_duration_minutes": 22, "opening_range_min_bars": 5},
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(settings.evidence_config.opening_range_min_bars, 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={"opening_range_duration_minutes": 22, "opening_range_min_bars": 6},
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+
+class TestOpeningRangeAnchorsConfigurability(unittest.TestCase):
+    """ADR-035 Phase 5: `opening_range_anchors` JSON parsing and the
+    already-existing `EvidenceEngineConfig` anchor-overlap check, proven
+    reachable end-to-end through `load_settings()`, not merely at the
+    dataclass level (already proven by `test_opening_range.py`)."""
+
+    def test_valid_single_anchor_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={
+                    "opening_range_anchors": [{"session": "LONDON", "start_hour_utc": 7, "start_minute_utc": 0}],
+                },
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(
+                settings.evidence_config.opening_range_anchors, ((SessionName.LONDON, 7, 0),),
+            )
+
+    def test_unknown_session_name_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={
+                    "opening_range_anchors": [{"session": "NOT_A_SESSION", "start_hour_utc": 7, "start_minute_utc": 0}],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_overlapping_anchors_fail_closed_at_startup_through_the_loader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={
+                    "opening_range_anchors": [
+                        {"session": "LONDON", "start_hour_utc": 7, "start_minute_utc": 0},
+                        {"session": "LONDON", "start_hour_utc": 7, "start_minute_utc": 15},
+                    ],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_list_anchors_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), evidence_engine_overrides={"opening_range_anchors": "not-a-list"})
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_integer_start_hour_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={
+                    "opening_range_anchors": [{"session": "LONDON", "start_hour_utc": "7", "start_minute_utc": 0}],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+
+class TestBackwardCompatibilityForOmittedNewSections(unittest.TestCase):
+    """A pre-Phase-5 config file (neither new section present) must
+    produce byte-identical `StrategyEngineConfig`/`EvidenceEngineConfig`
+    objects to today's bare-default construction."""
+
+    def test_both_sections_absent_produces_pure_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), remove_sections=["strategy_engine", "evidence_engine"])
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config, StrategyEngineConfig())
+            self.assertEqual(settings.evidence_config, EvidenceEngineConfig())
+
+
+class TestExampleConfigDefaultParity(unittest.TestCase):
+    """ADR-035 Phase 5 (required by the finalized Plan §14/§19): the
+    shipped example config's new sections must equal the engine
+    defaults exactly, so drift is a same-commit, self-diagnosing test
+    failure rather than something only discovered indirectly."""
+
+    def test_shipped_strategy_engine_section_equals_python_defaults(self):
+        example = load_example_config()
+        defaults = StrategyEngineConfig()
+        for field in (
+            "orb_min_breakout_distance_atr_multiple", "orb_min_body_to_range_ratio",
+            "orb_min_confirmation_candles", "orb_max_qualifications_per_range",
+            "orb_fvg_max_age_bars", "orb_fvg_min_size_atr_multiple", "orb_fvg_score_weight",
+            "orb_min_range_atr_ratio", "orb_max_spread_pips", "orb_min_liquidity_score",
+        ):
+            self.assertEqual(
+                example["strategy_engine"][field], getattr(defaults, field),
+                f"strategy_engine.{field} in the shipped example does not match StrategyEngineConfig()'s default",
+            )
+
+    def test_shipped_evidence_engine_section_equals_python_defaults(self):
+        example = load_example_config()
+        defaults = EvidenceEngineConfig()
+        self.assertEqual(tuple(example["evidence_engine"]["opening_range_anchors"]), defaults.opening_range_anchors)
+        for field in ("opening_range_duration_minutes", "opening_range_min_bars", "expected_bar_interval_seconds"):
+            self.assertEqual(
+                example["evidence_engine"][field], getattr(defaults, field),
+                f"evidence_engine.{field} in the shipped example does not match EvidenceEngineConfig()'s default",
+            )
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_DIR = REPO_ROOT / "deployment_windows"
@@ -27,13 +27,20 @@ def load_example_config() -> Dict[str, Any]:
 def write_config(
     tmp_path: Path, overrides: Optional[Dict[str, Any]] = None,
     compliance_overrides: Optional[Dict[str, Any]] = None,
+    strategy_engine_overrides: Optional[Dict[str, Any]] = None,
+    evidence_engine_overrides: Optional[Dict[str, Any]] = None,
+    remove_sections: Optional[Sequence[str]] = None,
 ) -> Path:
     """Writes a real config file (based on the shipped example) with
-    `overrides` deep-merged into `bridge` and `compliance_overrides`
-    deep-merged into `compliance` (the only two sections these tests
-    vary), and points `bridge.api_key_env_var` at a real, always-set
-    test environment variable so `load_settings()` never fails for an
-    unrelated secret-resolution reason."""
+    `overrides` deep-merged into `bridge`, `compliance_overrides` deep-
+    merged into `compliance`, `strategy_engine_overrides` deep-merged
+    into `strategy_engine` (ADR-035 Phase 5), and `evidence_engine_overrides`
+    deep-merged into `evidence_engine` (ADR-035 Phase 5) -- points
+    `bridge.api_key_env_var` at a real, always-set test environment
+    variable so `load_settings()` never fails for an unrelated secret-
+    resolution reason. `remove_sections` deletes named top-level sections
+    entirely (e.g. `["strategy_engine", "evidence_engine"]`) to test
+    behavior when a pre-Phase-5 config file omits them."""
     config = load_example_config()
     os.environ[TEST_API_KEY_ENV_VAR] = "test-key-value"
     config["bridge"]["api_key_env_var"] = TEST_API_KEY_ENV_VAR
@@ -41,6 +48,12 @@ def write_config(
         config["bridge"].update(overrides)
     if compliance_overrides:
         config["compliance"].update(compliance_overrides)
+    if strategy_engine_overrides:
+        config["strategy_engine"].update(strategy_engine_overrides)
+    if evidence_engine_overrides:
+        config["evidence_engine"].update(evidence_engine_overrides)
+    for section in remove_sections or ():
+        config.pop(section, None)
     path = tmp_path / "titan_protocol_config.json"
     path.write_text(json.dumps(config), encoding="utf-8")
     return path

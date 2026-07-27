@@ -59,7 +59,6 @@ sys.path.insert(0, str(_HERE))
 import install_mt5_files as install_mt5_module
 from config_loader import ConfigError, build_trading_profile, generated_secret_path, is_process_alive, load_settings
 from titan_protocol.runtime.validation import validate_profile
-from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
 _HEALTH_JSON_STALE_AFTER_SECONDS = 30.0  # 6x the heartbeat loop's own interval
 
@@ -187,7 +186,7 @@ def run(config_path: Path) -> int:
         checks.append(("trading profile valid", False, str(exc)))
         profile = None
     if profile is not None:
-        result = validate_profile(profile, StrategyEngineConfig(), settings.compliance_config)
+        result = validate_profile(profile, settings.strategy_config, settings.compliance_config)
         checks.append(("trading profile valid", result.valid, f"{profile.profile_id}: {result.issues if not result.valid else 'ok'}"))
 
     env_var_name = settings.api_key_env_var_name

@@ -47,13 +47,37 @@
 
   "trading_profile": {
     "_maps_to": "titan_protocol.runtime.profiles",
-    "_note": "selected_profile must be exactly one of the 6 factory names below, or \"custom\" (custom requires editing start.py's build_custom_profile() directly -- a config file alone can't express an explicit allowed_pairs/allowed_strategies list). Session windows and strategy eligibility are governed by the selected profile itself (titan_protocol/runtime/profiles.py) and by titan_protocol/strategy_engine/config.py -- not independently overridable from this file.",
+    "_note": "selected_profile must be exactly one of the 6 factory names below, or \"custom\" (custom requires editing start.py's build_custom_profile() directly -- a config file alone can't express an explicit allowed_pairs/allowed_strategies list). Session windows are governed by the selected profile itself (titan_protocol/runtime/profiles.py). Strategy eligibility/thresholds are governed by titan_protocol/strategy_engine/config.py -- the five legacy strategies' own thresholds are not independently overridable from this file; Opening Range Breakout's own orb_* fields are (ADR-035 Phase 5, see strategy_engine/evidence_engine below) -- ORB itself remains unregistered until a later phase, so these fields currently have no observable effect.",
     "_valid_profiles": [
       "london_conservative", "london_aggressive",
       "new_york_conservative", "new_york_aggressive",
       "london_and_new_york", "custom"
     ],
     "selected_profile": "london_conservative"
+  },
+
+  "strategy_engine": {
+    "_maps_to": "titan_protocol.strategy_engine.config.StrategyEngineConfig (partial -- only Opening Range Breakout's own orb_* fields, ADR-035 §13; the five legacy strategies' own thresholds keep their engine defaults unless you edit start.py's StrategyEngineConfig(...) call)",
+    "_note": "Every value below equals the field's own Python dataclass default (ADR-035 Phase 5) -- deleting this section entirely, or any key in it, falls back to the identical engine default. ORB remains unregistered until a later phase (ADR-035 §17), so none of these fields have any observable effect yet.",
+    "orb_min_breakout_distance_atr_multiple": 0.15,
+    "orb_min_body_to_range_ratio": 0.5,
+    "orb_min_confirmation_candles": 1,
+    "orb_max_qualifications_per_range": 1,
+    "orb_fvg_max_age_bars": 10,
+    "orb_fvg_min_size_atr_multiple": 0.1,
+    "orb_fvg_score_weight": 0.15,
+    "orb_min_range_atr_ratio": 0.5,
+    "orb_max_spread_pips": 3.0,
+    "orb_min_liquidity_score": 60.0
+  },
+
+  "evidence_engine": {
+    "_maps_to": "titan_protocol.evidence_engine.config.EvidenceEngineConfig (partial -- only the opening-range fields ADR-035 §13 names, mapped to their real EvidenceEngineConfig owners; every other field, e.g. the Evidence scoring weights, keeps its engine default unless you edit start.py's EvidenceEngineConfig(...) call)",
+    "_note": "Every value below equals the field's own Python dataclass default (ADR-035 Phase 5) -- deleting this section entirely, or any key in it, falls back to the identical engine default. opening_range_anchors defaults to an empty list, meaning Opening Range Breakout's opening-range mechanism is inert (fails closed) until an operator configures at least one anchor -- and, as above, ORB itself remains unregistered until a later phase regardless.",
+    "opening_range_anchors": [],
+    "opening_range_duration_minutes": 30,
+    "opening_range_min_bars": 3,
+    "expected_bar_interval_seconds": 300
   },
 
   "risk": {

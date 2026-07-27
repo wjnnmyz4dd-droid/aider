@@ -129,7 +129,13 @@ class TestBoundaryConditions(unittest.TestCase):
         bars = _bars_at([0, 10, 20], highs=[1.1, 1.1, 1.1], lows=[1.0, 1.0, 1.0])
         config = make_config(
             opening_range_anchors=((SessionName.LONDON_NEW_YORK_OVERLAP, ANCHOR_HOUR, ANCHOR_MINUTE),),
-            opening_range_duration_minutes=30,
+            # ADR-035 Phase 5: duration widened from 30 to 180 minutes so this
+            # fixture's own deliberately-large expected_bar_interval_seconds
+            # (still large enough to isolate the count check from the gap
+            # check -- every real bar spacing here stays well under 3600s)
+            # remains feasible under the new opening_range_min_bars/duration
+            # cross-field check (max_possible_bars=ceil(10800/3600)=3).
+            opening_range_duration_minutes=180,
             opening_range_min_bars=3,
             expected_bar_interval_seconds=3600,  # large -- isolates the count check from the gap check
         )
@@ -141,7 +147,8 @@ class TestBoundaryConditions(unittest.TestCase):
         bars = _bars_at([0, 25], highs=[1.1, 1.1], lows=[1.0, 1.0])
         config = make_config(
             opening_range_anchors=((SessionName.LONDON_NEW_YORK_OVERLAP, ANCHOR_HOUR, ANCHOR_MINUTE),),
-            opening_range_duration_minutes=30,
+            # ADR-035 Phase 5: same widening as above, same reason.
+            opening_range_duration_minutes=180,
             opening_range_min_bars=3,
             expected_bar_interval_seconds=3600,  # large -- isolates the count check from the gap check
         )
@@ -232,6 +239,33 @@ class TestNegativeCases(unittest.TestCase):
     def test_invalid_expected_interval_raises_value_error(self):
         with self.assertRaises(ValueError):
             make_config(expected_bar_interval_seconds=0)
+
+
+class TestRangeDurationFeasibility(unittest.TestCase):
+    """ADR-035 Phase 5 -- range-duration/bar-count feasibility cross-field
+    check (docs/plans/adr-035-phase5-configuration.md §15 item 2)."""
+
+    def test_range_duration_feasibility_exact_boundary_passes(self):
+        # duration=30min=1800s, interval=300s -> max_possible_bars=6 exactly.
+        make_config(
+            opening_range_duration_minutes=30, expected_bar_interval_seconds=300, opening_range_min_bars=6,
+        )  # must not raise
+
+    def test_range_duration_feasibility_one_above_boundary_raises(self):
+        with self.assertRaises(ValueError):
+            make_config(
+                opening_range_duration_minutes=30, expected_bar_interval_seconds=300, opening_range_min_bars=7,
+            )
+
+    def test_range_duration_feasibility_non_exact_division_boundary(self):
+        # duration=22min=1320s, interval=300s -> ceil(1320/300)=5.
+        make_config(
+            opening_range_duration_minutes=22, expected_bar_interval_seconds=300, opening_range_min_bars=5,
+        )  # must not raise
+        with self.assertRaises(ValueError):
+            make_config(
+                opening_range_duration_minutes=22, expected_bar_interval_seconds=300, opening_range_min_bars=6,
+            )
 
 
 class TestModelIntegrity(unittest.TestCase):

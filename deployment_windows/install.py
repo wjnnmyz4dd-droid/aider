@@ -289,18 +289,16 @@ def step_run_health_check() -> StepReport:
 
 def step_verify_runtime(settings) -> StepReport:
     from titan_protocol.compliance_engine.engine import ComplianceEngine
-    from titan_protocol.evidence_engine.config import EvidenceEngineConfig
     from titan_protocol.evidence_engine.engine import EvidenceEngine
     from titan_protocol.market_intelligence.engine import MarketIntelligenceEngine
     from titan_protocol.risk_engine.engine import RiskEngine
     from titan_protocol.runtime.engine import RuntimeOrchestrator
-    from titan_protocol.strategy_engine.config import StrategyEngineConfig
     from titan_protocol.strategy_engine.engine import StrategyEngine
 
     try:
-        evidence_engine = EvidenceEngine(EvidenceEngineConfig())
+        evidence_engine = EvidenceEngine(settings.evidence_config)
         market_intelligence_engine = MarketIntelligenceEngine(settings.news_config)
-        strategy_engine = StrategyEngine(StrategyEngineConfig())
+        strategy_engine = StrategyEngine(settings.strategy_config)
         risk_engine = RiskEngine(settings.risk_config)
         compliance_engine = ComplianceEngine(settings.compliance_config)
         RuntimeOrchestrator(

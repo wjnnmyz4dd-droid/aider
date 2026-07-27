@@ -32,12 +32,15 @@ from typing import Any, Dict, Optional, Tuple
 from titan_protocol.bridge.config import BridgeConfig
 from titan_protocol.bridge.symbol_mapping import SymbolMapping
 from titan_protocol.compliance_engine.config import ComplianceEngineConfig
+from titan_protocol.evidence_engine.config import EvidenceEngineConfig
+from titan_protocol.evidence_engine.models import SessionName
 from titan_protocol.market_intelligence.config import MarketIntelligenceConfig
 from titan_protocol.risk_engine.config import RiskEngineConfig
 from titan_protocol.reliability.config import ReliabilityConfig
 from titan_protocol.runtime.config import RuntimeConfig
 from titan_protocol.runtime.models import TradingProfile
 from titan_protocol.runtime import profiles as trading_profiles
+from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
 _PAIR_NAME_RE = re.compile(r"^[A-Z]{6}$")
 
@@ -92,6 +95,8 @@ class DeploymentSettings:
     bridge_port: int
     runtime_config: RuntimeConfig
     selected_profile: str
+    strategy_config: StrategyEngineConfig
+    evidence_config: EvidenceEngineConfig
     risk_config: RiskEngineConfig
     compliance_config: ComplianceEngineConfig
     compliance_rule_profile_name: str
@@ -356,6 +361,102 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
             "both are read by the same MT5 EA instance."
         )
 
+    # ADR-035 Phase 5: wires only the orb_*/opening_range_* fields ADR-035
+    # §13 names (mapped to their real StrategyEngineConfig/EvidenceEngineConfig
+    # owners) -- every other field on either dataclass (the five legacy
+    # strategies' own thresholds, Evidence Engine's scoring weights, etc.)
+    # remains unwired, unchanged from today, out of this section's scope.
+    strategy_engine_section = _section(data, "strategy_engine")
+    _base_strategy_config = StrategyEngineConfig()
+    try:
+        strategy_config = dataclasses.replace(
+            _base_strategy_config,
+            orb_min_breakout_distance_atr_multiple=_get_float(
+                strategy_engine_section, "orb_min_breakout_distance_atr_multiple",
+                _base_strategy_config.orb_min_breakout_distance_atr_multiple,
+            ),
+            orb_min_body_to_range_ratio=_get_float(
+                strategy_engine_section, "orb_min_body_to_range_ratio",
+                _base_strategy_config.orb_min_body_to_range_ratio,
+            ),
+            orb_min_confirmation_candles=_get_int(
+                strategy_engine_section, "orb_min_confirmation_candles",
+                _base_strategy_config.orb_min_confirmation_candles,
+            ),
+            orb_max_qualifications_per_range=_get_int(
+                strategy_engine_section, "orb_max_qualifications_per_range",
+                _base_strategy_config.orb_max_qualifications_per_range,
+            ),
+            orb_fvg_max_age_bars=_get_int(
+                strategy_engine_section, "orb_fvg_max_age_bars",
+                _base_strategy_config.orb_fvg_max_age_bars,
+            ),
+            orb_fvg_min_size_atr_multiple=_get_float(
+                strategy_engine_section, "orb_fvg_min_size_atr_multiple",
+                _base_strategy_config.orb_fvg_min_size_atr_multiple,
+            ),
+            orb_fvg_score_weight=_get_float(
+                strategy_engine_section, "orb_fvg_score_weight",
+                _base_strategy_config.orb_fvg_score_weight,
+            ),
+            orb_min_range_atr_ratio=_get_float(
+                strategy_engine_section, "orb_min_range_atr_ratio",
+                _base_strategy_config.orb_min_range_atr_ratio,
+            ),
+            orb_max_spread_pips=_get_float(
+                strategy_engine_section, "orb_max_spread_pips",
+                _base_strategy_config.orb_max_spread_pips,
+            ),
+            orb_min_liquidity_score=_get_float(
+                strategy_engine_section, "orb_min_liquidity_score",
+                _base_strategy_config.orb_min_liquidity_score,
+            ),
+        )
+    except ValueError as exc:
+        raise ConfigError(f"strategy_engine: {exc}") from exc
+
+    evidence_engine_section = _section(data, "evidence_engine")
+    _base_evidence_config = EvidenceEngineConfig()
+    raw_anchors = evidence_engine_section.get("opening_range_anchors", [])
+    if not isinstance(raw_anchors, list):
+        raise ConfigError("evidence_engine.opening_range_anchors must be a JSON array")
+    anchors = []
+    for i, entry in enumerate(raw_anchors):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"evidence_engine.opening_range_anchors[{i}] must be a JSON object")
+        session_name = entry.get("session")
+        if not isinstance(session_name, str) or session_name not in SessionName.__members__:
+            raise ConfigError(
+                f"evidence_engine.opening_range_anchors[{i}].session {session_name!r} "
+                f"is not a valid SessionName ({', '.join(SessionName.__members__)})"
+            )
+        start_hour = entry.get("start_hour_utc")
+        start_minute = entry.get("start_minute_utc")
+        if isinstance(start_hour, bool) or not isinstance(start_hour, int):
+            raise ConfigError(f"evidence_engine.opening_range_anchors[{i}].start_hour_utc must be an integer")
+        if isinstance(start_minute, bool) or not isinstance(start_minute, int):
+            raise ConfigError(f"evidence_engine.opening_range_anchors[{i}].start_minute_utc must be an integer")
+        anchors.append((SessionName[session_name], start_hour, start_minute))
+    try:
+        evidence_config = dataclasses.replace(
+            _base_evidence_config,
+            opening_range_anchors=tuple(anchors),
+            opening_range_duration_minutes=_get_int(
+                evidence_engine_section, "opening_range_duration_minutes",
+                _base_evidence_config.opening_range_duration_minutes,
+            ),
+            opening_range_min_bars=_get_int(
+                evidence_engine_section, "opening_range_min_bars",
+                _base_evidence_config.opening_range_min_bars,
+            ),
+            expected_bar_interval_seconds=_get_int(
+                evidence_engine_section, "expected_bar_interval_seconds",
+                _base_evidence_config.expected_bar_interval_seconds,
+            ),
+        )
+    except ValueError as exc:
+        raise ConfigError(f"evidence_engine: {exc}") from exc
+
     profile_section = _section(data, "trading_profile")
     selected_profile = _require_str(profile_section, "trading_profile", "selected_profile").lower()
     if selected_profile not in _VALID_PROFILES:
@@ -498,6 +599,7 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     return DeploymentSettings(
         bridge_config=bridge_config, bridge_host=bridge_host, bridge_port=bridge_port,
         runtime_config=runtime_config, selected_profile=selected_profile,
+        strategy_config=strategy_config, evidence_config=evidence_config,
         risk_config=risk_config, compliance_config=compliance_config,
         compliance_rule_profile_name=compliance_rule_profile_name,
         compliance_daily_reset_hour_utc=compliance_daily_reset_hour_utc,

@@ -121,6 +121,9 @@ class EvidenceEngineConfig:
                 f"opening_range_post_range_bar_window must be >= 1, got {self.opening_range_post_range_bar_window}"
             )
         _validate_no_overlapping_anchors(self.opening_range_anchors, self.opening_range_duration_minutes)
+        _validate_range_duration_feasible(
+            self.opening_range_duration_minutes, self.opening_range_min_bars, self.expected_bar_interval_seconds
+        )
 
 
 def _validate_no_overlapping_anchors(
@@ -143,6 +146,26 @@ def _validate_no_overlapping_anchors(
                     f"opening_range_anchors[{i}] and opening_range_anchors[{j}] "
                     "produce coincident or overlapping windows"
                 )
+
+
+def _validate_range_duration_feasible(duration_minutes: int, min_bars: int, expected_interval_seconds: int) -> None:
+    """Rejects an `opening_range_min_bars` that no bar cadence could ever
+    satisfy within `opening_range_duration_minutes` (ADR-035 §13's
+    "range-duration/bar-count feasibility" cross-field rule). Derived
+    directly from `opening_range.py`'s own half-open `[range_start,
+    range_end)` window: the most bars that can possibly form in that
+    window, given bars arriving every `expected_interval_seconds` with no
+    gap, is `ceil(duration_seconds / expected_interval_seconds)` -- an
+    exact-boundary `min_bars` passes, one more fails closed."""
+    duration_seconds = duration_minutes * 60
+    max_possible_bars = -(-duration_seconds // expected_interval_seconds)
+    if max_possible_bars < min_bars:
+        raise ValueError(
+            f"opening_range_min_bars ({min_bars}) cannot be satisfied within "
+            f"opening_range_duration_minutes ({duration_minutes}) given "
+            f"expected_bar_interval_seconds ({expected_interval_seconds}); "
+            f"at most {max_possible_bars} bar(s) can form in that window"
+        )
 
 
 __all__ = ["EVIDENCE_ENGINE_VERSION", "EvidenceEngineConfig"]
