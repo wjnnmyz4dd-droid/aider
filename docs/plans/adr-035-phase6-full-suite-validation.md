@@ -1,25 +1,29 @@
 # Plan: ADR-035 Phase 6 — Full-Suite Validation
 
-Status: **RESEARCH ONLY — Plan and Validation sections intentionally
-empty.** This artifact records the Research phase of the RPI gate
-(`.claude/agents/TEAM.md` §9) for ADR-035 Phase 6. No implementation
-decision is made here; several are deliberately left open below for
-Plan-phase resolution.
+Status: **PLAN FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS
+REVIEW.** Research (below) is complete. All four Research-phase open
+questions (§5) are now resolved with direct repository evidence in the
+Plan section (§P1-P4). Implementation is **not authorized** by this
+Plan-finalization pass — it requires its own independent
+implementation-readiness review first, per this project's RPI gate.
 
 Owner (Research phase): Software Architect (ADR-035/ADR-025/ADR-026
 owner precedent, unchanged from Phases 2-5).
+Owner (Plan phase): Software Architect (same precedent, unchanged).
 
-Touched components (anticipated, not final — see §7 below): at minimum
-`titan_protocol/strategy_engine/strategies/__init__.py`
-(`build_default_registry()`), `tests/titan_protocol/strategy_engine/test_engine.py`,
-`tests/titan_protocol/strategy_engine/test_regression.py`; very likely
-`deployment_windows/start.py` and possibly `deployment_windows/config_loader.py`
-and the example JSON, depending on how the Plan phase resolves the two
-open questions in §5. **Not in scope:** the anchor hour/minute
-range-validation residual risk flagged in the Phase 5 conformance
-review (a separate, independently-scoped follow-up, explicitly excluded
-per the user's Research directive), Phase 7's formation-time
-news-blackout closure, and any of the five legacy strategy files.
+Touched components (final, per the Plan section's file-impact matrix,
+§P11): `titan_protocol/strategy_engine/strategies/__init__.py`
+(`build_default_registry()` gains one optional parameter),
+`deployment_windows/start.py` (one new construction block + explicit
+registry passed to `StrategyEngine`), and new test coverage only — no
+existing test file is modified (§P4 supersedes Research's provisional
+guess that `test_engine.py`/`test_regression.py` would need updating).
+**Not in scope:** the anchor hour/minute range-validation residual risk
+flagged in the Phase 5 conformance review (a separate,
+independently-scoped follow-up, explicitly excluded, §P13), Phase 7's
+formation-time news-blackout closure, `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+(left unchanged, §P2), `config_loader.py`/the example JSON (no change
+required, §P3), and any of the five legacy strategy files.
 
 ---
 
@@ -435,8 +439,489 @@ proposed yet to validate against.
 
 ## Plan
 
-*(Intentionally left empty — Research only, per this task's authorization. §5's four open questions must be explicitly resolved here before Implement begins.)*
+**Status of this section: FINALIZED — resolves all four Research-phase
+open questions with direct repository evidence. Implementation remains
+unauthorized pending independent implementation-readiness review.**
+
+Re-verified fresh this pass (not trusted from the Research artifact):
+branch `claude/phantom-ea-visibility-cjjf3a`, HEAD `c616b23`, clean tree;
+`tests/titan_protocol` at 1373/1373 green, `tests/deployment_windows -t .`
+at 162/162 green — both baselines still current.
+
+### P0. Governing design principle
+
+Every resolution below follows one rule, derived directly from
+`titan_protocol/strategy_state_store/store.py`'s own docstring and
+`deployment_windows/start.py`'s existing `compliance_state_store`/
+`in_flight_commands` construction pattern (both read in full this pass):
+**the live system (`start.py`) is the only place that changes.** Every
+existing zero-argument call path (`build_default_registry()` with no
+args, `StrategyEngine(config)` with no registry argument) keeps its
+exact current behavior and exact current output. This is the minimal
+diff that satisfies ADR-035 §17's "real five-plus-ORB `StrategyEngine`"
+mandate without touching any of the 1373+161 currently-green tests that
+never asked for ORB.
+
+### P1. Resolution — ORB registration mechanism (Research question 1)
+
+**Design:** `build_default_registry()` gains one new, optional,
+keyword-usable parameter:
+
+```python
+def build_default_registry(
+    orb_qualification_store: Optional[OrbQualificationStore] = None,
+) -> StrategyRegistry:
+    """The canonical registry: the 5 legacy strategies, always; plus
+    Opening Range Breakout when a qualification-lockout store is
+    supplied (ADR-035 Phase 6) -- omitted by default so every existing
+    zero-argument caller is unaffected."""
+    registry = StrategyRegistry()
+    registry.register(LiquiditySweepMssStrategy())
+    registry.register(BosFvgStrategy())
+    registry.register(TrendContinuationStrategy())
+    registry.register(SessionBreakoutStrategy())
+    registry.register(RangeReversalStrategy())
+    if orb_qualification_store is not None:
+        registry.register(OrbBreakoutStrategy(orb_qualification_store))
+    return registry
+```
+
+**Evidence this does not weaken existing registry behavior:**
+- `StrategyRegistry.register()`/`.all()`/`.get()`/`DuplicateStrategyError`
+  (`registry.py`, read in full this pass) are untouched — `register()`
+  still takes one `Strategy` instance, still keys by
+  `strategy.definition.strategy_id`, still raises
+  `DuplicateStrategyError` on a repeat `strategy_id`. `OPENING_RANGE_BREAKOUT`
+  is a distinct `StrategyId` member, so no collision risk exists.
+- `engine.py`'s `self.registry = registry if registry is not None else
+  build_default_registry()` (read in full this pass, line 46) requires
+  **zero changes** — it still calls `build_default_registry()` with no
+  arguments, which — under this design — still returns exactly the
+  five-strategy registry it does today, byte-identical to current
+  behavior. Every test that constructs `StrategyEngine(make_config())`
+  with no registry argument (the overwhelming majority of the Strategy
+  Engine suite) is therefore provably unaffected, not merely assumed
+  unaffected.
+- `OrbBreakoutStrategy.__init__(self, store: OrbQualificationStore)`
+  (read in full this pass, `orb_breakout.py` line 64) is unchanged —
+  the store is passed positionally exactly as its existing constructor
+  already requires; no change to `orb_breakout.py` itself.
+
+**Where ORB actually becomes live:** `deployment_windows/start.py` line
+1194 (`strategy_engine = StrategyEngine(strategy_config)`) is the
+**one** production call site that changes, to:
+
+```python
+orb_qualification_store = OrbQualificationStore(
+    StrategyStateStoreConfig(state_file=settings.state_dir / "orb_qualifications.json")
+)
+strategy_registry = build_default_registry(orb_qualification_store)
+strategy_engine = StrategyEngine(strategy_config, registry=strategy_registry)
+```
+
+placed immediately before that line, mirroring the exact
+`ComplianceStateStore(ComplianceStateStoreConfig(state_file=settings.state_dir
+/ "compliance_state.json"))` and `InFlightCommandStore(InFlightStoreConfig(
+state_file=settings.state_dir / "in_flight_commands.json"))` construction
+pattern already present a few lines below it (`start.py` lines 1203-1226,
+read in full this pass) — this is not a new convention, it is the
+existing one applied to a third store.
+
+### P2. Resolution — pair-eligibility default (Research question 2)
+
+**Decision: `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` (`strategy_engine/config.py`,
+read in full this pass, lines 41-47) receives NO entry for
+`StrategyId.OPENING_RANGE_BREAKOUT` in Phase 6.**
+
+**Evidence:** ADR-035 §18.B item 4 (read directly, `docs/adr/ADR-035-orb-strategy.md`)
+states verbatim: *"Should ORB be limited to major pairs only at first
+(`orb_approved_pairs` empty by default, fail-closed until an operator
+configures it), or ship with a starter default list? ... This document
+proposes empty-by-default (safest, forces deliberate operator choice)."*
+This is a "Future design consideration" the ADR explicitly does not
+assign to any specific phase, and Phase 5's own Accepted Plan
+explicitly excluded it from Phase 5's scope (`docs/plans/adr-035-phase5-configuration.md`
+line ~751, "explicitly excluded from Phase 5... no precedent exists for
+wiring *any* strategy's pairs through `config_loader.py`"). Nothing in
+§17's Phase 6 text ("full-suite validation") reopens or reassigns this
+question to Phase 6 either — "full-suite validation" is a testing/
+integration mandate, not a pair-eligibility policy mandate. Absent an
+explicit instruction to populate it, the ADR's own stated default
+("safest") is the correct one to preserve.
+
+**Explicit three-way distinction (per this task's own requirement):**
+1. **Registering ORB in `StrategyEngine`** (P1, above) — makes ORB
+   *present* in `all_qualifications` and in the selection cascade's
+   candidate pool.
+2. **Making ORB eligible for particular pairs** — governed entirely by
+   `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, which this Plan leaves empty
+   for ORB. `eligibility.check_eligibility()` (read in full this pass)
+   returns `NOT_ELIGIBLE` unconditionally whenever
+   `config.approved_pairs_for(strategy_id)` does not contain the pair;
+   `approved_pairs_for(OPENING_RANGE_BREAKOUT)` falls through to `return
+   ()` (no matching entry, `config.py` lines 145-149) — i.e., every
+   pair, always, until a future, separately-authorized phase or
+   operator action adds an entry.
+3. **Authorizing any live-trading behavior** — this Plan authorizes
+   none. `OrbBreakoutStrategy.qualify()`'s very first line
+   (`orb_breakout.py` line 78) is `check_eligibility(...)`; with an
+   empty approved-pairs set, every call returns `NOT_ELIGIBLE` before
+   any other ORB logic (opening-range state, FVG, breakout distance,
+   lockout) is even reached. **Consequence, stated explicitly per this
+   task's instruction:** registering ORB in Phase 6 has **zero live
+   trading-behavior impact** — ORB will appear in `start.py`'s real
+   `StrategyEngine`, in the real selection cascade, and will be
+   `NOT_ELIGIBLE` for every configured pair, every cycle, indefinitely,
+   until pair-eligibility is separately and explicitly authorized by a
+   future phase. This fail-closed consequence must be directly asserted
+   by a Phase 6 test (§P8, item 5), not left as an implicit assumption.
+
+### P3. Resolution — strategy-state-store path and deployment wiring (Research question 3)
+
+**No `config_loader.py` or example-JSON change is required.**
+`settings.state_dir: Path` already exists on `DeploymentSettings`
+(populated from `logging.state_dir` in the shipped example config,
+confirmed present and unchanged since before Phase 5) and is already
+the exact mechanism `compliance_state_store` and `in_flight_commands`
+use for their own state files (`start.py` lines 1203-1205, 1224-1226,
+read in full this pass — `state_file=settings.state_dir / "<name>.json"`
+in both cases, constructed directly in `start.py`, not via
+`config_loader.py`). Phase 6 follows this identical, already-established
+convention for a third store:
+
+- **Configuration ownership:** `deployment_windows/start.py`, exactly
+  like the two existing precedents — not `config_loader.py`, which
+  owns only `settings.state_dir` itself (already Phase-0-era wiring,
+  untouched).
+- **Default/path semantics:** `settings.state_dir / "orb_qualifications.json"`
+  — a new filename sibling to `compliance_state.json` and
+  `in_flight_commands.json` inside the same already-existing, already-
+  created state directory (`_write_pid_file()`/`state_dir.mkdir(parents=True,
+  exist_ok=True)` already guarantees this directory exists by the time
+  any store is constructed, per `start.py`'s existing startup sequence,
+  read in full this pass — no new directory-creation code is needed).
+- **Startup construction:** at the same point in `start.py`'s startup
+  sequence as `strategy_engine = StrategyEngine(strategy_config)`
+  currently sits (line 1194), per P1 above — before the live-cycle
+  thread starts, exactly matching where `compliance_state_store`/
+  `in_flight_store` are constructed a few lines later.
+- **Failure behavior:** `OrbQualificationStore.__init__` → `_load_initial()`
+  (`strategy_state_store/store.py`, read in full this pass) raises
+  `CorruptStateError` if the state file exists but is unreadable/corrupt
+  and no usable `.bak` exists — with **no try/except around its
+  construction call in `start.py`**, exactly mirroring
+  `ComplianceStateStore`'s own construction one line below it (also
+  unguarded, confirmed by direct read of `start.py` lines 1203-1209: a
+  `CorruptStateError` there crashes the entire startup sequence). This
+  is not a new risk Phase 6 introduces — it is the same fail-closed-at-
+  startup precedent already accepted for compliance state, applied
+  identically to ORB state, and is exactly what ADR-035 §18.A item 2's
+  own text mandates ("if persisted state cannot be read... ORB must not
+  qualify... until the state is resolved" — a full startup refusal is
+  the strictest reading of "must not qualify," and the one this
+  project's precedent already uses for the analogous compliance case).
+  A missing (not corrupt) file is not an error — `_load_initial()`
+  returns `{}` when `path.exists()` is `False`, so a fresh install with
+  no prior ORB history starts cleanly with zero consumed qualifications.
+- **Mid-run persist failures never propagate:** `try_consume()`
+  (`store.py`, read in full this pass) catches and logs any exception
+  from `self._persist()` internally (`_safe_log_persist_failure()`),
+  documented explicitly in the module's own docstring as existing
+  *specifically* to prevent "an exception escaping into
+  `OrbBreakoutStrategy.qualify()`" from "abort[ing]
+  `StrategyEngine.evaluate()`/`evaluate_batch()` for every strategy and
+  pair in that cycle." This closes the "exception path capable of
+  taking down the selection cascade" adversarial concern (§P9) for the
+  *steady-state* case; only construction-time corruption can raise, and
+  that happens once, at startup, before any strategy ever evaluates —
+  never mid-cycle.
+
+New imports required in `start.py` (currently only imports `StrategyEngine`
+from `titan_protocol.strategy_engine.engine`, confirmed by grep this
+pass): `build_default_registry` from `titan_protocol.strategy_engine.strategies`,
+`StrategyStateStoreConfig` from `titan_protocol.strategy_state_store.config`,
+`OrbQualificationStore` from `titan_protocol.strategy_state_store.store`.
+
+### P4. Resolution — existing five-strategy test assumptions (Research question 4)
+
+**Refined conclusion, superseding Research's provisional guess:**
+`tests/titan_protocol/strategy_engine/test_engine.py:19`
+(`test_returns_a_fully_populated_snapshot`) and
+`tests/titan_protocol/strategy_engine/test_regression.py:22`
+(`test_default_fixture_always_rejects`) both construct
+`StrategyEngine(make_config())` with **no registry argument** — under
+P1's design, this zero-argument path still returns exactly five
+strategies, forever, by construction. **These two tests require NO
+change.** They correctly assert the cardinality of
+`StrategyEngine`'s own default-substitution path, which P1 deliberately
+leaves untouched. Re-verified fresh this pass (both assertions still
+present at these exact lines, both suites still 1373/162 green) —
+Research's tentative "these will need updating to 6" guess is
+superseded by this more precise design, which was only derivable once
+the registration mechanism itself (P1) was settled; this is exactly the
+kind of "do not mechanically replace every occurrence of 5" distinction
+this task's instructions required.
+
+`test_orb_breakout_foundation.py::test_five_legacy_strategy_ids_remain`
+(read in full this pass) asserts `StrategyId.__members__` enum
+membership, not registry size — already correctly out of scope,
+confirmed unaffected either way.
+
+**No existing test anywhere is modified by this Plan.** All new
+coverage (§P8) lives in new test code that explicitly builds the
+six-strategy registry the same way `start.py` now does — proving the
+"real... competing in the real selection cascade" mandate through the
+actual production factory function (`build_default_registry(store)`),
+never through a hand-assembled synthetic registry that merely happens
+to contain six strategies (closing the "tests that prove six
+qualifications synthetically" adversarial concern, §P9).
+
+### P5. Phase 6 algorithm / integration sequence
+
+1. Add `build_default_registry(orb_qualification_store: Optional[OrbQualificationStore] = None)` (P1).
+2. Add the three-line construction block to `start.py` (P1/P3) — no
+   other line in `start.py` changes.
+3. No `config_loader.py`/example-JSON change (P3).
+4. No `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` change (P2).
+5. No change to any of the five legacy strategy files, `orb_breakout.py`,
+   `strategy_state_store/`, `eligibility.py`, `selection.py`, or any ADR.
+6. Add new integration/regression/edge-case/exception-safety tests
+   (§P8) exercising the real `build_default_registry(store)` +
+   `StrategyEngine(config, registry=...)` construction path.
+7. Full regression re-run (§P11) before this Plan may be considered
+   ready for implementation-readiness review.
+
+### P6. Exception-safety contract (ADR-035 §17)
+
+- **Startup-time:** a corrupt/unreadable `orb_qualifications.json`
+  raises `CorruptStateError` out of `OrbQualificationStore.__init__`,
+  uncaught in `start.py`, crashing startup — by design, mirroring
+  `ComplianceStateStore`'s identical treatment (P3). Required test:
+  construct `OrbQualificationStore` against a deliberately corrupted
+  file and assert `CorruptStateError` is raised — proving the contract,
+  not merely citing the docstring.
+- **Steady-state (mid-`evaluate()`):** `try_consume()` never raises for
+  a persist failure (caught/logged internally, P3) — required test:
+  simulate a persist failure (e.g., monkeypatch `_persist()` to raise,
+  or make the state directory read-only after construction) mid-`evaluate()`
+  and assert `StrategyEngine.evaluate()` still returns a normal
+  `StrategySnapshot` for all six strategies, with ORB's own result
+  reflecting "already qualified"/`NOT_QUALIFIED` per its existing logic,
+  never an unhandled exception.
+- **No change to `StrategyEngine.evaluate()`'s own lack of a
+  per-strategy try/except** (`engine.py`, read in full this pass) —
+  this Plan does not add one, because P3's evidence shows
+  `OrbQualificationStore` already cannot raise mid-cycle; introducing
+  a new per-strategy exception boundary would be scope beyond what
+  ADR-035 §17 asks for (it names "exception safety" as something to
+  *validate*, not a new architectural feature to *build*), and would
+  be exactly the kind of speculative defensive code CLAUDE.md §6/§7
+  disallow for a scenario (a legacy strategy raising) that has never
+  occurred and that this Plan finds no new reason to guard against.
+
+### P7. §15 edge-case matrix — Phase 6 required tests
+
+| §15 case | Required Phase 6 test (new) | Level |
+|---|---|---|
+| Gap open before/inside range window | Extend existing Evidence Engine coverage is sufficient (Phase 0); add one integration-level test confirming a gap-invalidated range still lets the other five strategies evaluate normally through the real six-strategy `StrategyEngine` | Integration (new) |
+| Missing candles / temporal gap | Same as above, integration-level confirmation only — unit coverage already complete (Phase 0) | Integration (new) |
+| Session reconnect mid-range | New test: no bars missed → range forms normally through the real engine; bars missed → `is_valid=False`, ORB still `NOT_QUALIFIED`/`NOT_ELIGIBLE`, five legacy strategies unaffected | Integration (new) |
+| DST transitions | No new test — ADR §15 documents this as an explicit, accepted operator responsibility, not a code path; out of scope | N/A (documented, not tested) |
+| Holiday sessions | Confirm existing Phase 4 unit test still passes; add one integration-level assertion through the real registry | Integration (new) |
+| Multiple ranges / anchor overlap | Confirm existing Phase 0/5 coverage; add one integration-level test with two configured anchors through the real six-strategy engine | Integration (new) |
+| Broker time differences | No new ORB-specific test — explicitly another package's concern (`market_data_ingestion`, ADR-033), confirmed out of ADR-035's own scope by §15's text | N/A (out of scope) |
+| Partial trading days / early close | New test: an early-close day with `MarketSafetyInputs.early_closes` set, confirming the range never forms and ORB fails closed to `NOT_QUALIFIED`, five legacy strategies unaffected | Integration (new) |
+
+### P8. Required new test coverage (summary list)
+
+1. `build_default_registry(store)` returns exactly 6 strategies,
+   including `OPENING_RANGE_BREAKOUT`; `build_default_registry()` (no
+   arg) still returns exactly 5 — both asserted in the same test module.
+2. A real `StrategyEngine(config, registry=build_default_registry(store))`
+   evaluates all six strategies; the five legacy strategies' individual
+   `QualificationResult`s are identical (score, status, reason) to what
+   they produce when evaluated against a five-strategy registry with
+   the same evidence/MI/config inputs — the literal regression proof
+   §17 asks for, at the behavioral level (in addition to the file-level
+   `git diff --stat` proof, which needs no test since it is a source
+   fact, not a runtime one).
+3. `git diff --stat` against the pre-Phase-6 baseline shows zero change
+   to any of the five legacy strategy files (a Validation-phase check,
+   recorded here as a Plan requirement so Implement knows to verify it).
+4. Startup-time `CorruptStateError` test (§P6).
+5. Steady-state persist-failure containment test (§P6).
+6. **Explicit pair-ineligibility assertion (P2):** construct the real
+   six-strategy engine with the shipped, unmodified
+   `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, evaluate any pair, and assert
+   ORB's own qualification result is `NOT_ELIGIBLE` — proving Phase 6's
+   stated zero-blast-radius consequence rather than leaving it assumed.
+7. §15 edge-case tests per §P7's table.
+8. A lockout/persistence test through the *real* engine construction
+   path (not `_OrbTestCase`'s existing unit-level store) — confirming
+   `try_consume()`'s existing max-qualifications-per-range behavior
+   still holds when ORB is reached via `build_default_registry(store)`
+   rather than constructed directly, i.e. that no wiring step silently
+   substitutes a different/fresh store mid-test.
+
+### P9. Preservation requirements
+
+- All five legacy strategy files: zero diff (`git diff --stat`),
+  verified at Implement/Validation time.
+- `orb_breakout.py`, `strategy_state_store/*.py`, `eligibility.py`,
+  `selection.py`: zero diff — none of P1-P3's design requires touching
+  them; `OrbBreakoutStrategy`'s constructor signature and
+  `OrbQualificationStore`'s fail-closed contract are consumed exactly
+  as they already exist, never modified.
+- No ADR file changes.
+- `build_default_registry()`'s zero-argument behavior: unchanged
+  (proven by test P8.1, not merely asserted).
+
+### P10. Architecture / structural-boundary impact
+
+`tests/titan_protocol/strategy_engine/test_architecture.py`'s
+`ALLOWED_UPSTREAM_PREFIXES` (read in full this pass, line 30) already
+includes `"titan_protocol.strategy_state_store"` — required because
+`orb_breakout.py` has imported `OrbQualificationStore` since Phase 2.
+**No allowlist change is needed for Phase 6**, since `build_default_registry()`
+lives inside `titan_protocol/strategy_engine/strategies/__init__.py`
+(the same package `orb_breakout.py` already lives in) and its new
+parameter's type annotation (`Optional[OrbQualificationStore]`) is
+exactly the same already-allowed upstream import, just referenced one
+file over. `deployment_windows/` is not part of the
+`check_architecture.py`/`test_architecture.py`-checked `titan_protocol/`
+package graph and already imports engine-owned classes directly
+(established precedent since Phase 5) — its three new imports (P3) need
+no allowlist change either.
+
+### P11. Complete file-impact matrix
+
+| File | Change | Classification |
+|---|---|---|
+| `titan_protocol/strategy_engine/strategies/__init__.py` | `build_default_registry()` gains one optional parameter (P1) | Required |
+| `deployment_windows/start.py` | 3-line construction block + registry passed explicitly into `StrategyEngine(...)`; 3 new imports (P1/P3) | Required |
+| New test module (e.g. `tests/titan_protocol/strategy_engine/test_orb_full_suite_integration.py`) | §P7/§P8's full new-coverage matrix | Required |
+| `docs/plans/adr-035-phase6-full-suite-validation.md` | This Plan section (already being written) | Required (this artifact) |
+| `titan_protocol/strategy_engine/config.py` | **No change** — `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` untouched (P2) | Explicitly excluded |
+| `deployment_windows/config_loader.py` | **No change** (P3) | Explicitly excluded |
+| `deployment_windows/config/titan_protocol_config.example.json` | **No change** (P3) | Explicitly excluded |
+| `titan_protocol/strategy_engine/strategies/orb_breakout.py` | **No change** | Explicitly excluded |
+| `titan_protocol/strategy_state_store/*.py` | **No change** | Explicitly excluded |
+| `titan_protocol/strategy_engine/eligibility.py`, `selection.py` | **No change** | Explicitly excluded |
+| Five legacy strategy files | **No change** — regression-proof target | Explicitly excluded |
+| `tests/titan_protocol/strategy_engine/test_engine.py`, `test_regression.py` | **No change** (P4, superseding Research's guess) | Explicitly excluded |
+| Any ADR file | **No change** | Explicitly excluded |
+| `titan_protocol/evidence_engine/config.py` (anchor hour/minute range validation) | **No change — separate follow-up, not this Plan's scope** | Explicitly excluded (Phase 5 residual risk) |
+| Any Phase 7 formation-time news-blackout code | **No change** | Explicitly excluded (Phase 7 unauthorized) |
+
+### P12. Targeted and full-regression validation (to run at Implement/Validation time)
+
+Targeted:
+```
+python3 -m unittest tests.titan_protocol.strategy_engine.test_orb_full_suite_integration -v
+python3 -m unittest tests.titan_protocol.strategy_engine.test_engine tests.titan_protocol.strategy_engine.test_regression -v
+python3 -m unittest discover -s tests/titan_protocol/strategy_engine
+python3 -m unittest tests.titan_protocol.strategy_engine.test_architecture tests.titan_protocol.evidence_engine.test_architecture
+python3 scripts/check_architecture.py
+```
+Full regression (expected baselines, re-verified this pass):
+```
+python3 -m compileall titan_protocol deployment_windows tests
+python3 -m unittest discover -s tests/titan_protocol        # baseline: 1373/1373, plus new P8 tests
+python3 -m unittest discover -s tests/deployment_windows -t .  # baseline: 162/162, unaffected (no deployment_windows test file touched)
+git diff --stat <phase-6-base-commit> HEAD -- titan_protocol/strategy_engine/strategies/liquidity_sweep_mss.py titan_protocol/strategy_engine/strategies/bos_fvg.py titan_protocol/strategy_engine/strategies/trend_continuation.py titan_protocol/strategy_engine/strategies/session_breakout.py titan_protocol/strategy_engine/strategies/range_reversal.py
+# must show zero output
+```
+
+### P13. Explicit exclusions (restated)
+
+- **Phase 7** (formation-time news-blackout closure): not begun, not
+  designed, not referenced beyond the existing Amendment 1 pointer.
+  Requires its own Research → Plan → Implement pass and its own
+  Accepted ADR-035 amendment per §17's own text.
+- **Phase 5 anchor hour/minute range-validation residual risk**
+  (`EvidenceEngineConfig`/`config_loader.py` never range-checking
+  `start_hour_utc`/`start_minute_utc`): remains a separate,
+  independently-scoped follow-up candidate, per the Phase 5 conformance
+  review's own classification (RESIDUAL RISK, non-blocking, pre-existing
+  since Phase 0). Not touched, not referenced as in-scope, by any item
+  in this Plan.
+- **Pair-eligibility population** (a starter or operator-driven
+  approved-pairs list for ORB): explicitly deferred past Phase 6 (P2);
+  any future phase that wants to resolve it differently needs its own
+  fresh Plan and, given CLAUDE.md's capital-preservation priority, very
+  likely its own independent implementation-readiness review given it
+  would be the first phase with genuine live-trading effect for ORB.
+
+### P14. Adversarial re-read (performed against this finalized Plan)
+
+- **Registration without dependency construction?** No — P1's
+  `build_default_registry(store)` requires the caller to supply a
+  constructed `OrbQualificationStore`; there is no path that registers
+  `OrbBreakoutStrategy` without one (the `if orb_qualification_store is
+  not None` branch is the only registration path for ORB).
+- **Dependency construction without deployment propagation?** No — P3
+  places construction directly in `start.py`, immediately followed by
+  P1's registry-construction call and the `StrategyEngine(...,
+  registry=...)` call in the same function, in sequence; there is no
+  intermediate state where a store exists but isn't wired into the
+  engine that uses it.
+- **Silently discarded configuration?** No — no new configuration
+  field is introduced by this Plan (P2, P3 both resolve to "no config
+  change"); the one path-derived value used (`settings.state_dir`) is
+  already read and already propagated identically to two existing
+  stores.
+- **Implicit filesystem paths?** No — `settings.state_dir /
+  "orb_qualifications.json"` is explicit, directly analogous to the two
+  existing sibling files in the same directory, and `settings.state_dir`
+  itself already has explicit, tested default/override semantics from
+  Phase 0-era `config_loader.py` wiring (unchanged by this Plan).
+- **ORB becoming broadly eligible by accident?** No — P2 explicitly
+  leaves `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` untouched; P8 item 6
+  requires an explicit test proving `NOT_ELIGIBLE` for every pair
+  against the unmodified default. The only way ORB becomes pair-
+  eligible is a future, separately-authorized Plan changing that table.
+- **Changes to legacy strategy behavior?** No — P1's change is
+  additive only (`if store is not None`); the five `registry.register(...)`
+  calls for legacy strategies are unchanged, in the same order, with
+  the same zero-argument constructors; P8 item 2 requires a test proving
+  their individual qualification results are unaffected by ORB's
+  presence in the same registry (qualification is a pure per-strategy
+  function of `(pair, evidence, market_intelligence, config)` — adding
+  another registry entry cannot alter another strategy's own `qualify()`
+  call or its inputs, but this Plan requires it be *proven*, not merely
+  assumed from the code's own shape).
+- **Lockout persistence becoming optional or bypassed?** No — P1 does
+  not add any parameter to skip or stub `OrbQualificationStore`; the
+  only construction path in `start.py` uses the real, file-backed store
+  with its existing fail-closed/atomic-write/corruption-handling
+  contract, entirely unmodified (P9).
+- **Exception paths capable of taking down the selection cascade?**
+  Addressed directly in P6/P3 — `try_consume()` already cannot raise
+  mid-cycle (existing Phase 2 guarantee, cited from its own docstring,
+  now required to be *proven* by a new Phase 6 test rather than merely
+  cited); construction-time failure crashes startup only, before any
+  cascade runs, matching the existing `ComplianceStateStore` precedent.
+  This Plan does not add new per-strategy exception handling to
+  `evaluate()` (deliberately, per P6's own reasoning) — flagged here
+  explicitly as a considered, evidence-based non-action, not an
+  oversight.
+- **Tests that prove six qualifications synthetically without
+  exercising the real production factory?** Explicitly disallowed by
+  P4/P8's own wording — every new test must go through
+  `build_default_registry(store)` (the actual function `start.py` calls,
+  per P1), never a hand-assembled `StrategyRegistry()` with six manual
+  `.register()` calls standing in for it.
+- **Phase 7 or the anchor-validation residual risk leaking into Phase
+  6 scope?** No — both are named exclusions in P13 and neither appears
+  in P11's file-impact matrix (both rows are explicitly marked "no
+  change"/"explicitly excluded").
+
+No new issue was found in this adversarial pass beyond what P1-P13
+already resolve. This Plan is assessed as internally consistent and
+fully evidence-grounded against current repository state.
 
 ## Validation
 
-*(Intentionally left empty — Research only.)*
+*(Intentionally left empty — this is the Implement phase's own
+responsibility, per `TEAM.md` §9. P12 above states the exact commands
+and expected baselines that phase must execute and record here.)*
