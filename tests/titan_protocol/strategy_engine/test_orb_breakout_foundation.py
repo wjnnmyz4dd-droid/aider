@@ -33,7 +33,8 @@ from titan_protocol.strategy_engine.strategies import OrbBreakoutStrategy
 from titan_protocol.strategy_engine.strategies.base import Strategy
 from titan_protocol.strategy_state_store import OrbQualificationStore, StrategyStateStoreConfig
 from tests.titan_protocol.strategy_engine._fixtures import (
-    T0, make_config, make_evidence_snapshot, make_mi_snapshot, make_volatility_state,
+    T0, make_config, make_evidence_snapshot, make_liquidity_intelligence, make_market_safety_status,
+    make_mi_snapshot, make_pair_news_intelligence, make_pair_safety, make_volatility_state,
 )
 
 _ORB_APPROVED_CONFIG = StrategyEngineConfig(
@@ -191,7 +192,139 @@ class TestMultipleRanges(_OrbTestCase):
         )
         result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
         self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
-        self.assertEqual(result.reason, "Multiple opening ranges configured, cannot disambiguate before Phase 4")
+        self.assertEqual(
+            result.reason,
+            "Multiple opening ranges are simultaneously relevant "
+            "(unreachable under current anchor-overlap validation; retained as defense-in-depth)",
+        )
+
+
+class TestRangeSelection(_OrbTestCase):
+    """ADR-035 Phase 4 -- examples A, C, E (docs/plans/adr-035-phase4-mi-eligibility-integration.md
+    §6). Example B (single range unaffected) is already exercised by every
+    other single-range test in this file; example D (genuine tie) is
+    `TestMultipleRanges` above, whose fixture already constructs a tie under
+    the new rule."""
+
+    def test_most_recently_formed_range_is_selected_over_an_older_one(self):
+        strategy = self.make_strategy()
+        older_range = _make_opening_range(range_start=_RANGE_START, is_formed=True, is_valid=True)  # no post_range_bars
+        candidate = _bar(6, 0, 1.100, 1.108, 1.099, 1.108)
+        newer_range = dataclasses.replace(
+            _make_opening_range(range_start=_RANGE_START + timedelta(hours=1), is_formed=True, is_valid=True),
+            post_range_bars=(candidate,),
+        )
+        evidence = _evidence_with_ranges(
+            older_range, newer_range,
+            volatility=make_volatility_state(atr=0.001, is_expansion=True, volatility_score=90.0),
+        )
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        # Only the newer range has post_range_bars; QUALIFIED is only possible
+        # if the newer (greatest range_end) range was the one selected.
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+
+    def test_no_formed_range_among_multiple_returns_the_precise_reason(self):
+        strategy = self.make_strategy()
+        evidence = _evidence_with_ranges(
+            _make_opening_range(range_start=_RANGE_START, is_formed=False, is_valid=True),
+        )
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "No opening range currently relevant (none yet formed)")
+
+    def test_invalid_newest_range_does_not_fall_back_to_an_older_valid_range(self):
+        strategy = self.make_strategy()
+        candidate = _bar(6, 0, 1.100, 1.108, 1.099, 1.108)
+        older_valid_range = dataclasses.replace(
+            _make_opening_range(range_start=_RANGE_START, is_formed=True, is_valid=True),
+            post_range_bars=(candidate,),
+        )
+        newer_invalid_range = _make_opening_range(range_start=_RANGE_START + timedelta(hours=1), is_formed=True, is_valid=False)
+        evidence = _evidence_with_ranges(
+            older_valid_range, newer_invalid_range,
+            volatility=make_volatility_state(atr=0.001, is_expansion=True, volatility_score=90.0),
+        )
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        # If ORB had fallen back to the older, valid range (which has a
+        # genuine qualifying candidate), this would be QUALIFIED instead.
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Opening range invalidated by a data gap or insufficient bar count")
+
+
+class TestMarketIntelligenceEligibility(_OrbTestCase):
+    """ADR-035 Phase 4 -- examples F, F', G-K
+    (docs/plans/adr-035-phase4-mi-eligibility-integration.md §6)."""
+
+    def _qualifying_evidence(self):
+        opening_range = _make_opening_range()
+        candidate = _bar(6, 0, 1.100, 1.108, 1.099, 1.108)
+        return _breakout_evidence(candidate, opening_range, atr=0.001, volatility_score=90.0)
+
+    def test_market_closed_is_not_qualified(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(market_safety=make_market_safety_status(closed=True)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Market closed")
+
+    def test_holiday_is_not_qualified_independently_of_market_closed(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(market_safety=make_market_safety_status(closed=False, holiday=True)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Holiday")
+
+    def test_news_blackout_is_not_qualified(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(news=make_pair_news_intelligence(blackout_active=True)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "News blackout active")
+
+    def test_spread_exactly_at_maximum_passes(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(liquidity=make_liquidity_intelligence(current_spread=3.0)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+
+    def test_spread_above_maximum_is_not_qualified(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(liquidity=make_liquidity_intelligence(current_spread=3.5)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Spread 3.5 exceeds maximum 3.0")
+
+    def test_liquidity_exactly_at_minimum_passes(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(liquidity=make_liquidity_intelligence(liquidity_score=60.0)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+
+    def test_liquidity_below_minimum_is_not_qualified(self):
+        strategy = self.make_strategy()
+        mi = make_mi_snapshot(pair_safety=make_pair_safety(liquidity=make_liquidity_intelligence(liquidity_score=59.9)))
+        result = strategy.qualify("EURUSD", self._qualifying_evidence(), mi, _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Liquidity score 59.9 below minimum 60.0")
+
+    def test_all_gates_pass_with_fvg_present_is_qualified(self):
+        strategy = self.make_strategy()
+        opening_range = _make_opening_range()
+        candidate = _bar(10, 0, 1.100, 1.108, 1.099, 1.108)
+        gap = _fvg(StructureDirection.BULLISH, start_index=2, end_index=8, gap_high=1.107, gap_low=1.1065)
+        evidence = _breakout_evidence(candidate, opening_range, atr=0.001, volatility_score=90.0, fair_value_gaps=(gap,))
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+        self.assertTrue(any("FVG" in s for s in result.strengths))
+
+    def test_lockout_unaffected_by_multi_gate_pass_through(self):
+        strategy = self.make_strategy()
+        evidence = self._qualifying_evidence()
+        first = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        second = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(first.status, QualificationStatus.QUALIFIED)
+        self.assertEqual(second.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(second.reason, "Already qualified for this opening range")
 
 
 class TestNoPostRangeEvidence(_OrbTestCase):
@@ -274,17 +407,32 @@ class TestAtrDistance(_OrbTestCase):
     _BEARISH_CANDIDATE = _bar(6, 0, 1.0945, 1.0950, 1.0915, 1.092)  # close = range_low - 0.003
 
     def test_non_positive_atr_is_not_qualified(self):
+        # ADR-035 Phase 4 (docs/plans/adr-035-phase4-mi-eligibility-integration.md
+        # §3a): the new range-quality gate's own non-positive-ATR guard is
+        # unconditional (no config field can bypass it, by design -- an
+        # unconditional fail-closed guard must not be config-disableable) and
+        # runs strictly before this test's original breakout-distance check, so
+        # it is this gate's reason string that now fires for atr=0.0, not the
+        # later breakout-distance-specific one. No orb_min_range_atr_ratio
+        # override can change this, unlike the two below-threshold tests below.
         strategy = self.make_strategy()
         evidence = _breakout_evidence(self._CANDIDATE, _make_opening_range(), atr=0.0)
         result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
         self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
-        self.assertEqual(result.reason, "Insufficient volatility evidence (non-positive ATR)")
+        self.assertEqual(result.reason, "Insufficient volatility evidence to assess range quality (non-positive ATR)")
 
     def test_distance_below_threshold_is_not_qualified(self):
         # distance = 0.003; threshold = 0.15 * atr; atr=0.03 -> threshold 0.0045 > 0.003
+        # ADR-035 Phase 4 (§3a): atr=0.03 against this class's shared 0.010-width
+        # range also trips the new range-quality gate (ratio 0.333 < default 0.5)
+        # strictly before this check runs, so this test isolates the
+        # breakout-distance threshold via a locally-permissive
+        # orb_min_range_atr_ratio override -- fixture value and reason string
+        # both unchanged.
         strategy = self.make_strategy()
+        config = dataclasses.replace(_ORB_APPROVED_CONFIG, orb_min_range_atr_ratio=0.01)
         evidence = _breakout_evidence(self._CANDIDATE, _make_opening_range(), atr=0.03)
-        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), config)
         self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
         self.assertEqual(result.reason, "Breakout distance below ATR-relative threshold")
 
@@ -303,11 +451,51 @@ class TestAtrDistance(_OrbTestCase):
 
     def test_bearish_distance_below_threshold_is_not_qualified(self):
         # distance = 0.003; threshold = 0.15 * atr; atr=0.03 -> threshold 0.0045 > 0.003
+        # ADR-035 Phase 4 (§3a): same range-quality-gate override as the
+        # bullish case above, for the same reason.
         strategy = self.make_strategy()
+        config = dataclasses.replace(_ORB_APPROVED_CONFIG, orb_min_range_atr_ratio=0.01)
         evidence = _breakout_evidence(self._BEARISH_CANDIDATE, _make_opening_range(), atr=0.03)
-        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), config)
         self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
         self.assertEqual(result.reason, "Breakout distance below ATR-relative threshold")
+
+
+class TestRangeQualityGate(_OrbTestCase):
+    """ADR-035 Phase 4 -- range-width/ATR gate, examples L/L'/M
+    (docs/plans/adr-035-phase4-mi-eligibility-integration.md §3a). Runs
+    before post_range_bars is even inspected, so a non-positive ATR is
+    caught here rather than at the later breakout-distance check."""
+
+    def test_ratio_exactly_at_threshold_passes(self):
+        # range width = 0.010 (_RANGE_HIGH - _RANGE_LOW); atr chosen so
+        # 0.010 / atr == 0.5 exactly -> atr = 0.02.
+        strategy = self.make_strategy()
+        opening_range = _make_opening_range()
+        candidate = _bar(6, 0, 1.100, 1.108, 1.099, 1.108)
+        evidence = _breakout_evidence(candidate, opening_range, atr=0.02, volatility_score=90.0)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.QUALIFIED)
+
+    def test_ratio_below_threshold_is_not_qualified(self):
+        # range width = 0.010; atr = 0.03 -> ratio = 0.333... < 0.5
+        strategy = self.make_strategy()
+        opening_range = _make_opening_range()
+        candidate = _bar(6, 0, 1.100, 1.108, 1.099, 1.108)
+        evidence = _breakout_evidence(candidate, opening_range, atr=0.03, volatility_score=90.0)
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Range width/ATR ratio 0.33 below minimum 0.5")
+
+    def test_non_positive_atr_is_not_qualified_before_post_range_bars_checked(self):
+        strategy = self.make_strategy()
+        opening_range = _make_opening_range()  # no post_range_bars at all
+        evidence = _evidence_with_ranges(
+            opening_range, volatility=make_volatility_state(atr=0.0, is_expansion=True, volatility_score=90.0),
+        )
+        result = strategy.qualify("EURUSD", evidence, make_mi_snapshot(), _ORB_APPROVED_CONFIG)
+        self.assertEqual(result.status, QualificationStatus.NOT_QUALIFIED)
+        self.assertEqual(result.reason, "Insufficient volatility evidence to assess range quality (non-positive ATR)")
 
 
 class TestBodyWickRatio(_OrbTestCase):
@@ -502,6 +690,20 @@ class TestConfigValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             StrategyEngineConfig(orb_fvg_score_weight=-0.01)
 
+    def test_invalid_min_range_atr_ratio_raises(self):
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_min_range_atr_ratio=0.0)
+
+    def test_invalid_max_spread_pips_raises(self):
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_max_spread_pips=0.0)
+
+    def test_invalid_min_liquidity_score_raises(self):
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_min_liquidity_score=100.01)
+        with self.assertRaises(ValueError):
+            StrategyEngineConfig(orb_min_liquidity_score=-0.01)
+
     def test_defaults_match_adr_035(self):
         config = StrategyEngineConfig()
         self.assertEqual(config.orb_min_breakout_distance_atr_multiple, 0.15)
@@ -511,6 +713,9 @@ class TestConfigValidation(unittest.TestCase):
         self.assertEqual(config.orb_fvg_max_age_bars, 10)
         self.assertEqual(config.orb_fvg_min_size_atr_multiple, 0.1)
         self.assertEqual(config.orb_fvg_score_weight, 0.15)
+        self.assertEqual(config.orb_min_range_atr_ratio, 0.5)
+        self.assertEqual(config.orb_max_spread_pips, 3.0)
+        self.assertEqual(config.orb_min_liquidity_score, 60.0)
 
 
 class TestFvgConfirmation(_OrbTestCase):

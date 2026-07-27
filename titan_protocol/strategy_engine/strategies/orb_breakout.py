@@ -79,17 +79,48 @@ class OrbBreakoutStrategy(Strategy):
         if ineligible is not None:
             return ineligible
 
+        pair_safety = market_intelligence.pair_safety
+        if pair_safety.market_safety.market_closed:
+            return _not_qualified(pair, "Market closed")
+        if pair_safety.market_safety.is_holiday:
+            return _not_qualified(pair, "Holiday")
+        if pair_safety.news.blackout_active:
+            return _not_qualified(pair, "News blackout active")
+        if pair_safety.liquidity.current_spread > config.orb_max_spread_pips:
+            return _not_qualified(
+                pair, f"Spread {pair_safety.liquidity.current_spread:.1f} exceeds maximum {config.orb_max_spread_pips}"
+            )
+        if pair_safety.liquidity.liquidity_score < config.orb_min_liquidity_score:
+            return _not_qualified(
+                pair, f"Liquidity score {pair_safety.liquidity.liquidity_score:.1f} below minimum {config.orb_min_liquidity_score}"
+            )
+
         opening_ranges = evidence.opening_ranges
         if not opening_ranges:
             return _not_qualified(pair, "No opening range configured for this evaluation cycle")
-        if len(opening_ranges) > 1:
-            return _not_qualified(pair, "Multiple opening ranges configured, cannot disambiguate before Phase 4")
 
-        opening_range = opening_ranges[0]
-        if not opening_range.is_formed:
-            return _not_qualified(pair, "Opening range not yet formed")
+        formed_ranges = [r for r in opening_ranges if r.is_formed]
+        if not formed_ranges:
+            return _not_qualified(pair, "No opening range currently relevant (none yet formed)")
+
+        latest_range_end = max(r.range_end for r in formed_ranges)
+        currently_relevant = [r for r in formed_ranges if r.range_end == latest_range_end]
+        if len(currently_relevant) > 1:
+            return _not_qualified(
+                pair,
+                "Multiple opening ranges are simultaneously relevant "
+                "(unreachable under current anchor-overlap validation; retained as defense-in-depth)",
+            )
+        opening_range = currently_relevant[0]
+
         if not opening_range.is_valid:
             return _not_qualified(pair, "Opening range invalidated by a data gap or insufficient bar count")
+
+        if evidence.volatility.atr <= 0:
+            return _not_qualified(pair, "Insufficient volatility evidence to assess range quality (non-positive ATR)")
+        range_atr_ratio = (opening_range.range_high - opening_range.range_low) / evidence.volatility.atr
+        if range_atr_ratio < config.orb_min_range_atr_ratio:
+            return _not_qualified(pair, f"Range width/ATR ratio {range_atr_ratio:.2f} below minimum {config.orb_min_range_atr_ratio}")
 
         post_range_bars = opening_range.post_range_bars
         if not post_range_bars:

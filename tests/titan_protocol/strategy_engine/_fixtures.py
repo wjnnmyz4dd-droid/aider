@@ -148,17 +148,17 @@ def make_pair_news_intelligence(pair: str = "EURUSD", news_score: float = 100.0,
     )
 
 
-def make_liquidity_intelligence(liquidity_score: float = 100.0) -> LiquidityIntelligence:
-    return LiquidityIntelligence(current_spread=1.0, average_spread=1.0, spread_widening=False, liquidity_score=liquidity_score, reason="test")
+def make_liquidity_intelligence(liquidity_score: float = 100.0, current_spread: float = 1.0, average_spread: float = 1.0) -> LiquidityIntelligence:
+    return LiquidityIntelligence(current_spread=current_spread, average_spread=average_spread, spread_widening=False, liquidity_score=liquidity_score, reason="test")
 
 
 def make_session_intelligence(session: SessionName = SessionName.LONDON_NEW_YORK_OVERLAP, session_score: float = 100.0, preferred: bool = True) -> SessionIntelligence:
     return SessionIntelligence(session=session, session_score=session_score, preferred=preferred, reason="test")
 
 
-def make_market_safety_status(safety_score: float = 100.0, closed: bool = False, halted: bool = False, maintenance: bool = False) -> MarketSafetyStatus:
+def make_market_safety_status(safety_score: float = 100.0, closed: bool = False, halted: bool = False, maintenance: bool = False, holiday: bool = False) -> MarketSafetyStatus:
     return MarketSafetyStatus(
-        is_holiday=False, is_early_close=False, is_weekend_approaching=False,
+        is_holiday=holiday, is_early_close=False, is_weekend_approaching=False,
         broker_maintenance=maintenance, trading_halted=halted, market_closed=closed,
         safety_score=safety_score, reason="test",
     )

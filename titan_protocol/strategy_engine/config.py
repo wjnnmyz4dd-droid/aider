@@ -89,6 +89,11 @@ class StrategyEngineConfig:
     orb_fvg_min_size_atr_multiple: float = 0.1  # min (gap_high - gap_low) / atr for a qualifying FVG
     orb_fvg_score_weight: float = 0.15  # weight on the binary FVG-confirmation bonus; cross-field weight-sum bound is Phase 5's scope (ADR-035 §17), not validated here
 
+    # -- Opening Range Breakout MI eligibility + range quality (ADR-035 §2/§13, Phase 4) --
+    orb_min_range_atr_ratio: float = 0.5  # min (range_high - range_low) / atr for the opening range to be judged wide enough to be a real range, not noise
+    orb_max_spread_pips: float = 3.0  # max pair_safety.liquidity.current_spread before the pair is judged untradeable this cycle
+    orb_min_liquidity_score: float = 60.0  # min pair_safety.liquidity.liquidity_score (Market Intelligence's broker/spread-derived score, distinct from Evidence Engine's structural liquidity)
+
     def __post_init__(self) -> None:
         if self.orb_min_breakout_distance_atr_multiple <= 0:
             raise ValueError(
@@ -117,6 +122,18 @@ class StrategyEngineConfig:
         if not (0.0 <= self.orb_fvg_score_weight <= 1.0):
             raise ValueError(
                 f"orb_fvg_score_weight must be within [0, 1], got {self.orb_fvg_score_weight}"
+            )
+        if self.orb_min_range_atr_ratio <= 0:
+            raise ValueError(
+                f"orb_min_range_atr_ratio must be > 0, got {self.orb_min_range_atr_ratio}"
+            )
+        if self.orb_max_spread_pips <= 0:
+            raise ValueError(
+                f"orb_max_spread_pips must be > 0, got {self.orb_max_spread_pips}"
+            )
+        if not (0.0 <= self.orb_min_liquidity_score <= 100.0):
+            raise ValueError(
+                f"orb_min_liquidity_score must be within [0, 100], got {self.orb_min_liquidity_score}"
             )
 
     def approved_pairs_for(self, strategy_id: StrategyId) -> Tuple[str, ...]:
