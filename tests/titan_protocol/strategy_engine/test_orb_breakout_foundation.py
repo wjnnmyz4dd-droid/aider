@@ -31,7 +31,7 @@ from titan_protocol.strategy_engine.config import DEFAULT_APPROVED_PAIRS_BY_STRA
 from titan_protocol.strategy_engine.models import QualificationStatus, StrategyId, TradeIntent
 from titan_protocol.strategy_engine.strategies import OrbBreakoutStrategy
 from titan_protocol.strategy_engine.strategies.base import Strategy
-from titan_protocol.strategy_state_store import OrbQualificationStore, StrategyStateStoreConfig
+from titan_protocol.strategy_state_store import FormationBlackoutStore, OrbQualificationStore, StrategyStateStoreConfig
 from tests.titan_protocol.strategy_engine._fixtures import (
     T0, make_config, make_evidence_snapshot, make_liquidity_intelligence, make_market_safety_status,
     make_mi_snapshot, make_pair_news_intelligence, make_pair_safety, make_volatility_state,
@@ -48,7 +48,12 @@ _RANGE_LOW = 1.095
 
 class _OrbTestCase(unittest.TestCase):
     """Every test gets its own fresh, temp-file-backed
-    `OrbQualificationStore` -- no shared lockout state between tests."""
+    `OrbQualificationStore` and `FormationBlackoutStore` -- no shared
+    lockout or formation-blackout state between tests. Phase 1/2's own
+    tests below never observe a formation-time blackout in their own
+    fixtures, so the fresh, empty `FormationBlackoutStore` has no effect
+    on their existing assertions (Phase 7's own non-interference
+    requirement, §P10/§P14)."""
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -56,9 +61,15 @@ class _OrbTestCase(unittest.TestCase):
         self.store = OrbQualificationStore(
             StrategyStateStoreConfig(state_file=Path(self._tmpdir.name) / "orb_state.json")
         )
+        self.formation_blackout_store = FormationBlackoutStore(
+            StrategyStateStoreConfig(state_file=Path(self._tmpdir.name) / "orb_formation_blackout_state.json")
+        )
 
-    def make_strategy(self, store=None) -> OrbBreakoutStrategy:
-        return OrbBreakoutStrategy(store=store or self.store)
+    def make_strategy(self, store=None, formation_blackout_store=None) -> OrbBreakoutStrategy:
+        return OrbBreakoutStrategy(
+            store=store or self.store,
+            formation_blackout_store=formation_blackout_store or self.formation_blackout_store,
+        )
 
 
 def _bar(index: int, minutes_after_range_end: int, open_: float, high: float, low: float, close: float) -> OpeningRangeBarObservation:
@@ -133,12 +144,13 @@ class TestStrategyContract(_OrbTestCase):
         self.assertIsInstance(strategy, Strategy)
         self.assertEqual(strategy.definition.strategy_id, StrategyId.OPENING_RANGE_BREAKOUT)
 
-    def test_orb_breakout_strategy_instance_state_is_exactly_the_injected_store(self):
+    def test_orb_breakout_strategy_instance_state_is_exactly_the_injected_stores(self):
         """(ADR-035 §6's anticipated exception to Strategy Engine's
-        stateless convention, Phase 2 Step 2B) -- `_store` is the one,
-        narrowly-scoped instance field; nothing else."""
+        stateless convention, Phase 2 Step 2B, extended by Phase 7)
+        -- `_store` and `_formation_blackout_store` are the only two,
+        narrowly-scoped instance fields; nothing else."""
         strategy = self.make_strategy()
-        self.assertEqual(set(vars(strategy).keys()), {"_store"})
+        self.assertEqual(set(vars(strategy).keys()), {"_store", "_formation_blackout_store"})
 
 
 class TestEligibilityGate(_OrbTestCase):

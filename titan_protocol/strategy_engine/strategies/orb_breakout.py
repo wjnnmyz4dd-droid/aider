@@ -1,5 +1,7 @@
 """Opening Range Breakout (ORB) -- breakout qualification + persistent
-per-range lockout (ADR-035 §4, §18.A item 2, Phase 2 Step 2B).
+per-range lockout (ADR-035 §4, §18.A item 2, Phase 2 Step 2B), plus a
+persisted formation-time news-blackout observation (ADR-035 §2/§14,
+Amendment 1, Phase 7).
 
 Consumes `EvidenceSnapshot.opening_ranges` (ADR-035 Phase 0) and its
 `post_range_bars` evidence contract (ADR-024 Amendment 4, Step 2A) to
@@ -9,13 +11,23 @@ opening range, with a restart-safe, concurrency-safe lockout limiting
 qualifications per `(pair, range_start)` (`OrbQualificationStore`).
 Still absent from `build_default_registry()` -- production registration
 remains no earlier than Phase 6 (ADR-035 §17).
+
+Phase 7 additionally records, for every still-forming opening range,
+whether `pair_safety.news.blackout_active` was ever observed `True`
+during that range's own `[range_start, range_end)` formation window
+(`FormationBlackoutStore`) -- a fact read back once the range has
+formed to close the gap Amendment 1 authorized Phase 4 to leave open
+(evaluation-time-only blackout enforcement). This never reconstructs or
+reinterprets Market Intelligence's blackout-window arithmetic; it only
+persists the already-computed `blackout_active` boolean the existing
+evaluation-time check (below) already reads.
 """
 
 from __future__ import annotations
 
 from titan_protocol.evidence_engine.models import EvidenceSnapshot, StructureDirection
 from titan_protocol.market_intelligence.models import MarketIntelligenceSnapshot
-from titan_protocol.strategy_state_store import OrbQualificationStore
+from titan_protocol.strategy_state_store import FormationBlackoutStore, OrbQualificationStore
 
 from ..config import StrategyEngineConfig
 from ..eligibility import check_eligibility
@@ -61,8 +73,9 @@ def _not_qualified(pair: str, reason: str) -> QualificationResult:
 
 
 class OrbBreakoutStrategy(Strategy):
-    def __init__(self, store: OrbQualificationStore) -> None:
+    def __init__(self, store: OrbQualificationStore, formation_blackout_store: FormationBlackoutStore) -> None:
         self._store = store
+        self._formation_blackout_store = formation_blackout_store
 
     @property
     def definition(self) -> StrategyDefinition:
@@ -80,6 +93,12 @@ class OrbBreakoutStrategy(Strategy):
             return ineligible
 
         pair_safety = market_intelligence.pair_safety
+        for r in evidence.opening_ranges:
+            if not r.is_formed:
+                self._formation_blackout_store.record_cycle_observation(
+                    pair, r.range_start, pair_safety.news.blackout_active,
+                )
+
         if pair_safety.market_safety.market_closed:
             return _not_qualified(pair, "Market closed")
         if pair_safety.market_safety.is_holiday:
@@ -115,6 +134,9 @@ class OrbBreakoutStrategy(Strategy):
 
         if not opening_range.is_valid:
             return _not_qualified(pair, "Opening range invalidated by a data gap or insufficient bar count")
+
+        if self._formation_blackout_store.was_blackout_observed(pair, opening_range.range_start):
+            return _not_qualified(pair, "News blackout observed during range formation")
 
         if evidence.volatility.atr <= 0:
             return _not_qualified(pair, "Insufficient volatility evidence to assess range quality (non-positive ATR)")

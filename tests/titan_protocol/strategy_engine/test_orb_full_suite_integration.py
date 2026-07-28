@@ -1,7 +1,7 @@
 """ADR-035 Phase 6 -- Full-suite validation (docs/plans/adr-035-phase6-full-suite-validation.md).
 
 Exercises the *real* production factory (`build_default_registry()`/
-`build_default_registry(store)`) and the *real* `StrategyEngine` --
+`build_default_registry(store, formation_store)`) and the *real* `StrategyEngine` --
 never a hand-assembled `StrategyRegistry()` standing in for either.
 
 Test-only ORB eligibility (Plan §P7a): several tests below need ORB to
@@ -28,7 +28,7 @@ from titan_protocol.strategy_engine.config import DEFAULT_APPROVED_PAIRS_BY_STRA
 from titan_protocol.strategy_engine.engine import StrategyEngine
 from titan_protocol.strategy_engine.models import QualificationStatus, StrategyId
 from titan_protocol.strategy_engine.strategies import build_default_registry
-from titan_protocol.strategy_state_store import OrbQualificationStore, StrategyStateStoreConfig
+from titan_protocol.strategy_state_store import FormationBlackoutStore, OrbQualificationStore, StrategyStateStoreConfig
 from titan_protocol.strategy_state_store.models import CorruptStateError
 
 from tests.titan_protocol.strategy_engine._fixtures import (
@@ -56,6 +56,17 @@ def _fresh_store(tmp_path: Path, filename: str = "orb_qualifications.json") -> O
     return OrbQualificationStore(StrategyStateStoreConfig(state_file=tmp_path / filename))
 
 
+def _fresh_formation_blackout_store(
+    tmp_path: Path, filename: str = "orb_formation_blackout.json"
+) -> FormationBlackoutStore:
+    """A fresh, empty store for every test below -- none of these
+    pre-Phase-7 fixtures ever simulate a formation-time blackout, so
+    `was_blackout_observed()` is always `False` here, leaving every
+    existing assertion in this file unaffected by Phase 7's addition
+    (§P10/§P14's own non-interference requirement)."""
+    return FormationBlackoutStore(StrategyStateStoreConfig(state_file=tmp_path / filename))
+
+
 def _orb_result(snapshot):
     return next(q for q in snapshot.all_qualifications if q.strategy_id == StrategyId.OPENING_RANGE_BREAKOUT)
 
@@ -72,7 +83,8 @@ class TestRegistryCardinality(unittest.TestCase):
     def test_with_store_returns_six_including_orb_exactly_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            registry = build_default_registry(store)
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            registry = build_default_registry(store, formation_store)
             ids = [s.definition.strategy_id for s in registry.all()]
             self.assertEqual(len(ids), 6)
             self.assertEqual(ids.count(StrategyId.OPENING_RANGE_BREAKOUT), 1)
@@ -80,7 +92,8 @@ class TestRegistryCardinality(unittest.TestCase):
     def test_orb_strategy_holds_the_exact_supplied_store_instance(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            registry = build_default_registry(store)
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            registry = build_default_registry(store, formation_store)
             orb_strategy = registry.get(StrategyId.OPENING_RANGE_BREAKOUT)
             self.assertIs(orb_strategy._store, store)
 
@@ -103,7 +116,8 @@ class TestLegacyStrategyRegressionThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            six_strategy_engine = StrategyEngine(make_config(), registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            six_strategy_engine = StrategyEngine(make_config(), registry=build_default_registry(store, formation_store))
             six_snapshot = six_strategy_engine.evaluate("EURUSD", evidence, mi)
 
         five_by_id = {q.strategy_id: q for q in five_snapshot.all_qualifications}
@@ -127,7 +141,8 @@ class TestProductionEligibilityUnderDefaultPolicy(unittest.TestCase):
     def test_orb_is_not_eligible_for_any_pair_under_the_shipped_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(make_config(), registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(make_config(), registry=build_default_registry(store, formation_store))
             for pair in ("EURUSD", "GBPUSD", "AUDNZD"):
                 snapshot = engine.evaluate(pair, make_evidence_snapshot(symbol=pair), make_mi_snapshot(pair=pair))
                 orb_result = _orb_result(snapshot)
@@ -145,7 +160,8 @@ class TestOrbQualificationThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.QUALIFIED)
@@ -153,7 +169,7 @@ class TestOrbQualificationThroughRealEngine(unittest.TestCase):
 
 class TestLockoutThroughRealEngine(unittest.TestCase):
     """P8 item 8 -- lockout/persistence exercised through the real
-    engine construction path (build_default_registry(store)), not by
+    engine construction path (build_default_registry(store, formation_store)), not by
     calling OrbBreakoutStrategy.qualify() directly. Uses the test-only
     eligibility override."""
 
@@ -164,7 +180,8 @@ class TestLockoutThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             first = _orb_result(engine.evaluate("EURUSD", evidence, make_mi_snapshot()))
             second = _orb_result(engine.evaluate("EURUSD", evidence, make_mi_snapshot()))
             self.assertEqual(first.status, QualificationStatus.QUALIFIED)
@@ -179,8 +196,9 @@ class TestLockoutThroughRealEngine(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "orb_qualifications.json"
             store_before_restart = OrbQualificationStore(StrategyStateStoreConfig(state_file=state_file))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
             engine_before_restart = StrategyEngine(
-                _ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store_before_restart),
+                _ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store_before_restart, formation_store),
             )
             first = _orb_result(engine_before_restart.evaluate("EURUSD", evidence, make_mi_snapshot()))
             self.assertEqual(first.status, QualificationStatus.QUALIFIED)
@@ -188,7 +206,7 @@ class TestLockoutThroughRealEngine(unittest.TestCase):
             # Simulate a restart: a brand-new store/registry/engine reading the same file.
             store_after_restart = OrbQualificationStore(StrategyStateStoreConfig(state_file=state_file))
             engine_after_restart = StrategyEngine(
-                _ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store_after_restart),
+                _ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store_after_restart, formation_store),
             )
             second = _orb_result(engine_after_restart.evaluate("EURUSD", evidence, make_mi_snapshot()))
             self.assertEqual(second.status, QualificationStatus.NOT_QUALIFIED)
@@ -209,7 +227,8 @@ class TestLockoutThroughRealEngine(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(eligible_config, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(eligible_config, registry=build_default_registry(store, formation_store))
             eurusd_first = _orb_result(engine.evaluate("EURUSD", evidence_eurusd, make_mi_snapshot(pair="EURUSD")))
             eurusd_second = _orb_result(engine.evaluate("EURUSD", evidence_eurusd, make_mi_snapshot(pair="EURUSD")))
             gbpusd_first = _orb_result(engine.evaluate("GBPUSD", evidence_gbpusd, make_mi_snapshot(pair="GBPUSD")))
@@ -251,12 +270,13 @@ class TestPersistFailureContainment(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
 
             def _raise(*_args, **_kwargs):
                 raise OSError("simulated disk failure")
 
             store._persist = _raise  # type: ignore[method-assign]
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             # Must not raise -- try_consume() catches and logs internally.
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
@@ -279,7 +299,8 @@ class TestSection15EdgeCasesThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.NOT_QUALIFIED)
@@ -294,7 +315,8 @@ class TestSection15EdgeCasesThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.QUALIFIED)
@@ -309,7 +331,8 @@ class TestSection15EdgeCasesThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.NOT_QUALIFIED)
@@ -322,7 +345,8 @@ class TestSection15EdgeCasesThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, mi)
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.NOT_QUALIFIED)
@@ -341,7 +365,8 @@ class TestSection15EdgeCasesThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.QUALIFIED)
@@ -356,7 +381,8 @@ class TestSection15EdgeCasesThroughRealEngine(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = _fresh_store(Path(tmp))
-            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store))
+            formation_store = _fresh_formation_blackout_store(Path(tmp))
+            engine = StrategyEngine(_ORB_ELIGIBLE_CONFIG, registry=build_default_registry(store, formation_store))
             snapshot = engine.evaluate("EURUSD", evidence, make_mi_snapshot())
             orb_result = _orb_result(snapshot)
             self.assertEqual(orb_result.status, QualificationStatus.NOT_QUALIFIED)

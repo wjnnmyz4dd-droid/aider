@@ -143,6 +143,7 @@ from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.engine import StrategyEngine
 from titan_protocol.strategy_engine.strategies import build_default_registry
 from titan_protocol.strategy_state_store.config import StrategyStateStoreConfig
+from titan_protocol.strategy_state_store.formation_blackout_store import FormationBlackoutStore
 from titan_protocol.strategy_state_store.store import OrbQualificationStore
 
 from config_loader import ConfigError, build_trading_profile, is_process_alive, load_settings
@@ -1204,7 +1205,15 @@ def run_foreground(config_path: Path) -> int:
     orb_qualification_store = OrbQualificationStore(
         StrategyStateStoreConfig(state_file=settings.state_dir / "orb_qualifications.json")
     )
-    strategy_registry = build_default_registry(orb_qualification_store)
+    # ADR-035 Phase 7: formation-time news-blackout observation, same
+    # settings.state_dir-relative convention, same fail-closed-at-
+    # construction treatment as orb_qualification_store immediately
+    # above -- a separate store, not an extension of it (Amendment 1;
+    # the two facts have genuinely different write contracts).
+    orb_formation_blackout_store = FormationBlackoutStore(
+        StrategyStateStoreConfig(state_file=settings.state_dir / "orb_formation_blackout.json")
+    )
+    strategy_registry = build_default_registry(orb_qualification_store, orb_formation_blackout_store)
     strategy_engine = StrategyEngine(strategy_config, registry=strategy_registry)
     risk_engine = RiskEngine(settings.risk_config)
     compliance_engine = ComplianceEngine(settings.compliance_config)
