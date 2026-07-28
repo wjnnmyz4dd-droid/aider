@@ -232,112 +232,222 @@ giving `StrategyEngine` ownership of the reduction itself. This ADR
 requires that the identity travel this way; it does not specify the
 exact field name or type, which is Plan-level work.
 
-## 5. Pipeline placement and control-flow architecture (revised — F1)
+## 5. Pipeline placement and control-flow architecture (revised — F1, corrected after final review's G1 finding)
 
 **Decision (unchanged from the prior draft): immediately after Strategy
-Engine qualification, before Risk Engine — but this revision now
-specifies the control-flow model required to achieve that placement,
-which the reviewed draft omitted.**
+Engine qualification, before Risk Engine.**
 
-**What the independent review found, verified fresh against source for
-this revision:** `RuntimeOrchestrator`'s only production entry point,
-`run_cycle()` (`titan_protocol/runtime/engine.py:413`), loops
-`for pair in sorted(pairs)` and calls `run_cycle_for_pair()`
-(`engine.py:110`) once per pair. `run_cycle_for_pair()` is a single,
-monolithic function that runs Evidence → Market Intelligence → Strategy
-→ Risk → Compliance → Bridge **all the way through for one pair, in one
-call**, with early-exit on any rejection, before the loop advances to
-the next pair. There is no existing point at which Runtime holds
-multiple pairs' Strategy Engine outputs simultaneously. Inserting a
-cross-pair stage between Strategy and Risk is therefore not a diagram
-edit — it requires a real, if narrowly scoped, restructuring of how
-Runtime sequences the affected pairs. That restructuring is specified
-below, at the architecture level, not deferred to an implementer.
+**Correction to this revision's history:** the prior revision's control-
+flow model (items 1, 3, and 8, as originally drafted) was found by an
+independent final review to be internally inconsistent — item 1 stated a
+routing criterion (a pair's own Strategy Engine output) that could not
+be known before the very decision it was meant to control; item 3
+implied re-running each pair's front half once per enabled session,
+duplicating computation and contradicting item 8, which already implied
+(correctly, but inconsistently with item 3) a single shared pass. This
+section replaces that model with one, consistent architecture, stated
+once, below. Nothing about the underlying placement decision (pre-Risk),
+the barrier's necessity, or Runtime's role changes — only the previously
+contradictory mechanics are corrected.
 
-**The control-flow model:**
+**What remains true from source, re-verified for this correction:**
+`RuntimeOrchestrator`'s only production entry point, `run_cycle()`
+(`titan_protocol/runtime/engine.py:413`), loops `for pair in sorted(pairs)`
+and calls `run_cycle_for_pair()` (`engine.py:110`) once per pair.
+`run_cycle_for_pair()` is a single, monolithic function that runs
+Evidence → Market Intelligence → Strategy → Risk → Compliance → Bridge
+all the way through for one pair, in one call, with early-exit on any
+rejection, before the loop advances to the next pair. There is no
+existing point at which Runtime holds multiple pairs' Strategy Engine
+outputs simultaneously — inserting a cross-pair stage requires a real,
+narrowly scoped restructuring, specified below.
 
-1. **Scope of the restructuring.** Only pairs whose Strategy Engine
-   output is (a) a winning ORB qualification and (b) tagged with a
-   `range_start` (§8) belonging to a **currently enabled session**
-   (§8/§11) are affected. Every other pair — evaluated by a legacy
-   strategy, or by ORB against an anchor whose session is not enabled,
-   or with no formed range at all — continues through the existing,
-   entirely unmodified single-pass `run_cycle_for_pair()` exactly as
-   today: Evidence → Market Intelligence → Strategy → Risk → Compliance
-   → Bridge, independently, with no barrier and no engine call added.
-   This ADR's mechanism is additive for a defined subset of cycles, not
-   a rewrite of Runtime's default behavior.
-2. **Front half / back half.** For a pair that *is* in scope, Runtime's
-   existing per-pair sequence is split at the same point this ADR
-   already identified as the placement boundary: a **front half**
-   (Evidence → Market Intelligence → Strategy, unmodified engine calls,
-   in the same order, on the same per-pair signatures ADR-031 §3
-   already specifies) and a **back half** (Risk → Compliance → Bridge,
-   likewise unmodified). Both halves reuse today's exact engine calls;
-   nothing about Evidence/MI/Strategy/Risk/Compliance/Bridge's own
-   `evaluate()` signatures changes.
-3. **The barrier.** For each enabled session, Runtime completes the
-   front half for **every** candidate pair in that session's frozen
-   candidate universe (§7 defines "frozen" and the universe's source)
-   before continuing *any* of them into the back half. This is the
-   barrier the reviewed draft's diagram implied but never located.
-   Completing the front half for the whole set, then pausing, is new
-   sequencing behavior for `run_cycle`/`run_cycle_for_pair` — it does
-   not exist today and must be added.
-4. **Who owns the barrier.** **Runtime owns the barrier's mechanics**
-   (knowing which pairs belong to which enabled session's candidate
-   universe — a static configuration membership fact, not a computed
-   trading decision; counting front-half completions against §7's
-   frozen expected count; and, once complete, invoking the Opportunity
-   Selection Engine). **The Opportunity Selection Engine owns the
-   decision** (which pair, if any, wins). This split mirrors the same
-   division of labor Runtime already has with every other engine: it
-   sequences and checks results, it does not compute them.
-5. **How the engine receives the complete set.** Runtime passes the
-   Opportunity Selection Engine the full set of that session's front-
-   half results — each candidate's `QualificationResult`/
-   `StrategySnapshot` (including the `range_start` identity required by
-   §4/§8) — once §7's completeness check confirms the frozen universe
-   was fully evaluated. An incomplete set is never passed forward as if
-   complete (§7).
-6. **How exactly one selected pair proceeds.** The engine returns
-   `Optional[pair]` (§6, unchanged). Runtime reads that result and
-   continues the back half **only** for the pair matching it — an
-   equality check against a value another engine's public interface
-   already returned, the same verification shape ADR-031 §2 already
-   requires of every Runtime conditional.
-7. **How rejected/non-winning pairs stop before Risk.** Every other pair
-   in that session's candidate universe ends its cycle at this point
-   with a new, explicit terminal outcome ("not selected this session") —
-   the same shape as existing `CycleOutcome` terminal values
-   (`runtime/models.py`'s existing enum already models per-pair cycle
-   endings this way, e.g. `NO_STRATEGY`, `RISK_REJECTED`); this ADR does
-   not invent the mechanism, only requires that one exists so a non-
-   winning pair's cycle is recorded as ended, not silently dropped.
-   Risk, Compliance, and Bridge are never invoked for a non-winning pair
-   this cycle.
-8. **Overlapping enabled sessions.** Each enabled session gets its own
-   independent candidate universe, its own barrier, and its own
-   Opportunity Selection Engine invocation — even when two sessions'
-   time windows overlap. This is safe by construction because Gate B's
-   own anchor validation (`_validate_no_overlapping_anchors`,
-   `evidence_engine/config.py`) already guarantees every configured
-   anchor's `[range_start, range_end)` window is disjoint from every
-   other's; a pair cannot simultaneously have two different "currently
-   relevant" ranges (`orb_breakout.py`'s own `latest_range_end` logic
-   already collapses to at most one per pair per cycle, §2), so a pair
-   present in two sessions' *nominal* candidate universes is only ever
-   an active candidate in **whichever one session** its currently-formed
-   range actually belongs to that cycle — never both at once. Runtime
-   does not need to pre-partition pairs into sessions; membership in a
-   given cycle's barrier is determined dynamically by which range each
-   pair's front half actually produced, filtered to enabled sessions.
-9. **Pairs/session-ranges not participating.** Can exist, and must not
-   silently fall back to unrestricted execution — this is exactly F3's
-   subject; see §11's new structural-readiness invariant, which this
-   subsection depends on: the routing rule above is only safe if every
-   configured anchor whose session is *not* enabled is caught at startup
-   (§11), not encountered for the first time at runtime.
+### A. Front-half execution — exactly once per pair per cycle
+
+Every pair in the cycle's relevant configured universe (§7's frozen
+`ORB Gate-A-approved pairs ∩ allowed_pairs` intersection) is processed
+through Evidence → Market Intelligence → Strategy **exactly once per
+Runtime cycle** — the same unmodified engine calls, in the same order,
+on the same per-pair signatures ADR-031 §3 already specifies. **The
+front half is never run once per enabled session and never run twice
+for the same pair in the same cycle.** Runtime does not need to know,
+before this front half runs, which enabled opportunity window (if any)
+a pair will turn out to belong to — that information does not exist
+until Strategy Engine has already produced it. This is the front-half
+result that becomes shared input to whatever opportunity-window grouping
+follows (§C, §E).
+
+### B. Post-front-half classification
+
+Only *after* a pair's front-half result exists may Runtime classify it.
+Runtime may inspect only explicit, already-computed engine-produced
+fields needed for orchestration:
+
+- whether a usable Strategy result exists for this pair this cycle;
+- whether `OPENING_RANGE_BREAKOUT` is the winning qualification
+  (`StrategySnapshot.winning_strategy`, unmodified field);
+- the explicit `range_start`/opportunity-window tag the additive field
+  (§4) carries — Runtime reads this value, it does not compute it;
+- whether that `range_start` corresponds to a currently enabled
+  configured opportunity window (§8/§11) — a static configuration
+  membership check.
+
+Runtime must not reproduce ORB qualification, opening-range
+"currently-relevant-range" logic, ranking, or any trading decision to
+perform this classification — every one of the four checks above is a
+membership/equality test against a value another engine's public
+interface, or static configuration, already provided.
+
+### C. Barrier participation
+
+A pair never enters a special pre-Strategy branch, and no branching
+decision is made before its one front-half execution completes. After
+that single front-half execution:
+
+- if its result's `range_start` corresponds to an **enabled** opportunity
+  window (§B), it becomes a reported result contributing to that
+  window's scan/barrier;
+- otherwise (a legacy-strategy winner, an ORB result whose range belongs
+  to a non-enabled or unconfigured window, or no formed range at all) it
+  is **not** a candidate for any opportunity window this cycle.
+
+**Non-participating results continue through existing behavior
+unmodified and immediately** — most importantly during the pre-
+retirement coexistence period this project's own governance history
+(ADR-036, unmodified by this ADR) still permits: a pair whose Strategy
+Engine result names one of the five legacy strategies as the winning
+qualification proceeds directly into Risk → Compliance → Bridge exactly
+as it does today, with **no waiting, no barrier participation, and no
+added latency** — a broad Gate A universe does not hold unrelated
+legacy-strategy execution hostage behind an ORB barrier; only a pair
+whose *own* result is itself an enabled-window ORB candidate is ever
+held back, and only until that specific window's barrier resolves.
+
+### D. Completeness (resolves G2)
+
+For each enabled opportunity window, the authoritative expected universe
+(§7's `range_start`-independent, session-independent Gate A ∩
+`allowed_pairs` intersection) is frozen at scan start, unchanged from
+the prior revision.
+
+**Terminal front-half outcome, defined:** a pair has reached a terminal
+front-half outcome for the cycle once Evidence, Market Intelligence, and
+Strategy Engine have all been invoked for it and produced a final
+result for this cycle — whether that result is an explicit ORB
+`QUALIFIED`, an explicit ORB `NOT_QUALIFIED`/rejection (holiday, market
+closed, spread, liquidity, no formed range, no breakout — any of
+`orb_breakout.py::qualify()`'s existing, unmodified rejection paths), or
+a legacy strategy winning instead of ORB. **An explicit rejection is a
+terminal outcome, not a missing one** — it must never be misclassified
+as "incomplete." Conversely, a pair whose front half never completes
+this cycle (an exception before Strategy Engine runs, an early-exit at
+Evidence or Market Intelligence per ADR-031 §3's own existing early-exit
+discipline, a timeout, or any other fault that prevents a Strategy
+Engine result from ever being produced for that pair this cycle) has
+**not** reached a terminal outcome, regardless of its presence in the
+input universe.
+
+**The completeness rule, precisely:**
+
+1. **Complete scan, no qualifying opportunity:** every pair in the
+   frozen universe reached a terminal front-half outcome this cycle, and
+   none of those outcomes is an enabled-window ORB candidate (§C). This
+   is a valid, complete result — the enabled window correctly produces
+   no candidates and no winner this cycle, and this is *not* an
+   incompleteness failure.
+2. **Incomplete scan:** one or more pairs in the frozen universe did
+   *not* reach a terminal front-half outcome this cycle. The enabled
+   window's barrier must fail closed — no winner is selected from the
+   partial set, regardless of how many terminal outcomes were, in fact,
+   ORB candidates.
+
+This distinction is exactly the one the final review required: "all
+expected pairs were evaluated and none qualified" (case 1, safe, no
+opportunity) versus "some expected pairs never reached evaluation" (case
+2, unsafe, fails closed) are now structurally different conditions,
+never conflated.
+
+**Explicit disclosure, not a policy change (addresses the review's G3
+observation):** because case 2's fail-closed rule applies per opportunity
+window against the *whole* frozen universe, a single pair's fault (an
+Evidence/MI-level early exit, a timeout, an exception) before its
+Strategy Engine result exists renders that window's entire scan
+incomplete for that cycle — suppressing selection for every other,
+otherwise-healthy candidate pair in that window, that cycle. This is a
+deliberate consequence of this project's capital-preservation-over-
+profit posture (`CLAUDE.md` §2, "Capital preservation overrides
+profit"), not an oversight, and this revision does **not** soften it. A
+future rule for excluding a pair known-unavailable *before* scan start
+from the expected universe (rather than counting it as expected and
+then failing on it) is a legitimate question for later Research/
+governance if the operational cost of this conservatism proves too
+high — it is not decided, adopted, or silently optimized around here.
+
+### E. Grouping and selection after the shared pass
+
+Once every frozen-universe pair has reached a terminal front-half
+outcome for the cycle (§D):
+
+1. Group the enabled-window ORB candidates (§C) by their engine-
+   produced `range_start` identity (§8) — never by re-deriving which
+   range is "currently relevant," only by reading the value Strategy
+   Engine's output already carries.
+2. For each enabled opportunity window whose scan is complete (§D case
+   1 — regardless of whether zero or more candidates resulted), invoke
+   the Opportunity Selection Engine with exactly that window's candidate
+   subset (an empty subset is a valid input, correctly yielding no
+   winner). A window whose scan is incomplete (§D case 2) is never
+   passed to the engine at all — it fails closed directly, without a
+   selector call.
+3. The engine selects at most one pair per `range_start` (§6, §9,
+   unchanged).
+4. **Only that winner** may continue into Risk → Compliance → Bridge
+   for that opportunity window. Runtime reads the engine's
+   `Optional[pair]` result and continues the back half only for the
+   pair matching it — an equality check against a value another
+   engine's public interface already returned.
+5. Every other candidate that contributed to that window's barrier
+   (§C) — i.e., every enabled-window ORB candidate that was not
+   selected — ends its cycle at this point with a new, explicit terminal
+   outcome ("not selected this opportunity window"), the same shape as
+   existing `CycleOutcome` terminal values (`runtime/models.py`'s
+   existing enum already models per-pair cycle endings this way, e.g.
+   `NO_STRATEGY`, `RISK_REJECTED`); this ADR does not invent the
+   mechanism, only requires that one exists so a non-winning candidate's
+   cycle is recorded as ended, not silently dropped. Risk, Compliance,
+   and Bridge are never invoked for a non-winning candidate this cycle.
+   No selector result may release a non-winner into the back half.
+
+### F. Multiple enabled windows
+
+Because every pair's front half runs exactly once per cycle (§A) and
+grouping/selection (§E) happens *after* that single shared pass, the
+architecture requires **no duplicated front-half computation** for one
+enabled window, two enabled windows, or more than two — each enabled
+window simply filters the same shared result set to its own
+`range_start` and runs its own independent Opportunity Selection Engine
+invocation and its own independent completeness check (§D), against
+that same shared, already-computed front-half data. A pair's single
+front-half result is classified according to whichever range
+`orb_breakout.py`'s existing, unmodified "currently relevant range"
+logic (`latest_range_end`/`currently_relevant`, §2) determined for it
+that cycle — this ADR does not invent multi-range qualification
+behavior; a pair contributes to at most one enabled window's barrier per
+cycle, exactly as the existing single-relevant-range design already
+guarantees.
+
+### G. Non-participating pairs and legacy coexistence
+
+Explicit, at the architecture level: before ADR-036 retirement is
+complete, the registry may still contain the five legacy strategies. A
+pair whose Strategy Engine result is not an enabled-window ORB candidate
+(§C) — including every legacy-strategy winner — is never silently
+discarded because cross-pair ORB selection exists elsewhere in the
+system; it follows the existing, entirely unmodified path (§C) with no
+new trading-decision authority granted to Runtime and no redesign of any
+legacy strategy. This ADR's mechanism is additive for a precisely
+defined subset of cycles (enabled-window ORB candidates only), never a
+rewrite of Runtime's default per-pair behavior for anything else.
 
 **Capital-preservation analysis — why not after Risk Engine (unchanged
 from the prior draft, still sound):** the Research (§3.5, §4) flagged
@@ -346,9 +456,10 @@ first create a reservation for every candidate pair in a session, then
 release every reservation except the winner's — structurally the same
 class of defect as this project's own prior, already-fixed
 `ReservationLedger` leak (session history: `S415`/`2173`/`2184`).
-Placing selection *before* Risk Engine, via the barrier above, means at
-most one reservation is ever created per session per cycle (for the
-winner only), eliminating that entire risk class by construction.
+Placing selection *before* Risk Engine, via the corrected model above,
+means at most one reservation is ever created per opportunity window
+per cycle (for the winner only), eliminating that entire risk class by
+construction.
 
 **Accepted tradeoff, explicitly not resolved further here:** a winner
 selected pre-Risk/Compliance can still be rejected by Risk or Compliance
@@ -357,40 +468,44 @@ veto, etc.), with **no automatic fallback to the session's second-best
 candidate**. This is a deliberate scope boundary, not an oversight — see
 §10.
 
-**ADR-031 compatibility, reassessed (the review's central question):**
-the Hard Rules (`ADR-031` §2 — Runtime must never generate signals,
+**ADR-031 compatibility, reassessed against the corrected model:** the
+Hard Rules (`ADR-031` §2 — Runtime must never generate signals,
 calculate evidence, calculate risk, make compliance decisions, or
 override any engine, verified by requiring every Runtime conditional to
-be an equality/membership check) **remain satisfied by the model above,
-and require no text change.** Every new thing Runtime does under this
-model reduces to membership/equality checks against values already
-computed elsewhere: "does this pair's front-half range belong to an
-enabled session" (a static config-membership check), "has the front half
-completed for every pair in the frozen universe" (a count comparison
-against a config-derived number, §7), "does this pair equal the engine's
-returned winner" (an equality check). Runtime is not deciding *who wins*
-— the Opportunity Selection Engine is — Runtime is only deciding *when
-to call it* and *which pair's back half to continue*, both sequencing
-decisions, not trading decisions. This is the same distinction ADR-031
-already draws between Runtime and every other engine it calls.
+be an equality/membership check) **remain satisfied, and require no
+text change.** Every Runtime responsibility in the corrected model —
+executing the existing engines unmodified (§A); reading explicit,
+already-computed fields to classify a result (§B); counting terminal
+front-half outcomes against a frozen, config-derived expected count
+(§D); grouping candidates by an engine-produced identity value, never a
+re-derived one (§E.1); consulting the Opportunity Selection Engine and
+acting on its `Optional[pair]` result via equality check (§E.2–§E.4) —
+reduces to execution, collection, counting, grouping by an already-
+produced value, and membership/equality comparison. Runtime is not
+deciding *who wins* — the Opportunity Selection Engine is — and it is
+not calculating qualification, opening ranges, ranking, risk,
+compliance, or any trade signal at any point in this model.
 
 **However, `ADR-031` §3 ("Pipeline (exactly)") itself is not merely
 compatible without change.** §3 is written as a strict, linear, per-pair,
 per-cycle six-stage sequence with early-exit discipline — accurate today
-for every pair, unconditionally. Under this ADR's model, that description
-becomes accurate only for pairs *outside* an enabled session's candidate
-universe; pairs inside one instead go through the front-half/barrier/
-back-half sequence in §5.3–§5.7. **This is a real, substantive change to
-what §3 documents as Runtime's actual sequencing behavior — not a
-cosmetic one — and it requires its own future ADR-031 amendment before
-implementation**, describing the two-phase, session-scoped sequencing
-precisely (which this revision has now specified at the architecture
-level, so that future amendment has a concrete model to formalize rather
-than an open question). Consistent with this task's constraint not to
-touch ADR-031 during this revision, **that amendment is required but
-explicitly deferred**, and is now added to §17's preconditions as a named
-item, more concretely scoped than the prior draft's vague "one row"
-characterization.
+for every pair, unconditionally. Under the corrected model, that
+description remains accurate for every pair whose front-half result is
+*not* an enabled-window ORB candidate (§C, §G) — the overwhelming
+majority of cycles during coexistence — but becomes inaccurate for the
+specific subset that *is* such a candidate, which now waits at a barrier
+(§D) before its back half, rather than proceeding immediately. **This is
+a real, substantive change to what §3 documents as Runtime's actual
+sequencing behavior for that subset — not a cosmetic one — and it
+requires its own future ADR-031 amendment before implementation**,
+describing the corrected one-pass-front-half/terminal-outcome/
+completeness/grouping/selection/winner-only-back-half model precisely
+(now fully specified at the architecture level in §A–§G above, so that
+future amendment has a concrete, internally consistent model to
+formalize rather than an open or contradictory one). Consistent with
+this task's constraint not to touch ADR-031 during this revision, **that
+amendment is required but explicitly deferred**, and remains named in
+§17's preconditions.
 
 ## 6. Cross-pair selection contract
 
@@ -422,17 +537,22 @@ not make):
   eventual implementation Plan must state and justify its tie-handling
   rule explicitly rather than silently inheriting `selection.py`'s.
 
-## 7. Candidate-set completeness and synchronization (revised — F5)
+## 7. Candidate-set completeness and synchronization (revised — F5; completeness definition corrected — G2, cross-referencing §5.D)
 
 A session's selection is only meaningful if it was computed over the
 *complete, frozen* intended candidate universe for that session. The
-independent review correctly found that the prior draft never named
-where "expected count" comes from, risking a circular definition
+first independent review correctly found that the prior draft never
+named where "expected count" comes from, risking a circular definition
 ("expected" silently redefined as "however many results arrived," which
-would defeat the check entirely). This revision names the source:
+would defeat the check entirely). The final review then found that even
+after naming the source, the definition of what counts as a "received"
+result was still ambiguous — specifically, whether an ordinary,
+already-computed rejection (holiday, spread, no formed range, a legacy
+strategy winning instead of ORB) counted toward completeness at all.
+Both are resolved together here.
 
-**Authoritative candidate universe for a session's scan (frozen at scan
-start):** the intersection of
+**Authoritative candidate universe for a scan (frozen at scan start):**
+the intersection of
 
 1. **Gate A's ORB-approved pairs** — `StrategyEngineConfig.approved_pairs_for(OPENING_RANGE_BREAKOUT)`,
    the same field ADR-036 Amendment 1's condition 1 already governs, and
@@ -446,33 +566,50 @@ No third, session-specific pair sub-universe is invented: the Research
 already established no session-specific pair-eligibility/liquidity table
 exists in the repository today (`docs/plans/adr-036-session-scoped-orb-
 selection-research.md` §3.3/§3.9), and this ADR does not create one. The
-**same** intersection therefore applies to every enabled session's scan
-unless and until a future, separately authorized Plan introduces session-
-specific narrowing — not decided or implied here.
+**same** intersection applies uniformly, regardless of how many enabled
+opportunity windows exist — it is not defined per session and is not
+recomputed per window; each enabled window's own completeness check
+(§5.D) simply reuses this one frozen set as its "expected" side of the
+comparison. This intersection is never dynamically narrowed by
+profitability, liquidity scoring, or any other policy — no such policy
+is invented here.
 
-**Freezing:** this intersection is computed **once, at the start of that
-session's scan**, and held fixed for the duration of that scan/cycle —
-never recomputed mid-scan. This directly satisfies three of the review's
-named scenarios: (a) a mid-scan config reload cannot silently narrow or
-widen what "complete" means, because completeness is judged against the
-frozen count, not a live recount; (b) a retry/reconnect for one pair
-cannot redefine "complete" as "however many results eventually arrived,"
-because the frozen expected count doesn't change; (c) "expected count"
-is never circularly defined as "actual count," because it is fixed
-before any front-half result exists for that scan.
+**Freezing:** this intersection is computed **once, at the start of the
+cycle's front-half pass** (§5.A), and held fixed for the duration of
+that cycle — never recomputed mid-scan, and never re-derived per
+enabled window. This satisfies: (a) a mid-scan config reload cannot
+silently narrow or widen what "complete" means, because completeness is
+judged against the frozen count, not a live recount; (b) a retry/
+reconnect for one pair cannot redefine "complete" as "however many
+results eventually arrived," because the frozen expected count doesn't
+change; (c) "expected count" is never circularly defined as "actual
+count," because it is fixed before any front-half result exists for the
+cycle.
 
-The new stage's requirements, otherwise unchanged from the prior draft:
+**What counts as "received" — the precise distinction (§5.D, restated
+here for this section's own completeness contract):** a pair counts as
+having reached its terminal front-half outcome once Evidence, Market
+Intelligence, and Strategy Engine have all been invoked for it and
+produced a final result for the cycle — an explicit ORB qualification,
+an explicit ORB rejection, or a legacy strategy winning instead of ORB
+all count equally as "received." A pair whose front half never completes
+this cycle (an early exit, an exception, a timeout, before a Strategy
+Engine result exists) does **not** count, regardless of its membership
+in the frozen universe. This is the exact distinction the final review
+required: "every expected pair was processed and produced a terminal
+front-half outcome, but zero pairs became qualifying candidates" (a
+complete scan with no opportunity — not a failure) is now structurally
+different from "one or more expected pairs never produced the required
+terminal front-half outcome" (an incomplete scan — fails closed), per
+§5.D.
 
-- Compare the frozen expected count against the actual count of front-
-  half results (`QualificationResult`/`StrategySnapshot`, §4) received
-  for that session's scan before selecting.
-- **Fail closed on incompleteness:** if the actual count is less than
-  the frozen expected count (a pair's upstream evaluation errored, timed
-  out, or was skipped), the stage must not select a winner from the
-  partial set — no winner is produced for that session that cycle.
-  Treating a partial scan as if it were complete is exactly the "silent
-  narrowing" failure mode this task's governing instructions repeatedly
-  warn against.
+**Fail closed on incompleteness:** if the actual terminal-outcome count
+is less than the frozen expected count for a given cycle, every enabled
+opportunity window's barrier that depends on that frozen universe fails
+closed for that cycle — no winner is selected from a partial set.
+Treating a partial scan as if it were complete is exactly the "silent
+narrowing" failure mode this task's governing instructions repeatedly
+warn against.
 
 ## 8. Session identity and lifecycle (revised — F2)
 
@@ -648,8 +785,8 @@ checks:
    (exactly the reservation-multiplicity risk §5 exists to prevent);
    silently suppressing it is a business/availability decision this ADR
    does not have authority to make silently. The startup check exists to
-   prevent this configuration from ever being live; §5.9's runtime
-   routing rule (fail closed with an explicit signal, §12) is the
+   prevent this configuration from ever being live; §5.B/§5.C's runtime
+   classification rule (fail closed with an explicit signal, §12) is the
    required defense-in-depth backstop if it is ever reached anyway —
    mirroring this codebase's own established pattern of pairing a
    startup invariant with a runtime defense-in-depth check (e.g.
@@ -762,7 +899,7 @@ considered for Acceptance.
 |---|----------|--------------------------|------------------------------|
 | 1 | London winner contaminates New York's selection (state not cleared between sessions) | A stale pair trades under the wrong session's risk/liquidity profile | Winner store is keyed by `range_start` alone, not global and not by `SessionName` (§8/§9, revised); a new opportunity window is always a new key, never inherited |
 | 2 | Overlapping sessions (e.g. London/NY overlap window) share winner state | Two sessions could either double-count or improperly veto each other's selection | Gate B's own `_validate_no_overlapping_anchors` already guarantees distinct, non-overlapping `range_start` windows per configured anchor (§8, verified against `evidence_engine/config.py`); overlapping *sessions* are still distinct keys by construction, never merged |
-| 3 | A disabled session still scans and/or selects | Wasted computation is the benign case; the dangerous case is a disabled session's "winner" leaking into execution | Enablement is part of session configuration (§8); §5's routing rule only admits a pair to the barrier when its currently-relevant range's session is enabled — a disabled session's pairs never enter the barrier at all |
+| 3 | A disabled session still scans and/or selects | Wasted computation is the benign case; the dangerous case is a disabled session's "winner" leaking into execution | Enablement is part of session configuration (§8); §5.B/§5.C's post-front-half classification only admits a pair's result to a window's barrier when its `range_start` corresponds to an enabled window — a disabled window's pairs are classified as non-participating and proceed (or don't) exactly as any other non-candidate result |
 | 4 | Candidate-pair universe changes mid-session (config reload between range formation and selection) | Selection computed against a universe that no longer matches what was actually scanned | §7 (revised) freezes the expected candidate universe (Gate A ∩ `allowed_pairs`) at scan start; a mid-scan change cannot silently redefine "complete" |
 | 5 | Test-only pair/session configuration mistaken for production policy | A fixture list (e.g. Research's own test pairs) silently becomes a production eligibility decision | This ADR explicitly declines to name any pair, anchor time, or session count as production policy (§2, §8, §11); the eventual Plan/deployment-profile decision must draw production values from an authoritative operator decision, not test fixtures |
 | 6 | Selector throws an exception mid-scan | Partial state could be misread as a valid empty or full result | §7/§12 require selector failure of any kind to produce zero winners and zero downstream pairs for that session that cycle — never partial-result interpretation |
@@ -775,9 +912,11 @@ considered for Acceptance.
 | 13 | Session count silently hardcoded to two (London/NY) despite the configurability requirement | Adding, removing, or reconfiguring a session would require a code change and redeploy, contradicting §2's explicit requirement | §2/§8 require the session list to be configurable with arbitrary cardinality; London/NY are recorded only as intended initial policy content, never as an architectural constant |
 | 14 | Stale winner from a closed range read and acted on in a later cycle | A pair could trade against an opening range that has already ended | §12 requires an explicit stale-winner observability signal; §9's keying by `range_start` alone means a new range is always a new key |
 | 15 (new) | Two configured anchors share the same `SessionName` and a naive implementation keys on `SessionName` alone | Two genuinely distinct opportunity windows could collide under a single key, corrupting winner state for both | §8 (revised) makes `range_start` alone the key, never `SessionName`; two anchors sharing a `SessionName` already produce distinct, non-overlapping `range_start` values by Gate B's own existing validation |
-| 16 (new) | Runtime cannot batch all of a session's candidates before any proceeds to Risk, because no such control-flow point exists today | Cross-pair selection is either unimplementable as specified, or implemented ad hoc without a governed control-flow model | §5 (revised) specifies the front-half/barrier/back-half model explicitly, names Runtime as the barrier's owner, and identifies the required (deferred) ADR-031 §3 amendment rather than leaving the gap unaddressed |
+| 16 (new) | Runtime cannot batch all of a session's candidates before any proceeds to Risk, because no such control-flow point exists today | Cross-pair selection is either unimplementable as specified, or implemented ad hoc without a governed control-flow model | §5 (corrected) specifies the one-pass-front-half/terminal-outcome/completeness/grouping/selection model explicitly, names Runtime as the barrier's owner, and identifies the required (deferred) ADR-031 §3 amendment rather than leaving the gap unaddressed |
 | 17 (new) | Zero enabled sessions configured, but Gate A is broad (multi-pair) — Amendment 1's Gate A/B conditions pass, but no selection mechanism ever runs | Every broad-Gate-A pair proceeds independently and unrestricted, reintroducing the exact multi-simultaneous-trade risk this ADR exists to prevent, with no structural failure signal | §11 (new) requires a fail-closed detection of this specific combination before the broad-Gate-A flavor may be considered structurally ready |
 | 18 (new) | A Gate B anchor is configured but its session is never added to the enabled-sessions list | `orb_breakout.py::qualify()` (unmodified) still qualifies against that anchor's range regardless of the enabled-sessions list, with no governed disposition for the resulting winning pair | §11 (new) requires this be caught at startup; §12 (new bullet) requires a defense-in-depth runtime signal and fail-closed suppression if it is ever reached anyway |
+| 19 (new — final review's G1 finding) | A pair's front half is run once per enabled session instead of once per cycle, either wasting computation or, worse, requiring Runtime to know a pair's session membership before Strategy Engine has produced it | Duplicate computation (`CLAUDE.md` §1.4 violation) or an unimplementable circular routing decision | §5.A now requires exactly one front-half execution per pair per cycle, unconditionally; §5.B/§5.C classify the *already-produced* result afterward — no pre-evaluation routing decision exists anywhere in the corrected model |
+| 20 (new — final review's G1 finding) | A legacy-strategy winner that happens to be a member of a broad ORB Gate A universe is held behind an ORB cross-pair barrier it has nothing to do with | Unnecessary latency/coupling for the majority of cycles during legacy/ORB coexistence, and a hidden new dependency of non-ORB execution on ORB's own barrier timing | §5.C/§5.G require a legacy-strategy (or any non-enabled-window) result to proceed immediately and independently, exactly as today — only a pair whose *own* result is itself an enabled-window ORB candidate is ever held back |
 
 No adversarial scenario in this table is resolved by inventing a
 product-policy value (a ranking weight, a pair, an anchor time, a
@@ -810,16 +949,19 @@ begin:
 1. An independent governance review of this document (§14).
 2. If review finds defects: a revision pass, mirroring the ADR-036
    Amendment 1 precedent (draft → independent review → revision →
-   final acceptance review → acceptance recorded) — this document is
-   itself one iteration of that cycle, addressing F1–F5 from the first
-   such review.
+   final acceptance review → acceptance recorded) — this document has
+   already gone through two such iterations (F1–F5 from the first
+   review; G1–G2's barrier-mechanics correction from a second, final
+   review), and would require a further iteration if a future review
+   finds this correction still incomplete.
 3. **A future, dedicated ADR-031 amendment** (not performed by this
-   document, not authorized here) formalizing the two-phase, session-
-   scoped front-half/barrier/back-half sequencing §5 specifies at the
-   architecture level — required before implementation, since it changes
-   what ADR-031 §3 documents as Runtime's actual sequencing behavior for
-   the affected subset of pairs (§5's ADR-031 compatibility analysis).
-   This is a named precondition, not merely a possibility.
+   document, not authorized here) formalizing the corrected one-pass-
+   front-half/terminal-outcome/completeness/grouping/selection/winner-
+   only-back-half sequencing §5 specifies at the architecture level —
+   required before implementation, since it changes what ADR-031 §3
+   documents as Runtime's actual sequencing behavior for the affected
+   subset of pairs (§5's ADR-031 compatibility analysis). This is a
+   named precondition, not merely a possibility.
 4. Only after this ADR's own Acceptance **and** item 3's ADR-031
    amendment: a dedicated Plan artifact (its own RPI Research → Plan →
    Implement cycle), which is where the ranking formula, exact session
