@@ -1,7 +1,10 @@
 # Plan: ADR-036 — Legacy Strategy Retirement / ORB Consolidation
 
-Status: Research, Plan (architecture/sequence finalized; deployment-profile
-values conditional — see Plan §16)
+Status: Research, Plan (architecture/sequence finalized, §P1–§P14;
+Gate A/Gate B production values unresolved — a scoped-out architectural
+finding, §P16, requires a new Research/governance/ADR cycle for
+cross-pair best-opportunity selection before those values can be
+decided)
 Owner (Research phase): Software Architect
 Owner (Plan phase): Software Architect
 Touched components (Research phase): `titan_protocol/strategy_engine/`,
@@ -1443,6 +1446,100 @@ owner supplies the specific pairs and anchors — everything else in the
 sequence (steps 1, 3, 4, 5) can proceed independent of that decision,
 since none of them read or depend on the specific values chosen.
 
+## P16. Deployment-profile decision pass — scoped-out architectural finding
+
+A subsequent deployment-profile decision pass attempted to resolve §P15's
+two blockers directly. That attempt surfaced a materially different,
+larger question than "which value goes in this field," recorded here in
+full rather than silently narrowed to fit the existing architecture.
+
+**What was actually requested**: Gate A should not be a fixed static
+pair or fixed small pair list. Instead, for each configured ORB session
+(at minimum London and New York), ORB should scan a candidate universe
+of liquid pairs and select the best qualifying opportunity for that
+session independently — a London-session selection must never carry
+over as the New York selection.
+
+**This decomposes into two genuinely separate decisions, confirmed by
+fresh source inspection this pass**:
+
+1. **Session-based ORB (opening ranges belong to distinct sessions,
+   evaluated independently)** — **already fits the existing, unmodified
+   ORB design, confirmed empirically, zero new code required.**
+   `orb_breakout.py`'s `qualify()` already computes
+   `latest_range_end = max(r.range_end for r in formed_ranges)` and
+   restricts evaluation to `currently_relevant = [r for r in
+   formed_ranges if r.range_end == latest_range_end]` — per pair, only
+   the most-recently-formed opening range is ever evaluated. Once a
+   later session's anchor produces a new range, an earlier session's
+   range is automatically superseded for that pair. Configuring multiple
+   `opening_range_anchors` entries (e.g. London + New York/overlap) is
+   therefore already sufficient, with no code change, to give ORB
+   independent, non-carrying-over opportunities per configured session.
+2. **Best-pair-per-session selection (comparing qualified opportunities
+   across multiple pairs and choosing a single winner for that
+   session)** — **does not exist anywhere in the current architecture,
+   confirmed by fresh source inspection, and is not authorized by any
+   Accepted governance:**
+   - `RuntimeOrchestrator.run_cycle()` iterates every pair in
+     `profile.allowed_pairs` and calls `run_cycle_for_pair()` on each
+     **fully independently** (`titan_protocol/runtime/engine.py`) — a
+     complete Evidence → Market Intelligence → Strategy → Risk →
+     Compliance → Bridge cycle per pair, with no step anywhere that
+     compares candidate pairs against each other.
+   - `selection.py`'s 6-step cascade selects among **strategies**
+     competing for the **same pair** — it has never selected among
+     **pairs**. Two different pairs both qualifying ORB in the same
+     cycle today would both proceed independently, gated only by Risk
+     Engine's own portfolio/correlation/position-limit constraints, not
+     by a "pick the single best one" step.
+   - No session-specific pair-liquidity authority exists either:
+     `market_intelligence/session_intelligence.py` computes a
+     session-**wide** preference/quality score (prefer London/Overlap/
+     Early-NY, downweight Asian), entirely pair-agnostic;
+     `liquidity_intelligence.py` computes real-time, per-pair liquidity
+     from live spread/broker data, not a static per-session pair-eligibility
+     table. Nothing in the repository maps specific pairs to specific
+     sessions as an eligibility rule.
+   - ADR-036 §9's own Non-Goals already name `selection.py`'s cascade as
+     explicitly unmodified ("already strategy-count-agnostic") and forbid
+     introducing new ORB-specific coupling outside `titan_protocol/strategy_engine/`
+     — a genuine cross-pair comparison/ranking mechanism would be new
+     architecture in a package (`runtime/` and/or `strategy_engine/selection.py`)
+     this ADR's own Non-Goals did not contemplate touching, and neither
+     ADR-035's Accepted ORB design nor ADR-036's Accepted consolidation
+     decision ever specified or authorized it.
+
+**Disposition of this finding**: item 1 (session-based ORB) requires no
+new decision and no new code — it is already correctly captured in
+§P4's Gate B analysis (multiple anchors are already structurally
+supported). Item 2 (cross-pair best-opportunity selection) is a
+genuinely new capability, not a configuration value, and this Plan
+phase — a deployment-profile *value* decision — has neither the
+authority nor the appropriate governance level to design it. Per this
+project's own RPI/ADR governance (`TEAM.md` §9, `CLAUDE.md` §1.10), a
+new selection capability of this kind requires its own Research phase,
+its own governance/ADR decision (very likely an ADR-035 amendment,
+since it changes what ORB itself does, and/or an ADR-026 amendment,
+since it would touch Strategy Engine's selection architecture), and its
+own subsequent Plan — before either Gate A's exact candidate universe
+or the mechanism that would use it can be finalized.
+
+**This Plan does not**:
+
+- reinterpret "session-scoped" as authorization to design cross-pair
+  selection;
+- invent a temporary pair list, temporary anchor set, temporary ranking
+  rule, or temporary routing behavior to bridge the gap;
+- modify ADR-036's already-finalized implementation architecture (§P1–§P14
+  above, all unchanged) to work around this missing decision.
+
+**Gate A and Gate B both remain explicitly unresolved.** The product
+intent — ORB ultimately scans a candidate-pair universe and selects the
+best opportunity independently per configured session — is preserved
+here as a recorded requirement for that future Research/ADR/Plan cycle,
+not discarded and not narrowed to fit today's architecture.
+
 ---
 
 ## Plan Disposition
@@ -1450,21 +1547,33 @@ since none of them read or depend on the specific values chosen.
 Architecture, sequencing, structural-readiness validator design,
 retirement semantics, registry/dependency-injection contract,
 configuration migration, test/proof matrix, preservation contract, and
-file-impact matrix are all fully finalized and internally consistent
-with Accepted ADR-036 and Accepted Amendment 1. Two production values
-(ORB's approved pairs, ORB's opening-range anchors) remain outstanding
-deployment-profile decisions this Plan correctly declines to invent.
+file-impact matrix (§P1–§P14) remain fully finalized and internally
+consistent with Accepted ADR-036 and Accepted Amendment 1 — **none of
+that is affected by §P16's finding.** However, §P16 establishes that
+Gate A's and Gate B's exact production values cannot be resolved as
+ordinary deployment-profile decisions alone: the product requirement
+behind Gate A depends on a cross-pair best-opportunity-selection
+capability that does not exist in the architecture and is not
+authorized by any Accepted governance. Resolving Gate A/Gate B now
+requires a new Research → governance/ADR → Plan cycle for that
+capability first — a materially larger step than supplying two
+configuration values.
 
 **ADR-036 PLAN ARCHITECTURE FINALIZED — DEPLOYMENT-PROFILE DECISION
-REQUIRED BEFORE IMPLEMENTATION AUTHORIZATION**
+REQUIRED BEFORE IMPLEMENTATION AUTHORIZATION, AND A NEW
+RESEARCH/GOVERNANCE CYCLE IS REQUIRED FOR CROSS-PAIR BEST-OPPORTUNITY
+SELECTION BEFORE THAT DEPLOYMENT-PROFILE DECISION CAN ITSELF BE MADE**
 
 Standing reminders:
 
-- No implementation has begun. This Plan document is the only artifact
-  this phase produces.
+- No implementation has begun. This Plan document (including §P16) is
+  the only artifact this phase produces.
 - This Plan's completion does not itself authorize legacy-strategy
   retirement, ORB activation, or any production/config/test change —
   an independent implementation-readiness review of this Plan remains
   required first, per this project's standing RPI governance.
+- §P16's cross-pair selection capability is explicitly **not**
+  authorized, designed, or scoped by this Plan — it is recorded as a
+  requirement for a future, separate RPI cycle only.
 - The separate Phase 5 anchor hour/minute validation residual risk was
   not performed, referenced as authority, or folded into this Plan.
