@@ -1,18 +1,31 @@
 # Plan: ADR-035 Phase 7 — Formation-Time News-Blackout Closure
 
-Status: **RESEARCH ONLY — Plan and Validation sections intentionally
-empty.** This artifact records the Research phase of the RPI gate
-(`.claude/agents/TEAM.md` §9) for ADR-035 Phase 7, as authorized by
-Accepted ADR-035 Amendment 1. No implementation decision is made here;
-several genuine design questions are deliberately left open for the
-Plan phase.
+Status: **PLAN FINALIZED — READY FOR INDEPENDENT IMPLEMENTATION-READINESS
+REVIEW.** Research (below) is complete. Candidate C (a new,
+Strategy-Engine-owned, `OrbQualificationStore`-analogous persisted
+store) is selected and independently proven sufficient (§P2), not
+merely because Research called it evidence-grounded. **Disclosed,
+non-blocking finding (F1):** the mechanism has zero live effect in
+production today, since `OPENING_RANGE_BREAKOUT` remains `NOT_ELIGIBLE`
+under the unchanged `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` default — a
+pre-existing, already-Accepted Phase 6 characteristic this Plan does
+not change and is not authorized to change. See §P3/§P9/§P16 for the
+full reasoning on why this does not block Plan finalization.
+Implementation is **not authorized** by this Plan-finalization pass —
+it requires its own independent implementation-readiness review first.
 
 Owner (Research phase): Software Architect (ADR-035/ADR-025/ADR-026
 owner precedent, unchanged from Phases 0-6).
+Owner (Plan phase): Software Architect (same precedent, unchanged).
 
-Touched components: **none — read-only research.** No production file,
-ADR, or the separate Phase 5 anchor hour/minute validation follow-up is
-touched by this artifact.
+Touched components (final, per §P12's file-impact matrix): a new
+sibling module inside `titan_protocol/strategy_state_store/`,
+`titan_protocol/strategy_engine/strategies/orb_breakout.py`,
+`deployment_windows/start.py`, new tests, this Plan document. **Not in
+scope:** any Evidence Engine or Market Intelligence file, `strategy_engine/config.py`'s
+`DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, the existing `OrbQualificationStore`
+files, `install.py`, any ADR, the five legacy strategy files, and the
+separate Phase 5 anchor hour/minute validation follow-up.
 
 ---
 
@@ -628,10 +641,648 @@ conformance review; no drift since that review.
 
 ## Plan
 
-*(Intentionally left empty — Research only, per this task's
-authorization. §9's seven open questions must be explicitly resolved
-here, with evidence, before Implement begins.)*
+**Status of this section: FINALIZED.** Resolves all seven Research-phase
+open questions with direct repository evidence, plus the additional
+reachability/persistence/identity questions this Plan-finalization task
+itself raised. One finding below is disclosed prominently, not hidden,
+and its disposition impact is stated explicitly rather than assumed
+(§P3).
+
+### P0. Owner and scope
+
+Owner (Plan phase): Software Architect (ADR-035/ADR-025/ADR-026/ADR-031
+owner precedent, unchanged). Touched components (final, per §P12):
+`titan_protocol/strategy_state_store/` (one new sibling module),
+`titan_protocol/strategy_engine/strategies/orb_breakout.py`,
+`deployment_windows/start.py`, new tests, this Plan document. No ADR
+file, no Phase 5 anchor-validation file, no legacy strategy file.
+
+### P1. Governing contract (re-derived directly, §1 of Research
+re-confirmed, not re-litigated)
+
+ADR-035 §2's "News restrictions" row requires ORB `NOT_QUALIFIED` on
+blackout "both during range formation and at breakout evaluation."
+Amendment 1 authorized Phase 4's evaluation-time-only enforcement as a
+**staged limitation**, explicit that this "does not authorize omitting
+the evaluation-time check itself." Phase 7 must therefore **add** a
+formation-time check **without removing, weakening, or restructuring**
+the existing evaluation-time check (`orb_breakout.py` line 87,
+unchanged since Phase 4). The two checks test **different temporal
+conditions** — "is blackout active right now" (unchanged, evaluation-
+time) vs. "was blackout ever active at any point during this specific
+range's own formation" (new, formation-time) — and both must
+independently gate `QUALIFIED`.
+
+### P2. Architecture/design decision — Candidate C selected, proven, not assumed
+
+Research (§4) identified five candidates. This Plan independently
+re-derives, rather than assumes, that Candidate C — a new,
+Strategy-Engine-owned, `OrbQualificationStore`-analogous persisted
+store — is sufficient and correct, by proving each element Research
+flagged as unproven:
+
+1. **Does the chosen owner (Strategy Engine, via `OrbBreakoutStrategy.qualify()`)
+   receive the necessary information at the necessary time?** Re-read
+   `qualify()` in full this pass. The existing evaluation-time blackout
+   check (`if pair_safety.news.blackout_active: return _not_qualified(...)`,
+   line 87) executes **before** `evidence.opening_ranges` is even
+   inspected — it is unconditional on formation state. This means
+   `qualify()` already reads the live, current-cycle
+   `pair_safety.news.blackout_active` value on **every cycle it runs**,
+   whether or not any range has finished forming yet. The information
+   Candidate C needs is therefore already present, at the exact point
+   Candidate C needs it, with **zero new dependency** — the new
+   mechanism reads the same field the existing check already reads,
+   once more, for a different purpose. No duplication of Market
+   Intelligence's blackout-window arithmetic occurs, since nothing
+   re-derives `blackout_active` — it is read, not recomputed, exactly
+   the same distinction Research's §5 already established as the
+   dispositive one.
+2. **Does `evidence.opening_ranges` expose still-forming ranges, not
+   only the formed one `qualify()` currently uses for breakout logic?**
+   Re-read `compute_opening_ranges()`/`_compute_single_range()`
+   (`opening_range.py`) directly this pass: a range is included in the
+   returned tuple as soon as `bars[-1].timestamp >= range_start` — its
+   own `is_formed` field (`now >= range_end`) is computed independently
+   and does **not** gate whether the state appears in
+   `evidence.opening_ranges` at all. **Confirmed: still-forming ranges
+   (`is_formed=False`) are already present in `evidence.opening_ranges`
+   every cycle**, alongside any already-formed one. `qualify()`'s
+   current code only ever filters to `formed_ranges = [r for r in
+   opening_ranges if r.is_formed]` for its *breakout* logic — it never
+   currently inspects the still-forming entries at all. Candidate C
+   requires a **new** loop, in addition to the existing `formed_ranges`
+   filter, over the still-forming entries — a genuine, disclosed
+   implementation addition (§P4), not something "free."
+3. **Can the owner persist the fact without duplicating MI's
+   interpretation?** Yes — per (1), it persists the *already-computed*
+   boolean, never re-deriving it, exactly the same non-duplication
+   argument the Accepted ADR itself already uses to distinguish
+   `OrbQualificationStore`'s own precedent from a forbidden
+   reimplementation (Research §5, re-affirmed, not reopened).
+
+**Conclusion: Candidate C is proven sufficient and architecturally
+correct under the current runtime/data flow — a new dependency is not
+required, and the information timing genuinely lines up**, contingent
+on the reachability finding in §P3 immediately below, which this Plan
+treats as a disclosed consequence, not a design defect.
+
+### P3. Critical reachability question — resolved, with a disclosed, non-blocking consequence
+
+**Direct trace, this pass, of the real production path:**
+- `StrategyEngine.evaluate()` (`engine.py`, unchanged, re-read this
+  pass) calls `strategy.qualify(...)` for **every** strategy in
+  `self.registry.all()`, unconditionally — the engine itself never
+  skips a strategy based on eligibility; eligibility is checked
+  *inside* each strategy's own `qualify()`.
+- `deployment_windows/start.py` (Phase 6, unchanged, re-confirmed empty
+  diff since `2e4803c`) unconditionally constructs
+  `build_default_registry(orb_qualification_store)` and passes the
+  resulting **six-strategy** registry into the real `StrategyEngine` —
+  ORB **is** registered, and its `qualify()` **is** invoked every cycle
+  for every pair the live-cycle loop evaluates.
+- `OrbBreakoutStrategy.qualify()`'s **first** action is
+  `check_eligibility(StrategyId.OPENING_RANGE_BREAKOUT, pair, config)`
+  (line 78, unchanged). `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+  (`strategy_engine/config.py`, re-confirmed empty diff since Phase 6,
+  no ORB entry) makes `approved_pairs_for(OPENING_RANGE_BREAKOUT)`
+  return `()` for every pair, so `check_eligibility()` returns
+  `NOT_ELIGIBLE` **unconditionally, for every pair, every cycle**, and
+  `qualify()` returns at line 80 — **before** reaching the blackout
+  check, before reaching `evidence.opening_ranges` at all.
+
+**Finding, stated precisely and without softening:** under the current,
+unchanged, already-Accepted production pair-eligibility default, `qualify()`
+**never** reaches the point where it could observe
+`pair_safety.news.blackout_active` during formation, for any pair, in
+the real running system, today. This is not unique to Phase 7 — it is
+already true of the **existing, already-accepted** evaluation-time
+check (Phase 4), of breakout-distance/body-ratio/FVG/lockout logic
+(Phase 2/3), and of Phase 6's own registration itself. Phase 6's own
+Plan and its independent implementation-readiness review both already
+stated this explicitly and in identical terms: *"registration alone
+creates no live ORB trading impact... until pair-eligibility is
+separately and explicitly authorized by a future phase."*
+
+**Disposition of this finding — reasoned, not assumed:**
+- This Plan does **not** treat it as a blocker to Phase 7's own
+  finalization, for four concrete reasons: (a) it is not introduced by
+  Phase 7 and is not a defect in Phase 7's own design — it is a
+  pre-existing, already-disclosed, already-accepted characteristic of
+  the whole ORB strategy's current deployment state, unrelated to which
+  specific gate is under discussion; (b) ADR-035/Amendment 1 nowhere
+  authorizes or requires Phase 7 to also resolve pair eligibility —
+  doing so would be scope creep this Plan is instructed not to commit,
+  and the task instructions explicitly forbid changing
+  `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` without independent ADR
+  authorization, which does not exist; (c) blocking Phase 7 specifically
+  on this pre-existing fact would be inconsistent with this project's
+  own established precedent — Phases 2 through 6 were each individually
+  Planned, Implemented, and independently Accepted despite being
+  equally inert under the same pair-eligibility default throughout;
+  (d) the *safety* consequence Amendment 1 worried about (a stale
+  evaluation-time-only check permitting an unsafe `QUALIFIED` result)
+  **cannot currently occur in the live system at all**, since ORB
+  cannot produce a live `QUALIFIED` result of any kind today — the
+  residual exposure Amendment 1 named is itself currently dormant,
+  which is a reassuring fact, not a reason to leave the gap
+  permanently unclosed.
+- This Plan **does** treat it as a **named, tracked, capital-relevant
+  dependency that must be surfaced to every future reader**, not
+  silently absorbed: Phase 7's mechanism, once implemented, has **zero
+  live effect until a separate, still-unscheduled future governance
+  decision makes `OPENING_RANGE_BREAKOUT` pair-eligible** — at which
+  point Phase 7's closure becomes load-bearing for the first time. This
+  is recorded as **Finding F1** in §P14's adversarial review and is
+  repeated in this Plan's own final disposition text (§P16), not left
+  to be discovered only by inspecting test code.
+- **Verification strategy given this constraint:** every test proving
+  the mechanism's *logic* is correct must use the same test-only
+  eligibility override mechanism Phase 6 established and had
+  independently accepted for exactly this reason (§P10) — proving the
+  mechanism will function correctly *once* eligible, since production
+  reachability cannot itself be demonstrated while the production
+  default remains unchanged. No test may claim to prove *live*
+  reachability; this Plan does not permit that claim to be made.
+
+**This is not marked "PHASE 7 PLAN BLOCKED"** — see §P16 for the
+reasoning restated at the point of final disposition.
+
+### P4. Runtime ordering and exact mechanism specification
+
+Current cycle order (`runtime/engine.py`, re-confirmed unchanged):
+`evidence = evidence_engine.evaluate_snapshot(...)` →
+`market_intelligence = market_intelligence_engine.evaluate(...)` →
+`strategy = strategy_engine.evaluate(pair, evidence, market_intelligence, now)`.
+Unchanged by this Plan.
+
+**Exact mechanism:**
+- **Origin:** `pair_safety.news.blackout_active`, produced by Market
+  Intelligence's existing `compute_blackout()` (unchanged,
+  `market_intelligence/news.py`), exactly the same field the existing
+  evaluation-time check already reads.
+- **Availability:** every cycle, the instant `StrategyEngine.evaluate()`
+  is called with that cycle's `market_intelligence` snapshot — no
+  timing change from today.
+- **Observer:** `OrbBreakoutStrategy.qualify()`, the same and only
+  component that already observes it today.
+- **When the monotonic fact is updated:** immediately after the
+  existing evaluation-time blackout check (so that check's own
+  position/behavior is untouched), `qualify()` gains a new loop:
+  ```python
+  for r in evidence.opening_ranges:
+      if not r.is_formed:
+          formation_blackout_store.record_cycle_observation(
+              pair, r.range_start, pair_safety.news.blackout_active,
+          )
+  ```
+  Iterates every still-forming range this cycle (not only the
+  eventually-relevant one), recording this cycle's already-computed
+  `blackout_active` boolean under each range's own `(pair, range_start)`
+  key. `record_cycle_observation()` is idempotent-OR: it only ever
+  transitions a key from "not observed" to "observed," never the
+  reverse (§P6).
+- **When it is read at breakout evaluation:** once `opening_range` (the
+  `currently_relevant`, `is_formed=True` range) is resolved — i.e.,
+  immediately after the existing `if not opening_range.is_valid:` check
+  and before the ATR/breakout-distance logic — a new gate:
+  ```python
+  if formation_blackout_store.was_blackout_observed(pair, opening_range.range_start):
+      return _not_qualified(pair, "News blackout observed during range formation")
+  ```
+- **Across restart:** per §P7, the store reloads its persisted
+  `(pair, range_start) -> bool` map at construction; a range whose
+  formation began before the restart continues to accumulate
+  observations from its remaining, post-restart formation cycles into
+  the same key.
+
+No duplication of Market Intelligence's blackout-window arithmetic
+occurs anywhere in this design — confirmed directly by inspection: the
+new code only ever reads `pair_safety.news.blackout_active`, already
+computed by Market Intelligence, never recomputing anything from raw
+`NewsEvent` data.
+
+### P5. Temporal semantics — resolved where evidence permits, flagged where it does not
+
+- **Formation interval:** `[range_start, range_end)`, adopting the same
+  half-open convention §3 already establishes for bar inclusion, for
+  consistency. **Disclosed as this Plan's own reasoned choice, not an
+  ADR-mandated one** — the Accepted ADR text does not itself specify
+  this boundary (Research §6 finding, re-affirmed). The independent
+  Plan review should scrutinize this choice specifically.
+- **Blackout at `range_start` (`now == range_start`):** counted (start
+  of the half-open window).
+- **Blackout immediately before `range_start`:** not applicable — no
+  accumulation occurs before a range appears in `evidence.opening_ranges`
+  at all (Evidence Engine's own existing inclusion rule, unchanged).
+- **Blackout during formation:** the core case; recorded every cycle
+  per §P4.
+- **Blackout exactly at `range_end`:** **not** counted by the formation
+  accumulator under the half-open convention chosen above — but this
+  creates no coverage gap: the very next cycle (the first at which
+  `is_formed` can become `True`) is still covered by the **unchanged,
+  existing evaluation-time check**, which independently re-evaluates
+  `blackout_active` fresh every cycle `qualify()` runs, including this
+  one. No instant in time is left ungated by *both* checks.
+- **Blackout after `range_end` but before breakout-candidate
+  evaluation:** already fully covered today, **without any Phase 7
+  change** — re-confirmed this pass: the existing evaluation-time check
+  re-runs on *every* cycle `qualify()` executes, including every cycle
+  during the post-range-bar-window search, not merely the single cycle
+  a candidate happens to qualify on. Amendment 1's own "residual
+  exposure" language concerns specifically a blackout that both started
+  *and cleared* before evaluation — i.e., a formation-window event — not
+  this post-range window, which was never actually exposed.
+- **Evaluation-time blackout:** unchanged, still gates independently
+  (§P1).
+- **Multiple simultaneous opening ranges/anchors:** handled by the
+  `(pair, range_start)` key (§P6) — one accumulator entry per anchor,
+  identical disambiguation to the existing lockout's own proven
+  identity.
+- **Reconnect/restart during formation:** handled by persistence
+  (§P7), subject to the narrow, disclosed residual risk analyzed there.
+
+### P6. State identity and monotonicity
+
+**Key: `(pair, range_start)`** — identical to `OrbQualificationStore`'s
+own existing key, and identical to `OpeningRangeState`'s own documented
+identity ("the identifying key is this instance's own `range_start`/
+`range_end` window, never `session` alone," `models.py` line 363-364,
+re-confirmed this pass). `range_end`/session identity is **not**
+required in the key: `range_start` alone is already the unique,
+collision-checked identity the existing anchor-overlap validation
+guarantees (Evidence Engine, unchanged, Phase 0/5) — re-deriving a
+compound key would be redundant, not more correct.
+
+**Monotonicity contract:** once `(pair, range_start)` has been recorded
+as `blackout_active=True` for any cycle, it must never be cleared by a
+later cycle observing `blackout_active=False` for the same key.
+`record_cycle_observation()`'s contract is therefore: `new_value =
+old_value or this_cycle_value` — an OR-accumulate, never an overwrite.
+
+**Cleanup/retention:** not required for Phase 7 correctness. This
+mirrors `OrbQualificationStore`'s own existing, accepted characteristic
+(unbounded growth, one entry per `(pair, range_start)` ever observed,
+never pruned) — a pre-existing, already-accepted property of this
+precedent this Plan does not need to newly address, and does not
+invent new pruning logic beyond what the existing precedent already
+lives with.
+
+### P7. Persistence/failure semantics — analyzed explicitly, not copied automatically
+
+**Restart persistence is mandatory** — a formation window spans ~120
+cycles (30-minute default duration ÷ 15-second cycle interval); losing
+all prior observations on every restart would defeat the entire
+purpose of Phase 7.
+
+**State-file ownership/location:** a **new**, Strategy-Engine-owned
+file, sibling to (not merged with) `orb_qualifications.json` — see
+§P8 for why a separate file/class, not an extension of
+`OrbQualificationStore`, is the correct choice. Constructed in
+`deployment_windows/start.py` at `settings.state_dir /
+"orb_formation_blackout.json"`, following the identical
+`settings.state_dir`-relative convention already established twice
+(`compliance_state.json`, `orb_qualifications.json`).
+
+**Startup loading:** mirrors `OrbQualificationStore._load_initial()`
+exactly — missing file → empty map (a genuinely correct initial state,
+not a guess: nothing has been observed yet); corrupt/unreadable file
+(with no usable `.bak`) → raise a `CorruptStateError`-equivalent,
+**uncaught** in `start.py`, crashing startup — identical fail-closed
+precedent to both existing stores.
+
+**Persistence failure behavior — the specific question this task asks
+to analyze, not assume:** should a mid-run persist failure be
+contained (logged, in-memory value stands, matching
+`OrbQualificationStore`) or should it be treated more strictly, given
+this fact's capital-preservation relevance?
+
+*Analysis:* the risk pattern is structurally the same class of risk
+`OrbQualificationStore` already accepts for the lockout count — a
+persist failure followed by a restart before any subsequent successful
+persist could lose an observation. However, two properties make this
+*specific* new fact's exposure **narrower**, not wider, than the
+lockout count's own already-accepted exposure:
+1. The lockout count is written **once**, at the single terminal moment
+   a qualification is consumed — if that one write is lost, there is no
+   second chance to record it. The formation-blackout fact is written
+   **every cycle throughout an ongoing, multi-cycle formation window**
+   (~120 opportunities) — a lost write on one cycle does not lose the
+   fact if blackout is *still* active on the next cycle (which
+   `record_cycle_observation()` will observe and correctly persist
+   then). The **only** way this fact is truly lost is if a blackout
+   both started and fully cleared within the single narrow gap between
+   one failed persist and the next successful one, immediately followed
+   by a restart before any intervening successful write — a materially
+   narrower window than the lockout count's own single-shot exposure.
+2. A blocking/retry-until-success alternative was considered and
+   **rejected**: this codebase's own established fault-containment
+   doctrine (`_safe_log_exception()`'s "a diagnostic must never crash
+   the live-cycle loop" precedent, `deployment_windows/start.py`)
+   argues strongly against introducing a new I/O-blocking or
+   retry-loop inside the live-cycle path merely to strengthen a
+   narrower-than-existing residual risk — doing so would trade a small,
+   already-precedented persistence gap for a new, unprecedented
+   live-cycle-stall risk, which is a worse trade for capital
+   preservation overall (a stalled cycle blocks *every* strategy's
+   evaluation for that pair, not only ORB's).
+
+**Conclusion: mirror `OrbQualificationStore`'s exact containment
+pattern** (persist failures caught/logged internally, in-memory value
+authoritative for the process's own lifetime, never escaping into
+`qualify()`) — **with this reasoning explicitly disclosed**, per the
+task's own instruction not to copy it silently. No stricter persistence
+contract is adopted; none is warranted by the analysis above.
+
+**"Failure to persist a newly observed blackout may permit unsafe
+qualification after restart":** possible, in the narrow window
+described in point 1 above — an already-known, already-accepted class
+of exposure this codebase already lives with for the lockout count,
+now shown to apply more narrowly here. Not eliminated; bounded and
+disclosed, consistent with this project's own established
+capital-preservation posture of disclosing rather than silently
+eliminating every conceivable residual risk at the cost of introducing
+new ones.
+
+### P8. Interaction with the existing lockout store — separate module, same package, decided and grounded
+
+**Decision: a new, separate class/module within
+`titan_protocol/strategy_state_store/` (already an allowed Strategy
+Engine upstream import, §2 of Research, re-confirmed unaffected) —
+neither extending `OrbQualificationStore` nor merging into a single
+shared file.**
+
+*Grounding:*
+- **Different write contract.** `OrbQualificationStore.try_consume()`
+  is deliberately a single atomic "read-count, compare-to-max,
+  increment-if-allowed" gate — its own docstring states it is
+  "deliberately never split into a `get_count()`/`increment()` pair,
+  since that would reintroduce exactly the race this design must
+  prevent." The new fact's write contract is structurally different:
+  an idempotent, unconditional OR-accumulate with no comparison, no
+  gating, no return value consulted for a pass/fail decision. Folding
+  both contracts into one class would blur two genuinely different
+  concurrency/write shapes into one API, the opposite of "never split
+  into a get/increment pair" — it would be splitting an already-correct
+  single-purpose contract to accommodate an unrelated one.
+- **Different read/consumption semantics.** The lockout count is
+  consumed (mutated) as the qualification's own terminal, one-time,
+  side-effecting gate. The formation-blackout fact is written every
+  cycle throughout formation and read (without mutation) once at
+  evaluation — a materially different lifecycle.
+- **No dual-authority risk.** `OrbQualificationStore` remains the sole
+  authority for "how many times has this range already qualified"
+  (completely unchanged). The new store becomes the sole, new authority
+  for "was blackout ever observed during this range's formation" — the
+  two facts are genuinely disjoint; no design decision here creates two
+  competing sources of truth for the same question.
+- **Consistent with Amendment 1's own wording** — "in convention
+  analogous to `OrbQualificationStore`," not "reusing" it — and with
+  ADR-026 Hard Rule 5's established precedent (re-applied at
+  sub-engine granularity, as Research already flagged) that a genuinely
+  distinct fact gets its own module even when the same engine owns
+  both.
+
+### P9. Pair eligibility — unchanged; production functioning explained precisely
+
+`DEFAULT_APPROVED_PAIRS_BY_STRATEGY` is **not modified** by this Plan —
+no ADR text authorizes it, and none of Candidate C's requirements need
+it changed to be correctly *implemented and tested*. Per §P3: **the
+mechanism cannot and does not need to function live in production
+today**, because no ORB logic of any kind currently does, under the
+same, already-accepted default. This is disclosed as **Finding F1**
+(§P14), not silently assumed away, and is **not** treated as a blocker
+to Plan finalization, per the four-part reasoning in §P3. A future,
+separately-scoped, separately-authorized phase or operator decision
+that grants ORB pair eligibility is the point at which Phase 7's
+closure — already correctly implemented and tested by then — becomes
+live, with no further ORB-side code change required at that time.
+
+### P10. Test contract
+
+All tests use the real `build_default_registry(store)` factory and the
+real `StrategyEngine` — never a hand-assembled registry (established
+precedent, Phase 6, re-applied). Tests proving the mechanism's *logic*
+must use the same test-only eligibility override Phase 6 established
+(`make_config(approved_pairs_by_strategy=DEFAULT_APPROVED_PAIRS_BY_STRATEGY
++ ((StrategyId.OPENING_RANGE_BREAKOUT, ("EURUSD",)),))`) — **every one
+of the required-coverage tests below needs it**, since none of them can
+reach past `check_eligibility()` under the unmodified production
+default (§P3). One additional, explicitly required test proves the
+production-default behavior remains unaffected (below, last row) —
+that one must **not** use the override, mirroring Phase 6's own
+`TestProductionEligibilityUnderDefaultPolicy` precedent.
+
+| Required case | Override needed? | Proves |
+|---|---|---|
+| No blackout during formation + no evaluation blackout | Yes | `QUALIFIED` reachable when both checks are clean (baseline) |
+| Blackout at evaluation only (never during formation) | Yes | Existing evaluation-time check alone still gates — unchanged Phase 4 behavior preserved |
+| Blackout during formation, cleared by evaluation time | Yes | **The exact gap Phase 7 closes** — must now be `NOT_QUALIFIED`, where pre-Phase-7 behavior would have been `QUALIFIED` |
+| Blackout observed once, then clear for many subsequent cycles | Yes | Monotonicity — the fact does not clear itself |
+| Restart after a formation-blackout observation, same range still forming or now formed | Yes | Persistence — fresh store/registry/engine objects reading the same file, mirroring Phase 6's own restart-test pattern |
+| Restart during a clean (no-blackout) formation | Yes | Restart does not fabricate a false-positive |
+| Two simultaneous anchors/ranges, blackout during only one | Yes | `(pair, range_start)` key isolation — no cross-range contamination |
+| Same pair, two sequential (non-overlapping) range_starts, one blacked-out, one clean | Yes | Range-identity isolation for the same pair over time |
+| Persistence (write) failure during formation, mid-cycle | Yes | Containment — mirrors Phase 6's `TestPersistFailureContainment`, applied to the new store |
+| Corrupt persisted state at startup | Yes | Fail-closed construction — mirrors Phase 6's `TestStartupCorruptState` |
+| Boundary: blackout observed exactly at `range_start` | Yes | Half-open convention (§P5) — counted |
+| Boundary: blackout observed exactly at `range_end` | Yes | Half-open convention (§P5) — not counted by the accumulator, but still caught by the unchanged evaluation-time check on the next cycle (assert both facts together) |
+| Existing lockout (`OrbQualificationStore`) still gates independently, unaffected by the new store's presence | Yes | Two-store non-interference — no dual-authority regression |
+| Production-default eligibility unaffected by the new mechanism's presence | **No — must not use the override** | Mirrors Phase 6's own dedicated proof; using the override here would defeat this test's purpose |
+
+Additionally, per Phase 6's own established regression-proof pattern:
+one test compares a five-strategy vs. six-strategy (with the new store
+wired) registry's evaluation of the **five legacy strategies**, proving
+their results are byte-identical regardless of the new mechanism's
+presence — extending, not duplicating, Phase 6's own
+`TestLegacyStrategyRegressionThroughRealEngine`.
+
+### P11. Preservation
+
+Explicitly unaffected by every element of this design (verified by
+direct inspection this pass, restated for completeness, not merely
+asserted): Phase 2 qualification gates (ATR-distance, body/wick ratio,
+confirmation candles — untouched code, only two new, additive
+check-points inserted around the existing logic); Phase 3 FVG
+score-only behavior (untouched); Phase 4 range-selection/MI/
+range-quality gates (untouched — the new checks are inserted, not
+interleaved with existing ones); `OrbQualificationStore`'s own lockout
+semantics (a wholly separate module, §P8, zero shared code);
+Phase 6's conditional registration (`build_default_registry()`'s
+zero-argument path and `build_default_registry(store)`'s six-strategy
+path both unaffected — the new store is a **second**, independent
+optional dependency `OrbBreakoutStrategy` would need, addressed as a
+constructor-signature question for Implement, not resolved here beyond
+noting it must not change `build_default_registry()`'s existing
+`orb_qualification_store` parameter's own meaning);
+`DEFAULT_APPROVED_PAIRS_BY_STRATEGY` (untouched, §P9); all five legacy
+strategy files (never referenced by any element of this design); ADR-035
+and Amendment 1 (read, not modified); the Phase 5 anchor hour/minute
+validation residual risk (not referenced, not folded in, remains a
+wholly separate, unauthorized follow-up).
+
+**One open construction-shape question for Implement, not resolved
+here:** whether `OrbBreakoutStrategy.__init__` gains a second
+constructor parameter (`formation_blackout_store`) alongside its
+existing `store: OrbQualificationStore` parameter, or whether the two
+stores are bundled behind one new small container type. This Plan
+states the **requirement** (two independent stores, §P8) but leaves the
+exact Python constructor shape to Implement, since it is a mechanical
+detail with no safety-relevant consequence either way, consistent with
+this project's own practice of not over-specifying implementation
+details a competent implementer can resolve correctly within the
+Plan's stated constraints.
+
+### P12. Architecture and file-impact matrix
+
+| File | Expected change | Classification |
+|---|---|---|
+| `titan_protocol/strategy_state_store/` (new module, e.g. `formation_blackout_store.py` + a small config dataclass) | New file(s), following `OrbQualificationStore`'s exact conventions | Required |
+| `titan_protocol/strategy_engine/strategies/orb_breakout.py` | New constructor dependency; two new call sites (accumulate after evaluation-time check; read-gate after opening_range resolution) | Required |
+| `deployment_windows/start.py` | New store construction at `settings.state_dir / "orb_formation_blackout.json"`; threaded into `OrbBreakoutStrategy`'s construction (exact call-site shape per §P11's open question) | Required |
+| New test module(s) (e.g. `tests/titan_protocol/strategy_engine/test_orb_formation_blackout.py` and/or an addition to `test_orb_full_suite_integration.py`) | Full §P10 matrix | Required |
+| This Plan document | Already being finalized | Required (this artifact) |
+| `titan_protocol/strategy_engine/config.py` | **No change** — `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` untouched (§P9) | Explicitly excluded |
+| `titan_protocol/evidence_engine/*` (any file) | **No change** — Candidate C requires no Evidence Engine change at all | Explicitly excluded |
+| `titan_protocol/market_intelligence/*` (any file) | **No change** | Explicitly excluded |
+| `titan_protocol/strategy_state_store/store.py` / `config.py` / `models.py` (the *existing* `OrbQualificationStore` files) | **No change** — new module is a sibling, not an edit to these | Explicitly excluded |
+| `titan_protocol/strategy_engine/eligibility.py`, `selection.py` | **No change** | Explicitly excluded |
+| Five legacy strategy files | **No change** | Explicitly excluded |
+| `deployment_windows/install.py` | **No change** — same reasoning as Phase 6's own disposition (construction-only smoke check, never evaluates strategies) | Explicitly excluded |
+| `deployment_windows/config_loader.py` / example JSON | **No change anticipated** — no new configurable field is self-evidently required; Implement should confirm no lookback/retention bound needs to be operator-tunable before treating this as final | Preliminary, low-confidence exclusion |
+| Any ADR file | **No change** | Explicitly excluded |
+| Phase 5 anchor hour/minute validation files | **No change** | Explicitly excluded (separate, unauthorized follow-up) |
+
+**Structural-boundary re-check:** `tests/titan_protocol/strategy_engine/test_architecture.py`'s
+`ALLOWED_UPSTREAM_PREFIXES` already includes
+`titan_protocol.strategy_state_store` — the new module lives inside
+that already-allowed package, so **no allowlist change is required**.
+No new cross-engine dependency is introduced anywhere in this design
+(re-confirmed, §P2) — `tests/titan_protocol/evidence_engine/test_architecture.py`'s
+blocklist-only gap (Research §2 finding) is **not** triggered by this
+Plan, since Evidence Engine is untouched; that gap remains a latent,
+pre-existing characteristic this Plan does not need to close (it would
+only matter for a future Candidate-B-style design, not this one).
+
+### P13. Validation matrix (exact commands, current baselines re-stated from Research §12)
+
+Targeted:
+```
+python3 -m unittest tests.titan_protocol.strategy_engine.test_orb_formation_blackout -v
+python3 -m unittest tests.titan_protocol.strategy_engine.test_orb_full_suite_integration -v
+python3 -m unittest tests.titan_protocol.strategy_engine.test_orb_breakout_foundation -v
+```
+Full, at Implement/Validation time:
+```
+python3 -m compileall titan_protocol deployment_windows tests
+python3 -m unittest discover -s tests/titan_protocol/evidence_engine        # baseline 176/176, expect unchanged
+python3 -m unittest discover -s tests/titan_protocol/market_intelligence    # baseline 90/90, expect unchanged
+python3 -m unittest discover -s tests/titan_protocol/strategy_engine        # baseline 164/164, plus new Phase 7 tests
+python3 -m unittest tests.titan_protocol.strategy_engine.test_architecture tests.titan_protocol.evidence_engine.test_architecture   # baseline 11/11
+python3 -m unittest tests.titan_protocol.compliance_state_store.test_structural_boundary tests.titan_protocol.news_ingestion.test_structural_boundary   # baseline 10/10
+python3 -m unittest discover -s tests/deployment_windows -t .               # baseline 162/162, expect unchanged unless start.py's new construction needs a new deployment-level test
+python3 -m unittest discover -s tests/titan_protocol                        # baseline 1391/1391, plus new tests
+python3 scripts/check_architecture.py                                      # baseline PASS
+git diff --stat <phase-7-base-commit> HEAD -- <five legacy strategy files, orb_breakout.py's pre-existing lines, evidence_engine, market_intelligence, config.py, eligibility.py, selection.py, install.py>
+# must show zero output for every explicitly-excluded file in §P12
+```
+Live registry re-check (unchanged from Phase 6, re-run to confirm no
+regression): `build_default_registry()` → 5, ORB absent;
+`build_default_registry(store)` → 6, ORB exactly once.
+
+### P14. Adversarial Plan review
+
+- **Formation blackout never being observed in production?** Confirmed
+  true today (§P3) — disclosed as **Finding F1**, not a design defect;
+  reasoned explicitly why this does not block Plan finalization.
+- **Test-only reachability mistaken for runtime reachability?** Guarded
+  against explicitly: §P3/§P9/§P10 each state, in terms that cannot be
+  missed, that no test may be read as proving live reachability, and
+  the final disposition (§P16) repeats this rather than letting it be
+  inferred only from test code.
+- **Blackout fact cleared after becoming true?** Prevented by design —
+  `record_cycle_observation()`'s OR-accumulate contract (§P6) has no
+  code path that can transition `True → False`.
+- **Wrong range receiving another range's blackout?** Prevented by the
+  `(pair, range_start)` key (§P6), identical to the already-proven
+  lockout identity.
+- **Restart losing the fact?** Bounded, not eliminated — analyzed
+  explicitly in §P7, not silently accepted; the narrow residual window
+  is disclosed, not hidden.
+- **Persistence failure producing an unsafe false-negative after
+  restart?** Same as above — the risk is real but proven narrower than
+  the already-accepted lockout-count exposure (§P7's two-point
+  argument), and a stricter alternative was considered and rejected
+  with reasoning, not by default.
+- **Corrupt state treated as clean state?** Explicitly rejected —
+  mirrors `OrbQualificationStore`'s own fail-closed-at-construction
+  precedent exactly (§P7).
+- **Duplicated MI blackout arithmetic?** Explicitly checked and
+  rejected as a risk — the design only ever reads the already-computed
+  `blackout_active` boolean, confirmed by direct code-flow tracing
+  (§P2, §P4); nothing recomputes anything from raw `NewsEvent` data.
+- **Circular/new unauthorized engine dependency?** None introduced —
+  Strategy Engine already depends on Market Intelligence (unchanged,
+  already allowed); the new store lives inside Strategy Engine's own
+  already-allowed `strategy_state_store` package (§P12).
+- **Call-order mismatch?** Not applicable to this design — Candidate C
+  requires no change to Runtime's Evidence Engine / Market Intelligence
+  / Strategy Engine ordering, unlike Candidate B (Research §4), which
+  this Plan does not select.
+- **Accidental production pair eligibility?** Not introduced —
+  `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` is explicitly excluded from this
+  Plan's file-impact matrix (§P12) and untouched by every element of
+  the design.
+- **Lockout-store semantic coupling?** Explicitly avoided — a separate
+  module, separate file, separate write contract (§P8); no shared
+  mutable state between the two stores.
+- **Phase 2-6 regressions?** None identified — every existing gate,
+  file, and test is either untouched or extended additively; the
+  regression-proof test (§P10, last-but-one row) is required
+  specifically to prove this, not merely assumed.
+- **Phase 7 scope creep?** Checked against explicitly: no Evidence
+  Engine change, no Market Intelligence change, no Runtime reordering,
+  no pair-eligibility change, no config-loader change — the smallest
+  design Research identified that satisfies the ADR's actual
+  requirement, per §P2's own proof.
+- **Anchor-validation follow-up leakage?** Not referenced anywhere in
+  this Plan; confirmed out of scope in §P11.
+
+**No new blocker was discovered in this adversarial pass beyond Finding
+F1, already disclosed and reasoned through in §P3, §P9, and repeated
+below.**
+
+### P15. Unresolved items explicitly handed to Implement (not safety-relevant, mechanical only)
+
+1. Exact constructor shape for `OrbBreakoutStrategy`'s second store
+   dependency (§P11) — a naming/signature detail, not a design
+   decision, with no safety consequence either way.
+2. Exact new-module filename/class name within `strategy_state_store/`
+   — mechanical, following the existing file's own naming convention.
+3. Whether `config_loader.py`/the example JSON eventually need a
+   lookback/retention-bound field — flagged as a low-confidence,
+   preliminary exclusion (§P12) for Implement to confirm, not decided
+   here, since no such field is self-evidently required by anything
+   this Plan's design depends on.
+
+None of these block Implementation from beginning against this Plan;
+none require a further Research or Plan pass on their own.
+
+### P16. Final disposition reasoning (restated once more, deliberately, so it cannot be missed)
+
+**Finding F1 (restated a third time, on purpose): the formation-time
+blackout mechanism this Plan authorizes has zero live effect in
+production today, because ORB is `NOT_ELIGIBLE` for every pair under
+the current, unchanged, already-Accepted `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`
+default — a pre-existing condition Phase 6 already disclosed and this
+Plan does not change, is not authorized to change, and does not
+recommend changing.** This Plan finalizes a **correctly designed,
+correctly testable, currently-dormant-by-design** closure of the gap
+Amendment 1 named — consistent with, not a departure from, this
+project's own established practice across Phases 2 through 6.
 
 ## Validation
 
-*(Intentionally left empty — Research only.)*
+*(Intentionally left empty — this is the Implement phase's own
+responsibility, per `TEAM.md` §9. §P13 above states the exact commands
+and expected baselines that phase must execute and record here.)*
