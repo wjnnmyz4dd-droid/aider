@@ -1,28 +1,65 @@
 # ADR-037 — ORB Cross-Pair Session Opportunity Selection
 
-Status: **Proposed** (revised). No implementation accompanies this
-document, and none is authorized by it. This is a governance/architecture-
-decision artifact only, produced in response to a dedicated governance
-pass following the completed Research artifact
-`docs/plans/adr-036-session-scoped-orb-selection-research.md` (commit
-`a13e5c0`). It does not itself constitute the "established process"
-`CLAUDE.md` §1.10 requires before implementation — an independent
-governance review of this document is the next required gate, per §14.
+Status: **Accepted** (2026-07-28 — governance/architecture decision
+only; see below for what this does and does not authorize). No
+implementation accompanies this document. This Acceptance authorizes
+only the architectural decisions recorded in §1–§13 (governance
+vehicle, ownership, pipeline placement and control-flow model,
+selection contract, completeness semantics, session identity, winner
+cardinality/persistence, the enabled-sessions structural-readiness
+invariant, and the ADR-036 relationship). It does **not** authorize
+implementation: per `CLAUDE.md` §1.10, no code implementing this ADR's
+architecture may be written until (a) the future, dedicated ADR-031 §3
+amendment this document requires (§5, §17) is itself independently
+researched, governed, and Accepted, and (b) a dedicated ADR-037
+implementation Plan (its own RPI Research → Plan → Implement cycle,
+including independent Plan review) is completed. Ranking formula/weights,
+tie-handling policy, and exact production sessions/pairs/anchors remain
+separately unresolved product-policy decisions, not settled by this
+Acceptance. Gate A/Gate B activation and legacy-strategy retirement
+remain governed exclusively by ADR-036/Amendment 1 and are not touched
+by this ADR. The ADR-035 Phase 5 anchor hour/minute validation
+follow-up remains separately gated, unauthorized, and unrelated to this
+ADR throughout.
 
-**Revision history:** first drafted Proposed (commit `e3717c5`). An
-independent governance review of that draft found the overall direction
-sound but identified five required revisions (F1–F5, all HIGH/MEDIUM):
-an unaddressed Runtime control-flow/barrier requirement for cross-pair
-placement (F1); a session-identity claim that did not reconcile against
-`OpeningRangeState`'s own documented "session is descriptive only"
-invariant (F2); a missing fail-closed tie between this ADR's new
-enabled-sessions configuration and ADR-036 Amendment 1's existing Gate A/
-Gate B invariant (F3); an unargued ownership choice that never tested
-the smallest alternative (F4); and a candidate-completeness check with
-no named source for "expected count" (F5). This revision addresses all
-five directly, below, without reopening the settled conclusions the
-review confirmed (governance vehicle, pre-Risk placement, no-silent-
-fallback default, the ADR-036 broad-Gate-A-only dependency).
+**Revision and review history:** first drafted Proposed (commit
+`e3717c5`). An independent governance review of that draft found the
+overall direction sound but identified five required revisions (F1–F5,
+all HIGH/MEDIUM): an unaddressed Runtime control-flow/barrier
+requirement for cross-pair placement (F1); a session-identity claim that
+did not reconcile against `OpeningRangeState`'s own documented "session
+is descriptive only" invariant (F2); a missing fail-closed tie between
+this ADR's new enabled-sessions configuration and ADR-036 Amendment 1's
+existing Gate A/Gate B invariant (F3); an unargued ownership choice that
+never tested the smallest alternative (F4); and a candidate-completeness
+check with no named source for "expected count" (F5). A revision
+(commit `b3bd62d`) addressed all five without reopening the settled
+conclusions that review confirmed (governance vehicle, pre-Risk
+placement, no-silent-fallback default, the ADR-036 broad-Gate-A-only
+dependency). A subsequent Final Independent Governance Acceptance Review
+of that revision found the overall direction still sound but identified
+a genuine internal inconsistency in the F1 barrier mechanics (G1 — the
+control-flow model's own items 1, 3, and 8 contradicted each other on
+whether/how the front half could be run once per pair without a
+circular routing decision) and an ambiguous completeness definition
+(G2 — whether an ordinary rejection counted as a "received" result). A
+correction (commit `d481cc9`) resolved both by specifying one consistent
+model: exactly one shared front-half execution per pair per cycle,
+post-result classification, and a precise terminal-front-half-outcome
+definition distinguishing a complete scan with no candidates from an
+incomplete scan that fails closed. A second, independent **Final
+Independent Governance Acceptance Re-Review** of that correction
+(reviewing commit `d481cc9` fresh against source, not the revision's own
+report) found G1 and G2 genuinely resolved, re-confirmed F2/F3/F4/F5
+independently rather than on say-so, found one new LOW, non-blocking
+wording-precision observation (§5.A's phrasing, read in isolation,
+could be misread as narrowing which pairs receive a front half — resolved
+by reading §5.A together with §5.G, which states the correct behavior
+unambiguously; not corrected here per that review's own instruction not
+to opportunistically edit it during acceptance), and returned:
+**ADR-037 CONFORMS — ACCEPTED**. This entry now formally records that
+Acceptance. No governance defect was found unresolved at the time of
+Acceptance.
 
 Owner: Principal Software Architect (drafting); permanent ownership of
 the capability this ADR describes is assigned to a new component, not
@@ -883,15 +920,30 @@ chosen and resolved.
 
 ## 14. Governance status and next gate
 
-This document is **Proposed**. It is not marked Accepted by this task,
-per this task's own explicit instruction: no established repository
-process in this session authorizes self-acceptance of a newly drafted
-ADR — every prior ADR/Amendment in this session's history (ADR-036 and
-its Amendment 1) reached Accepted status only after a separate,
-independent governance review pass found no unresolved defect. The next
-required gate for this document is exactly that: an independent
-governance review of this ADR's decisions (§3–§13) before it can be
-considered for Acceptance.
+This document is **Accepted** (see header). It reached Accepted status
+only after three independent governance review passes found no
+unresolved defect at the end of the chain: an initial review (F1–F5),
+a revision, a Final Independent Governance Acceptance Review that found
+two further defects in the revision's own mechanics (G1, G2), a
+correction, and a Final Independent Governance Acceptance Re-Review of
+that correction that returned **ADR-037 CONFORMS — ACCEPTED** — the
+same review-before-acceptance discipline this session's ADR-036/
+Amendment 1 history already established.
+
+**Acceptance does not authorize implementation.** The next required
+governance step is: **ADR-031 §3 Pipeline Amendment Research** — an
+independent Research pass (and subsequent governance/Acceptance cycle)
+for the future, dedicated ADR-031 amendment §5/§17 already identify as
+required before any code implementing this ADR's architecture may be
+written. That Research is not performed by this document and is not
+authorized here. Ranking/tie-handling policy and exact production
+session/pair/anchor values remain separately unresolved and require
+their own future governance or Plan-level decision before
+implementation, independent of the ADR-031 amendment. Gate A/Gate B
+activation and legacy-strategy retirement remain governed exclusively
+by ADR-036/Amendment 1. The ADR-035 Phase 5 anchor hour/minute
+validation follow-up remains separately gated, unauthorized, and
+unrelated to this ADR.
 
 ## 15. Capital-preservation adversarial review (updated — identity and control-flow corrections)
 
