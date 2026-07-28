@@ -1,26 +1,30 @@
 # Plan: ADR-035 Phase 7 — Formation-Time News-Blackout Closure
 
-Status: **PLAN REVISED — READY FOR FOCUSED IMPLEMENTATION-READINESS
-RE-REVIEW.** This revision resolves the two required findings from the
-independent implementation-readiness review of Plan commit `34cbe5c`:
-**F2 (algorithm-placement defect, now fixed):** the formation-blackout
-observation loop is now specified to run immediately after
-`check_eligibility()` and before the `market_closed`/`is_holiday`/
-evaluation-time-blackout early-returns (§P4), so a genuine formation-
-window blackout co-occurring with a market-closed or holiday cycle is
-no longer silently unobserved. **F1 (reachability analysis, now
-expanded):** §P3 now discloses **two independently verified default
-gates**, not one — Gate A (`OPENING_RANGE_BREAKOUT` absent from
-`DEFAULT_APPROVED_PAIRS_BY_STRATEGY`) and Gate B
-(`EvidenceEngineConfig.opening_range_anchors` defaulting to `()`, the
-shipped example config preserving that empty default) — and explicitly
-analyzes and rejects relocating the observation point to Runtime or
-Evidence Engine as a way to bypass ORB's eligibility gate. Candidate C
-(a new, Strategy-Engine-owned, `OrbQualificationStore`-analogous
-persisted store) remains selected and independently proven sufficient
-(§P2), unchanged by either revision. Implementation is **not
-authorized** by this revision — it requires its own focused
-independent implementation-readiness re-review first.
+Status: **PLAN REVISED — READY FOR FINAL FOCUSED
+IMPLEMENTATION-READINESS REVIEW.** The prior revision (commit
+`4e751fe`) resolved Findings F1 and F2, and a focused independent
+implementation-readiness re-review confirmed both resolved. That same
+re-review found exactly one further, narrow, non-reopening finding
+(**F3**): §P10's Gate-B production-default test, as previously
+specified, could not actually isolate the empty-`opening_range_anchors`
+condition, because production-default ORB pair-ineligibility (Gate A)
+would short-circuit `qualify()` before that test's own assertions could
+ever be reached. **This revision resolves F3 only** — §P10 now
+specifies a genuine isolation methodology (§P10, revised): a
+pre-existing, already-passing Evidence-Engine-level test proves Gate B
+directly, with no Strategy Engine or eligibility involvement at all;
+a new, explicitly-labeled *isolation test* lifts Gate A alone (solely to
+reach the code path Gate B gates, never as a claim about production
+eligibility) to confirm the formation-blackout loop observes nothing
+and fabricates no state when `evidence.opening_ranges` is empty. F1
+and F2 are **not reopened** by this revision — Gate A/Gate B's
+identities, the corrected observation placement (after
+`check_eligibility()`, before `market_closed`/`is_holiday`/the
+evaluation-time blackout check), the Runtime/Evidence relocation
+rejection, and Candidate C's selection are all restated unchanged.
+Implementation is **not authorized** by this revision — it requires
+its own final focused independent implementation-readiness review
+first.
 
 Owner (Research phase): Software Architect (ADR-035/ADR-025/ADR-026
 owner precedent, unchanged from Phases 0-6).
@@ -896,8 +900,8 @@ independent review's challenge, and rejected for four concrete reasons:
   framing is recorded as **Finding F1** in §P14's adversarial review and
   is repeated in this Plan's own final disposition text (§P16), not
   left to be discovered only by inspecting test code or configuration.
-- **Verification strategy given this constraint:** every test proving
-  the mechanism's *logic* is correct must use the same test-only
+- **Verification strategy given this constraint:** every **logic test**
+  proving the mechanism's *logic* is correct must use the same test-only
   eligibility override mechanism Phase 6 established and had
   independently accepted for exactly this reason, **plus an explicit
   test-only `opening_range_anchors` configuration** (since Gate B is
@@ -905,9 +909,18 @@ independent review's challenge, and rejected for four concrete reasons:
   proving the mechanism will function correctly *once both gates are
   separately, independently lifted*, since production reachability
   cannot itself be demonstrated while either production default remains
-  unchanged. No test may claim to prove *live* reachability under
-  current defaults; this Plan does not permit that claim to be made
-  (§P10 sharpens this distinction explicitly).
+  unchanged. Each gate's own dormancy is separately proven by an
+  unmodified **production-policy assertion** (Gate A through Strategy
+  Engine, Gate B through Evidence Engine directly), and Gate B's
+  dormancy is additionally confirmed independent of Gate A by a single
+  **isolation test** that lifts Gate A only (§P10; this three-way split
+  — production-policy assertion / isolation test / logic test —
+  corrects this revision's Finding F3, replacing the prior revision's
+  two-way "Category A/B" split, which conflated a production-default
+  claim about Gate B with a claim only observable once Gate A was
+  separately lifted). No test of any class may claim to prove *live*
+  reachability under current defaults; this Plan does not permit that
+  claim to be made.
 
 **This is not marked "PHASE 7 PLAN BLOCKED"** — see §P16 for the
 reasoning restated at the point of final disposition.
@@ -1236,58 +1249,127 @@ no further ORB-side code change required at that time.
 
 ### P10. Test contract
 
-All tests use the real `build_default_registry(store)` factory and the
-real `StrategyEngine` — never a hand-assembled registry (established
-precedent, Phase 6, re-applied).
+All strategy-engine-level tests use the real `build_default_registry(store)`
+factory and the real `StrategyEngine` — never a hand-assembled registry
+(established precedent, Phase 6, re-applied). One category below (the
+Gate-B proof) is deliberately **not** a strategy-engine-level test — see
+that category's own definition for why.
 
-**Category A vs. Category B, stated explicitly (sharpened this
-revision, per the independent review's instruction that no test-only
-configuration may be described as proof of production-default
-operability):**
-- **Category A — test-only-configuration tests.** These use both the
-  test-only eligibility override Phase 6 established
-  (`make_config(approved_pairs_by_strategy=DEFAULT_APPROVED_PAIRS_BY_STRATEGY
-  + ((StrategyId.OPENING_RANGE_BREAKOUT, ("EURUSD",)),))`, lifting Gate
-  A) **and** an explicit test-only `opening_range_anchors` configuration
-  (lifting Gate B) — neither of which mutates the production constants,
-  both scoped to the individual test's own local `config`/
-  `EvidenceEngineConfig` object. Every row below marked "Category A"
-  proves the mechanism's *logic* is correct **once both gates are
-  independently, explicitly lifted for that test only** — it proves
-  **testability under explicit test configuration**, never production
-  reachability. No Category A test result may be cited, in this Plan,
-  in Implement, or in any later review, as evidence that the mechanism
-  operates under production defaults — the two are different claims and
-  must never be conflated.
-- **Category B — production-default tests.** These use the unmodified
-  `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` and the unmodified (empty)
-  `opening_range_anchors` default, proving the mechanism's **current
-  operational dormancy** (Finding F1) is real and unaffected by Phase
-  7's addition — mirroring Phase 6's own
-  `TestProductionEligibilityUnderDefaultPolicy` precedent, now covering
-  both gates.
+**Three test classes, stated explicitly (corrected this revision,
+Finding F3 — the independent re-review found the prior revision's
+"Category A/B" split conflated two different empirical claims under a
+single "Category B" label, one of which — Gate B's dormancy — could not
+actually be observed through the harness that label implied):**
 
-| Required case | Category | Proves |
+- **Production-policy assertions.** Use **fully unmodified** production
+  defaults for the gate under test, at whatever layer that gate
+  actually lives, with **no override of any kind**. Two, and only two,
+  exist for this Plan: (1) the existing Gate-A proof — unmodified
+  `DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, through the real
+  `build_default_registry(store)`/`StrategyEngine`, mirroring Phase 6's
+  own `TestProductionEligibilityUnderDefaultPolicy` — proves ORB remains
+  `NOT_ELIGIBLE` for every pair; (2) the Gate-B proof — unmodified
+  `EvidenceEngineConfig.opening_range_anchors` default (`()`), tested at
+  the **Evidence Engine layer directly**, with no Strategy Engine and no
+  eligibility involved at all (detail below) — proves
+  `compute_opening_ranges()` produces no opening ranges under the
+  production default. **Neither assertion lifts anything; both use the
+  actual, unmodified production constant/default.**
+- **Isolation tests.** Lift **exactly one** gate via a test-only
+  override, **solely** to reach the code path a *different* default
+  gates, so that the other gate's effect can be observed on its own —
+  never as a claim that the lifted gate is itself operationally lifted
+  in production. Exactly one isolation test is required by this Plan
+  (detail below): it lifts Gate A only (test-only eligibility override)
+  while leaving `opening_range_anchors` at its **unmodified production
+  default**, to confirm — independent of Gate A's own separate,
+  already-proven dormancy — that empty anchors alone are sufficient to
+  keep the formation-blackout mechanism inert. **An isolation test
+  lifting Gate A does not mean Gate A, still less Gate B, is
+  operationally reachable in production — this Plan does not permit
+  that inference to be drawn from it, here or in Implement.**
+- **Logic tests.** Lift **both** gates via test-only configuration
+  (the eligibility override **and** an explicit test-only
+  `opening_range_anchors` configuration, neither mutating the
+  production constants) to exercise Phase 7's actual mechanism —
+  proving **testability under explicit test configuration**, never
+  production reachability. No logic-test result may be cited, in this
+  Plan, in Implement, or in any later review, as evidence that the
+  mechanism operates under production defaults.
+
+**Gate-B production-policy assertion — smallest, repository-grounded
+design, no new test required:** `tests/titan_protocol/evidence_engine/test_opening_range.py::test_zero_configured_anchors_produces_empty_tuple_no_error`
+already exists, already passes, and already proves exactly this claim —
+it calls `compute_opening_ranges(bars, now, make_config())` (Evidence
+Engine's own `make_config()`, `opening_range_anchors` defaulting to
+`()`, identical to the shipped production default) and asserts the
+result is `()`. This test involves no `StrategyEngineConfig`, no
+eligibility check, and no ORB code at all — it cannot be short-circuited
+by Gate A because Gate A does not exist at the layer it runs at. This
+Plan requires no new Evidence Engine test; Implement must simply confirm
+this existing test continues to pass (it is already part of the
+Evidence Engine suite's 176/176 baseline run every validation pass,
+§P13) and reference it directly as the Gate-B production-policy proof
+rather than asserting Gate B's dormancy solely by cross-reference to
+Gate A's own, separately-proven production-policy assertion.
+
+**Gate-A-only isolation test — new, required, extends an existing
+Phase 2 pattern:** `tests/titan_protocol/strategy_engine/test_orb_breakout_foundation.py::TestOpeningRangeAbsence.test_no_opening_ranges_returns_not_qualified`
+already establishes the exact fixture shape needed (the test-only
+eligibility override `_ORB_APPROVED_CONFIG`, paired with
+`make_evidence_snapshot()` whose `opening_ranges` defaults to `()` — the
+same shape Evidence Engine actually produces under the unmodified
+`opening_range_anchors` default, per the production-policy assertion
+above). Phase 7 requires a new, sibling test in this same style, run
+against the real `build_default_registry(store)` with Phase 7's new
+store wired in, that additionally asserts the Phase 7-specific facts
+the pre-existing test predates and does not cover:
+1. `qualify()` proceeds **past** `check_eligibility()` (does not return
+   `NOT_ELIGIBLE`) — confirming this test reaches the code the
+   production-default eligibility gate would otherwise block, which is
+   the entire reason the override exists here.
+2. With `evidence.opening_ranges == ()`, the new formation-blackout
+   accumulation loop (§P4) has nothing to iterate and therefore calls
+   `record_cycle_observation()` **zero times** this cycle.
+3. `qualify()` still reaches and returns via the existing, unchanged
+   "No opening range configured for this evaluation cycle" path (Phase
+   2 behavior, unmodified) — the same outcome the pre-existing test
+   already asserts, now re-confirmed in the presence of Phase 7's new
+   store.
+4. The new store's `was_blackout_observed(pair, <any range_start the
+   fixture might construct>)` returns `False`, and the store's
+   persisted state is unchanged from its initial (empty) state after
+   the cycle — **no formation-blackout state is fabricated when
+   `opening_ranges` is empty.**
+
+This single new test isolates Gate B's effect (empty anchors → empty
+`evidence.opening_ranges` → nothing for the new loop to observe)
+independently of Gate A, precisely because Gate A has been neutralized
+for this test only — it is not, and must never be described as, evidence
+that ORB is eligible in production.
+
+| Required case | Class | Proves |
 |---|---|---|
-| No blackout during formation + no evaluation blackout | A | `QUALIFIED` reachable when both checks are clean (baseline) |
-| Blackout at evaluation only (never during formation) | A | Existing evaluation-time check alone still gates — unchanged Phase 4 behavior preserved |
-| Blackout during formation, cleared by evaluation time | A | **The exact gap Phase 7 closes** — must now be `NOT_QUALIFIED`, where pre-Phase-7 behavior would have been `QUALIFIED` |
-| Formation blackout active while `market_closed=True` (new this revision, Finding F2) | A | Observation is still recorded even though the cycle's own qualification is rejected via the existing, unmoved `market_closed` gate — corrected §P4 insertion point verified directly |
-| Formation blackout active while `is_holiday=True` (new this revision, Finding F2) | A | Same as above, for the `is_holiday` gate — observation recorded, qualification still rejected via the existing, unmoved `is_holiday` gate |
-| A later clear (non-blackout) cycle, following either of the two rows above, does not erase the earlier fact (new this revision) | A | Monotonicity holds across the market-closed/holiday co-occurrence case specifically, not only the generic case below |
-| Downstream qualification on a market-closed or holiday cycle remains rejected per the existing `market_closed`/`is_holiday` gates, with or without a formation-blackout fact present (new this revision) | A | The §P4 reordering changes only what is *recorded*, never what is *qualified* — no behavioral regression introduced by moving the observation loop earlier |
-| Blackout observed once, then clear for many subsequent cycles | A | Monotonicity (general case) — the fact does not clear itself |
-| Restart after a formation-blackout observation, same range still forming or now formed | A | Persistence — fresh store/registry/engine objects reading the same file, mirroring Phase 6's own restart-test pattern |
-| Restart during a clean (no-blackout) formation | A | Restart does not fabricate a false-positive |
-| Two simultaneous anchors/ranges, blackout during only one | A | `(pair, range_start)` key isolation — no cross-range contamination |
-| Same pair, two sequential (non-overlapping) range_starts, one blacked-out, one clean | A | Range-identity isolation for the same pair over time |
-| Persistence (write) failure during formation, mid-cycle | A | Containment — mirrors Phase 6's `TestPersistFailureContainment`, applied to the new store |
-| Corrupt persisted state at startup | A | Fail-closed construction — mirrors Phase 6's `TestStartupCorruptState` |
-| Boundary: blackout observed exactly at `range_start` | A | Half-open convention (§P5) — counted |
-| Boundary: blackout observed exactly at `range_end` | A | Half-open convention (§P5) — not counted by the accumulator, but still caught by the unchanged evaluation-time check on the next cycle (assert both facts together) |
-| Existing lockout (`OrbQualificationStore`) still gates independently, unaffected by the new store's presence | A | Two-store non-interference — no dual-authority regression |
-| Production-default eligibility unaffected by the new mechanism's presence (Gate A) | **B** | Mirrors Phase 6's own dedicated proof; using the override here would defeat this test's purpose |
-| Production-default anchor configuration unaffected by the new mechanism's presence, `evidence.opening_ranges` remains empty and the formation-blackout loop observes nothing (Gate B, new this revision) | **B** | Confirms Gate B's dormancy directly, not merely by cross-reference to Gate A — closes the gap the independent review identified in the prior revision's reachability disclosure |
+| Production-default eligibility unaffected by the new mechanism's presence (Gate A) | Production-policy assertion | Mirrors Phase 6's own dedicated proof; unmodified `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` |
+| Production-default anchor configuration produces no opening ranges (Gate B), proven at the Evidence Engine layer, independent of Strategy Engine/eligibility entirely | Production-policy assertion | Already covered by the pre-existing, already-passing `test_zero_configured_anchors_produces_empty_tuple_no_error` — no new test required (this revision, Finding F3) |
+| Gate A lifted solely to reach the code path Gate B gates; `evidence.opening_ranges == ()` (matching the unmodified anchor default); assert eligibility cleared, zero accumulation-loop writes, existing "No opening range configured" outcome, no fabricated formation-blackout state | **Isolation test** (new this revision, Finding F3) | Gate B's dormancy in isolation from Gate A — the gap the prior revision's Gate-B row could not actually close |
+| No blackout during formation + no evaluation blackout | Logic test | `QUALIFIED` reachable when both checks are clean (baseline) |
+| Blackout at evaluation only (never during formation) | Logic test | Existing evaluation-time check alone still gates — unchanged Phase 4 behavior preserved |
+| Blackout during formation, cleared by evaluation time | Logic test | **The exact gap Phase 7 closes** — must now be `NOT_QUALIFIED`, where pre-Phase-7 behavior would have been `QUALIFIED` |
+| Formation blackout active while `market_closed=True` (Finding F2) | Logic test | Observation is still recorded even though the cycle's own qualification is rejected via the existing, unmoved `market_closed` gate — corrected §P4 insertion point verified directly |
+| Formation blackout active while `is_holiday=True` (Finding F2) | Logic test | Same as above, for the `is_holiday` gate — observation recorded, qualification still rejected via the existing, unmoved `is_holiday` gate |
+| A later clear (non-blackout) cycle, following either of the two rows above, does not erase the earlier fact | Logic test | Monotonicity holds across the market-closed/holiday co-occurrence case specifically, not only the generic case below |
+| Downstream qualification on a market-closed or holiday cycle remains rejected per the existing `market_closed`/`is_holiday` gates, with or without a formation-blackout fact present | Logic test | The §P4 reordering changes only what is *recorded*, never what is *qualified* — no behavioral regression introduced by moving the observation loop earlier |
+| Blackout observed once, then clear for many subsequent cycles | Logic test | Monotonicity (general case) — the fact does not clear itself |
+| Restart after a formation-blackout observation, same range still forming or now formed | Logic test | Persistence — fresh store/registry/engine objects reading the same file, mirroring Phase 6's own restart-test pattern |
+| Restart during a clean (no-blackout) formation | Logic test | Restart does not fabricate a false-positive |
+| Two simultaneous anchors/ranges, blackout during only one | Logic test | `(pair, range_start)` key isolation — no cross-range contamination |
+| Same pair, two sequential (non-overlapping) range_starts, one blacked-out, one clean | Logic test | Range-identity isolation for the same pair over time |
+| Persistence (write) failure during formation, mid-cycle | Logic test | Containment — mirrors Phase 6's `TestPersistFailureContainment`, applied to the new store |
+| Corrupt persisted state at startup | Logic test | Fail-closed construction — mirrors Phase 6's `TestStartupCorruptState` |
+| Boundary: blackout observed exactly at `range_start` | Logic test | Half-open convention (§P5) — counted |
+| Boundary: blackout observed exactly at `range_end` | Logic test | Half-open convention (§P5) — not counted by the accumulator, but still caught by the unchanged evaluation-time check on the next cycle (assert both facts together) |
+| Existing lockout (`OrbQualificationStore`) still gates independently, unaffected by the new store's presence | Logic test | Two-store non-interference — no dual-authority regression |
 
 Additionally, per Phase 6's own established regression-proof pattern:
 one test compares a five-strategy vs. six-strategy (with the new store
@@ -1401,7 +1483,7 @@ corrected design)
   78-88): `market_closed` (83), `is_holiday` (85), and the evaluation-
   time blackout check (87) all now execute **after** the accumulation
   loop, not before it — none of them can suppress the observation any
-  longer. New Category A test rows (§P10) explicitly cover the
+  longer. Logic-test rows (§P10) explicitly cover the
   `market_closed`/`is_holiday` co-occurrence cases this finding
   concerned.
 - **Eligibility-order violation?** Checked explicitly — the
@@ -1417,17 +1499,32 @@ corrected design)
   §P16 repeat this framing rather than letting it be inferred only from
   test code or configuration.
 - **Test-only reachability confused with production reachability?**
-  Guarded against explicitly and sharpened this revision — §P10 now
-  names Category A (test-only-configuration) and Category B
-  (production-default) tests explicitly, states that no Category A
-  result may be cited as proof of production reachability, and adds a
-  dedicated Category B row proving Gate B's dormancy directly (not only
-  by cross-reference to Gate A).
-- **Missing anchors overlooked (Finding F1, Gate B)?** Fixed this
-  revision — §P3 now discloses Gate B (`opening_range_anchors`
+  Guarded against explicitly — §P10 names three test classes
+  (production-policy assertion, isolation test, logic test), states
+  that no logic-test result may be cited as proof of production
+  reachability, and states explicitly that an isolation test lifting
+  one gate is never evidence that gate is itself operationally lifted
+  in production.
+- **Gate B not independently isolated (Finding F3, resolved this
+  revision)?** The prior revision's single "Category B" test row
+  conflated two different claims under one label and, as literally
+  specified, would have been short-circuited by Gate A before it could
+  observe anything about empty anchors — identified by the focused
+  independent re-review, not self-detected by this Plan's own prior
+  adversarial pass. §P10 now separates this into two: a
+  production-policy assertion proving Gate B's dormancy at the Evidence
+  Engine layer directly (the pre-existing, already-passing
+  `test_zero_configured_anchors_produces_empty_tuple_no_error`, which
+  cannot be short-circuited by Gate A because it never touches Strategy
+  Engine or eligibility), and a new isolation test that lifts Gate A
+  only, confirming empty anchors alone keep the mechanism inert. Neither
+  is described as production behavior.
+- **Missing anchors overlooked (Finding F1, Gate B)?** Fixed in the
+  prior revision — §P3 discloses Gate B (`opening_range_anchors`
   defaulting to `()`, the shipped example config preserving that
-  default) as an independent, compounding gate alongside Gate A, with
-  its own dedicated Category B test (§P10).
+  default) as an independent, compounding gate alongside Gate A;
+  unaffected by this revision's narrower F3 fix to how Gate B's
+  dormancy is *tested* (§P10).
 - **Formation fact cleared by a later clean cycle?** Prevented by
   design, unaffected by this revision's reordering —
   `record_cycle_observation()`'s OR-accumulate contract (§P6) has no
@@ -1469,12 +1566,14 @@ corrected design)
   this Plan; confirmed out of scope in §P11, unaffected by this
   revision.
 
-**No new blocker was discovered in this adversarial re-read. Both
-required findings — F2 (algorithm placement) and F1 (reachability
-disclosure) — are resolved: F2 by an actual code-ordering correction in
-§P4, F1 by an expanded, two-gate disclosure and an explicit rejected-
-alternatives analysis in §P3, both carried through to §P9, §P10, and
-§P16.**
+**No new blocker was discovered in this adversarial re-read. F1
+(reachability disclosure) and F2 (algorithm placement) remain resolved
+exactly as the prior revision left them — neither reopened, neither
+redesigned. F3 (Gate-B test isolation), the sole finding from the
+subsequent focused independent re-review, is now resolved by §P10's
+corrected three-class test contract (production-policy assertion /
+isolation test / logic test) and this section's own updated bullets
+above.**
 
 ### P15. Unresolved items explicitly handed to Implement (not safety-relevant, mechanical only)
 
@@ -1523,17 +1622,36 @@ add dependency/ownership complexity for no reachability benefit.
 currently-dormant-by-design closure of the gap Amendment 1 named** —
 consistent with, not a departure from, this project's own established
 practice across Phases 2 through 6. Testability is proven under
-explicit Category A test configuration (§P10); production-default
-dormancy under both gates is independently proven by dedicated Category
-B tests (§P10) — the two claims are never conflated anywhere in this
-Plan.
+explicit test-only configuration by logic tests (§P10); production-
+default dormancy under each gate is independently proven by its own
+production-policy assertion, and Gate B's dormancy is additionally
+confirmed independent of Gate A by a dedicated isolation test (§P10) —
+the three claims (testability, production-default dormancy, and
+cross-gate independence) are never conflated anywhere in this Plan.
 
-**Disposition: PHASE 7 PLAN REVISED — READY FOR FOCUSED
-IMPLEMENTATION-READINESS RE-REVIEW.** Both required findings from the
-prior independent implementation-readiness review are resolved; no new
-blocker was discovered in this revision's own adversarial re-read
-(§P14). Implementation remains unauthorized until a focused re-review
-of this revision explicitly approves it.
+**Finding F3 (Gate-B test isolation), resolved this revision, not
+reopening F1 or F2:** a focused independent implementation-readiness
+re-review of the prior revision (commit `4e751fe`) confirmed F1 and F2
+fully resolved, and found exactly one further, narrow gap — the prior
+revision's single "Category B" test row could not, as specified,
+actually isolate Gate B's dormancy from Gate A, since production-default
+pair ineligibility would short-circuit `qualify()` before that row's own
+assertions could be reached. §P10 now resolves this with a corrected
+three-class test contract (production-policy assertion / isolation test
+/ logic test): Gate B's dormancy is proven directly at the Evidence
+Engine layer by a pre-existing, already-passing test untouched by
+Gate A, and confirmed independent of Gate A by a new isolation test that
+lifts Gate A only, solely to reach the code path Gate B gates — never as
+a claim that Gate A is itself operationally lifted in production. No
+other section's decisions (Gate A/Gate B identities, observation
+placement, temporal semantics, persistence semantics, store ownership,
+Candidate C, production defaults) were reopened to resolve F3.
+
+**Disposition: PHASE 7 PLAN REVISED — READY FOR FINAL FOCUSED
+IMPLEMENTATION-READINESS REVIEW.** F1, F2, and F3 are all resolved; no
+new blocker was discovered in this revision's own adversarial re-read
+(§P14). Implementation remains unauthorized until a final focused
+review of this revision explicitly approves it.
 
 ## Validation
 
