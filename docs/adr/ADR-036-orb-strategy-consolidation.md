@@ -21,23 +21,29 @@ decision operates within, unchanged. `ADR-035-orb-strategy.md` (Accepted)
 (Accepted, Amendment 1, Phase 0 implemented) — unaffected, read-only
 context.
 
-**Amendment 1 (2026-07-28, Proposed — revised this pass in response to
-an Independent Governance Review of the prior text (commit `4a27f69`),
-pending a separate acceptance pass; history preserved below, not
-backdated): operational-readiness precondition for legacy retirement.**
-Drafted in response to a dedicated governance-resolution pass
+**Amendment 1 (2026-07-28, Accepted 2026-07-28 — history preserved
+below, not backdated): operational-readiness precondition for legacy
+retirement.** First drafted Proposed, this session, in response to a
+dedicated governance-resolution pass
 (`docs/plans/adr-036-legacy-strategy-retirement.md`'s own prior Research
 pass, commit `b74d505`, first surfaced this as an open question rather
 than resolving it) that traced the real production construction path
 (`deployment_windows/start.py` → `build_default_registry()` →
 `StrategyEngine`) end to end and found a gap this ADR's existing text
-does not close. **Revision note:** the Independent Governance Review
-confirmed this Amendment's core decision and policy but found five
-wording/precision defects (a factual mischaracterization of Gate B, an
-undefined operative term, an ambiguous cross-ADR citation, missing
-cross-references into §12.A/§13/§14/§15/§16, and an unaddressed
-rollout-sequencing gap) — all five are corrected below; none required
-reopening the underlying analysis or policy.
+does not close. An independent "ADR-036 Amendment 1 — Independent
+Governance Review" of that first draft (commit `4a27f69`) confirmed the
+Amendment's core decision and policy but found five wording/precision
+defects (a factual mischaracterization of Gate B, an undefined operative
+term, an ambiguous cross-ADR citation, missing cross-references into
+§12.A/§13/§14/§15/§16, and an unaddressed rollout-sequencing gap) — none
+affecting the operative contract (Authorization, conditions 1–3,
+Structural readiness vs. dynamic qualification, and Rollout-transition
+governance, all below, were found sound and unchanged by that review).
+All five were corrected (commit `8a64823`). A subsequent "ADR-036
+Amendment 1 — Final Independent Acceptance Review" of the corrected text
+returned **ADR-036 AMENDMENT 1 CONFORMS — ACCEPTED**, finding all five
+prior findings resolved and no new governance defect. This entry now
+formally records Acceptance.
 
 **The gap, precisely:** §13's governance gate requires ORB to be
 "implemented, tested, independently reviewed, and accepted through its
@@ -231,12 +237,16 @@ entrypoint(s) it covers; and the rollout sequencing and its proof —
 each a future Plan's responsibility, constrained by this Amendment's
 invariants, not resolved by them.
 
-This Amendment is **Proposed**, not Accepted. A separate, explicit
-acceptance pass — independently re-verifying this Amendment's own
-reasoning against repository evidence, following the same pattern
-already used for ADR-035 Amendment 1's independent acceptance review —
-is required before ADR-036 Plan Finalization may rely on it as Accepted
-governance.
+This Amendment is **Accepted**. Its operational-readiness conditions
+1–3, the structural-readiness/dynamic-qualification distinction, and the
+rollout-transition governance invariant are now part of ADR-036's
+Accepted governance, cross-referenced into §12.A, §13, §14, §15, and
+§16 below. **Acceptance of this Amendment does not itself authorize
+legacy-strategy retirement, ORB activation, any approved-pair or
+opening-range-anchor change, or the startup-readiness check's
+implementation** — those remain future Research/Plan work, each its own
+RPI gate, per this Amendment's own deferred-items list above. The next
+authorized governance step is ADR-036 Plan Finalization.
 
 ---
 
@@ -787,8 +797,8 @@ only.** It does not authorize beginning the Implementation Roadmap
 (§15) — step 1 of that roadmap (ADR-035 Phases 1–6) must independently
 reach Accepted-and-implemented status first, and each subsequent step
 remains gated by this project's normal RPI governance regardless of this
-ADR's own status. **Once Amendment 1 is itself Accepted, its
-operational-readiness conditions (§12.A, §13, §14, §15 step 8) become
+ADR's own status. **Amendment 1 is now Accepted; its
+operational-readiness conditions (§12.A, §13, §14, §15 step 8) are
 part of what "complete" means for the Implementation Roadmap — Roadmap
 steps 2–8 may not be treated as finished on registry/test-suite grounds
 alone.**
