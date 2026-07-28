@@ -21,16 +21,23 @@ decision operates within, unchanged. `ADR-035-orb-strategy.md` (Accepted)
 (Accepted, Amendment 1, Phase 0 implemented) — unaffected, read-only
 context.
 
-**Amendment 1 (2026-07-28, Proposed — pending a separate acceptance
-pass, history preserved below, not backdated): operational-readiness
-precondition for legacy retirement.** Drafted this session in response
-to a dedicated governance-resolution pass
+**Amendment 1 (2026-07-28, Proposed — revised this pass in response to
+an Independent Governance Review of the prior text (commit `4a27f69`),
+pending a separate acceptance pass; history preserved below, not
+backdated): operational-readiness precondition for legacy retirement.**
+Drafted in response to a dedicated governance-resolution pass
 (`docs/plans/adr-036-legacy-strategy-retirement.md`'s own prior Research
 pass, commit `b74d505`, first surfaced this as an open question rather
 than resolving it) that traced the real production construction path
 (`deployment_windows/start.py` → `build_default_registry()` →
 `StrategyEngine`) end to end and found a gap this ADR's existing text
-does not close.
+does not close. **Revision note:** the Independent Governance Review
+confirmed this Amendment's core decision and policy but found five
+wording/precision defects (a factual mischaracterization of Gate B, an
+undefined operative term, an ambiguous cross-ADR citation, missing
+cross-references into §12.A/§13/§14/§15/§16, and an unaddressed
+rollout-sequencing gap) — all five are corrected below; none required
+reopening the underlying analysis or policy.
 
 **The gap, precisely:** §13's governance gate requires ORB to be
 "implemented, tested, independently reviewed, and accepted through its
@@ -53,66 +60,127 @@ open* as an unavoidable side effect of doing step 4 correctly — ORB
 must receive its own `approved_pairs_by_strategy` entry, or nothing
 would be eligible for any pair at all, which `titan_protocol.runtime.validation.validate_profile()`
 (called, and fail-closed, at every `deployment_windows/start.py` startup
-— confirmed by direct source read this pass) would already catch and
-refuse to boot on. **Gate B has no equivalent forcing mechanism and no
-existing check anywhere.** `validate_profile()` never inspects
-`opening_range_anchors` (confirmed by a full, direct read of
-`titan_protocol/runtime/validation.py` this pass — no Evidence Engine
-field of any kind is referenced there). No Roadmap step names it either,
-because `opening_range_anchors` lives in Evidence Engine's own config,
-which §8/§9 place outside this ADR's scope by design. The consequence:
-**a future Plan could execute every one of this ADR's own Roadmap steps
-exactly as written — delete the five files, register ORB alone, migrate
-`StrategyEngineConfig` correctly — and the deployment would boot
-successfully, pass every existing test and architecture check, and yet
-have zero live production strategies, indefinitely, because ORB would
-never form an opening range for any pair.** `StrategyEngine.evaluate()`
-already returns a well-defined, exception-free `rejected=True` snapshot
-in exactly this case (confirmed by direct read of `engine.py`/`selection.py`
-this pass: an empty `QUALIFIED` candidate set is `select_winning_strategy()`'s
-ordinary "nothing qualified" return path, indistinguishable in code from
-a single pair having no signal on a single ordinary cycle); Runtime
-reports `CycleOutcome.NO_STRATEGY` for every pair, every cycle,
-indefinitely, and no metric, log level, health check, or watchdog signal
-anywhere in the repository distinguishes a sustained, total,
-every-pair-every-cycle `NO_STRATEGY` rate from routine, expected,
-occasional rejections (confirmed by a repository-wide search this pass:
-`StrategyEngineMetrics.record_rejection()` is a bare, unthresholded
-counter; no `no_strategy`/`NO_STRATEGY`-aware check exists in
+— confirmed by direct source read) would already catch and refuse to
+boot on: `StrategyEngineConfig.approved_pairs_for()` returns `()` both
+when a `StrategyId` is entirely absent from `approved_pairs_by_strategy`
+*and* when present with an empty pairs tuple, so even a degenerate,
+technically-present-but-empty ORB entry is still caught. **Gate B has no
+equivalent forcing mechanism and no existing check anywhere.**
+`validate_profile()` never inspects `opening_range_anchors` (confirmed
+by a full, direct read of `titan_protocol/runtime/validation.py` — no
+Evidence Engine field of any kind is referenced there). No Roadmap step
+names it either, because `opening_range_anchors` lives in Evidence
+Engine's own config, which §8/§9 place outside this ADR's scope by
+design. The consequence: **a future Plan could execute every one of this
+ADR's own Roadmap steps exactly as written — delete the five files,
+register ORB alone, migrate `StrategyEngineConfig` correctly — and the
+deployment would boot successfully, pass every existing test and
+architecture check, and yet have zero live production strategies,
+indefinitely, because ORB would never form an opening range for any
+pair.** `StrategyEngine.evaluate()` already returns a well-defined,
+exception-free `rejected=True` snapshot in exactly this case (confirmed
+empirically: an empty registry, evaluated against real fixtures, returns
+`rejected=True`, `winning_strategy=None`, `all_qualifications=()`, no
+exception — `select_winning_strategy()`'s ordinary "nothing qualified"
+return path, indistinguishable in code from a single pair having no
+signal on a single ordinary cycle); Runtime reports
+`CycleOutcome.NO_STRATEGY` for every pair, every cycle, indefinitely,
+and no metric, log level, health check, or watchdog signal anywhere in
+the repository distinguishes a sustained, total, every-pair-every-cycle
+`NO_STRATEGY` rate from routine, expected, occasional rejections
+(confirmed by a repository-wide search: `StrategyEngineMetrics.record_rejection()`
+is a bare, unthresholded counter; `research_engine/reviews.py`'s
+`rejection_rate` measures compliance-rejected trades, an unrelated
+concept; no `no_strategy`/`NO_STRATEGY`-aware check exists in
 `deployment_windows/health_check.py` or `titan_protocol/reliability/`).
 This is a genuine, silent capital-preservation gap this ADR's own
 Acceptance Criteria (§16) did not contemplate — its risk table (§14)
-lists no equivalent entry.
+lists no equivalent entry (both cross-referenced by this Amendment,
+below).
 
 **Authorization (the operative contract this Amendment adds):** §7's
 already-Accepted full-retirement decision is **not reopened** — Titan
 still will retire all five legacy strategies and register ORB as the
 sole production strategy. What changes is the definition of "complete"
-for §13's Removal/Completion phase and §15's Roadmap step 8
-(Validation): **neither may be considered complete, and the five legacy
-strategy files/registrations/config fields may not be finally removed
-from the production path, until all of the following hold:**
+for §12.A's designation, §13's Removal/Completion phase, and §15's
+Roadmap step 8 (Validation) — each amended in place below with an
+explicit pointer to this Amendment. **None may be considered complete,
+and the five legacy strategy files/registrations/config fields may not
+be finally removed from the production path, until all of the following
+hold:**
 
 1. `OPENING_RANGE_BREAKOUT` has at least one entry in
-   `approved_pairs_by_strategy` (Gate A lifted) — already an unavoidable
-   consequence of Roadmap step 4 done correctly; restated here only so
-   the completion criterion is explicit rather than incidental.
-2. At least one `opening_range_anchors` entry is configured, covering at
-   least one of ORB's approved pairs (Gate B lifted). This is a
-   deployment **configuration-value** change (populating a knob Phase 0
-   already built for exactly this purpose) — it is not a code, model, or
-   logic change to Evidence Engine, and does not conflict with §9's
-   Non-Goal against modifying Evidence Engine's own implementation;
-   §9 is clarified, not reopened, by this distinction.
+   `approved_pairs_by_strategy` with at least one approved pair (Gate A
+   lifted) — already an unavoidable consequence of Roadmap step 4 done
+   correctly; restated here only so the completion criterion is
+   explicit rather than incidental.
+2. At least one `opening_range_anchors` entry is configured (Gate B
+   lifted). **Corrected framing (this revision):** `opening_range_anchors`
+   is a production-wide, session/time-of-day-keyed setting
+   (`EvidenceEngineConfig.opening_range_anchors: Tuple[Tuple[SessionName, int, int], ...]`,
+   `evidence_engine/config.py`) — it names no pair. `compute_opening_ranges(bars, now, config)`
+   (`evidence_engine/opening_range.py`) takes no `pair` argument at all:
+   every configured anchor applies identically to whichever pair's bars
+   the caller supplies. The prior revision's phrase "covering at least
+   one of ORB's approved pairs" incorrectly implied a per-pair
+   anchor-to-pair mapping that the architecture does not have and that
+   this Amendment does not invent. The correct, narrow requirement is
+   simply: **at least one anchor is configured, full stop** — combined
+   with condition 1, this is sufficient for at least one approved pair
+   to have an opening range formed for it during the anchor's own
+   window, given sufficient bar history (a data/deployment operational
+   fact no configuration-level invariant can itself guarantee — see the
+   dynamic-vs-structural distinction below). Populating this field is a
+   deployment **configuration-value** change (using a knob Phase 0
+   already built for exactly this purpose) — not a code, model, or logic
+   change to Evidence Engine — and does not conflict with §9's Non-Goal
+   against modifying Evidence Engine's own implementation; §9 is
+   clarified, not reopened, by this distinction.
 3. Deployment startup validation fails closed if either condition above
-   is not met whenever ORB is the registry's sole (or majority) member —
-   an extension of the existing, already-fail-closed
-   `validate_profile()`/`start.py` startup-validation pattern (§SS11),
-   not a new validation mechanism. The exact mechanism (a new
-   `ConfigValidationIssue` check, a separate startup assertion, or
-   another equivalent measurable condition) is deliberately left to a
-   future Plan — this Amendment requires the invariant, not its
-   implementation.
+   is not met **whenever ORB is registered as the production registry's
+   sole member** — the only end-state §7 authorizes; this Amendment does
+   not contemplate or require enforcement during any intermediate,
+   multi-strategy transitional state (the prior revision's undefined
+   "or majority" qualifier is removed as unnecessary and untestable: no
+   partial-coexistence end-state exists for it to describe). This is an
+   extension of the existing, already-fail-closed
+   `validate_profile()`/`start.py` startup-validation pattern —
+   specifically, `titan_protocol/runtime/validation.py`'s `validate_profile()`,
+   whose own docstring already cites its architectural home as "ADR-031
+   §11 (Configuration validation (startup))." This Amendment draws on
+   that as precedent for *where* a structural-readiness check belongs
+   architecturally — a cross-component, deployment-profile-level,
+   fail-closed invariant is already `validate_profile()`'s established
+   responsibility, and extending it to cover Gate A/Gate B is consistent
+   with, not novel relative to, that existing scope. ADR-031 §11 does not
+   itself mandate this specific ORB check; this Amendment is what
+   requires it. The exact mechanism (a new `ConfigValidationIssue` check,
+   a separate startup assertion, or another equivalent measurable
+   condition) and which entrypoint(s) it must run at (at minimum
+   `deployment_windows/start.py`, the live production runtime; whether
+   `deployment_windows/install.py`'s separate, disposable
+   `step_verify_runtime` smoke-test construction also needs it is a
+   Plan-level question, since that path does not call `validate_profile()`
+   today either, for reasons unrelated to this Amendment) are
+   deliberately left to a future Plan — this Amendment requires the
+   invariant, not its implementation.
+
+**Structural readiness vs. dynamic qualification (unchanged from, and
+reaffirmed by, this revision):** conditions 1–3 establish only that ORB
+is *structurally capable* of forming an opening range and being
+evaluated for at least one approved pair. They do **not** promise ORB
+will ever qualify or trade. A configuration satisfying 1–3 that still
+sees ORB return `NOT_QUALIFIED` on every cycle because of holiday,
+market-closed, spread, liquidity, news blackout, insufficient range/ATR
+quality, or simply no breakout occurring is **outside this Amendment's
+scope and does not violate it** — those are the ordinary, expected
+dynamic outcomes `OrbBreakoutStrategy.qualify()` already produces for
+every strategy, every cycle, and requiring more would be requiring live
+trading proof, rejected below as stronger than necessary. Conversely, a
+configuration where ORB can never even be evaluated meaningfully under
+production policy — Gate A or Gate B still closed — does not satisfy
+conditions 1–3 and does not satisfy this Amendment, regardless of how
+many other checks pass.
 
 **Explicitly not required by this Amendment** (rejected as stronger than
 the evidence supports): ORB does not need to have been observed
@@ -124,22 +192,48 @@ prevents the silent zero-live-strategy outcome, and this Amendment does
 not invent a stronger requirement than the reproduced failure mode
 demands.
 
+**Rollout-transition governance (added this revision):** the prior
+revision guarded only the *definition* of "complete," leaving open
+whether a staged, non-atomic rollout could pass through a live,
+deployed, intermediate state with the five legacy strategies already
+absent from the production registry while ORB does not yet satisfy
+conditions 1–3 — a zero-live-strategy production window that no one has
+yet formally called "complete," but that is live and trading-capable-of-nothing
+regardless. This Amendment does **not** mandate a specific rollout
+mechanism (activate-then-retire, atomic transition, or another
+ordering) — that remains, as before, a future Plan's choice. What this
+Amendment adds is a **governance invariant, distinct from both the
+rollout-mechanism choice and any single proof artifact**: no individual
+production deployment step, whatever sequencing the future Plan
+chooses, may leave the system in a state where the five legacy
+strategies are absent from the production registry while conditions 1–3
+do not yet all hold. The future Implementation Plan must include
+**affirmative evidence** — not silence, and not an assumption of
+atomicity — that its chosen sequencing satisfies this invariant at every
+intermediate step, not merely at the final state. To be explicit about
+the three distinct things this paragraph separates: (a) the *governance
+invariant* is stated here (no zero-live-strategy production window,
+ever, at any step); (b) the *rollout proof obligation* is that the
+future Plan must demonstrate this invariant holds throughout its chosen
+sequencing, as part of that Plan's own review; (c) the *implementation
+sequencing itself* (which ordering, how many deployments, what
+mechanism) is not decided here and remains entirely a future Plan
+decision.
+
 **Explicitly deferred to future Research/Plan work, not decided here:**
 the exact pair(s) to grant ORB eligibility for; the exact opening-range
 anchor(s), including their hour/minute values (the separate,
 still-unauthorized Phase 5 anchor hour/minute validation residual risk
 is a distinct question about anchor-time validation *correctness*, not
 about anchor *presence*, and remains untouched by this Amendment); the
-exact implementation of the extended startup check; and the rollout
-sequencing (activate-then-retire, atomic transition, or another ordering)
-by which conditions 1–3 above are satisfied without an intermediate
-zero-live-strategy production interval — a future Plan's responsibility,
-constrained by this Amendment's invariant, not resolved by it.
+exact implementation of the extended startup check and which
+entrypoint(s) it covers; and the rollout sequencing and its proof —
+each a future Plan's responsibility, constrained by this Amendment's
+invariants, not resolved by them.
 
-This Amendment is **Proposed**, not Accepted. Per this Amendment's own
-inclusion in the governance-resolution pass that drafted it, a separate,
-explicit acceptance pass — independently re-verifying this Amendment's
-own reasoning against repository evidence, following the same pattern
+This Amendment is **Proposed**, not Accepted. A separate, explicit
+acceptance pass — independently re-verifying this Amendment's own
+reasoning against repository evidence, following the same pattern
 already used for ADR-035 Amendment 1's independent acceptance review —
 is required before ADR-036 Plan Finalization may rely on it as Accepted
 governance.
@@ -471,8 +565,10 @@ retirement surface for the future removal phase (§13, §15).
 
 ### 12.A ORB designation
 
-Upon completion of ADR-035's remaining phases (§13), ORB
-(`StrategyId.OPENING_RANGE_BREAKOUT`) is designated:
+Upon completion of ADR-035's remaining phases (§13), **and upon
+satisfaction of Amendment 1's operational-readiness conditions 1–3**
+(above — Gate A lifted, Gate B lifted, fail-closed startup enforcement),
+ORB (`StrategyId.OPENING_RANGE_BREAKOUT`) is designated:
 
 - **Titan's sole production strategy** — the only member of
   `StrategyId` and the only `Strategy` registered by the production
@@ -552,7 +648,11 @@ separate decisions, each requiring its own evidence.
 > this revision by repository-wide search: zero occurrences of
 > `OPENING_RANGE_BREAKOUT`, `OrbBreakoutStrategy`, or any `orb_`-prefixed
 > identifier anywhere under `titan_protocol/`). Phase 0 alone does not
-> satisfy this gate.
+> satisfy this gate. **This gate covers ORB's code-completeness only.
+> Amendment 1 (above) adds a separate, additional operational-readiness
+> precondition — Gate A lifted, Gate B lifted, fail-closed startup
+> enforcement — that this gate does not by itself capture, and that must
+> also hold before the Removal/Completion phase below is complete.**
 
 - **Current repository**: five production strategies registered;
   ADR-035 Phase 0 (Evidence Engine) implemented; ADR-035 Phases 1–6 (the
@@ -588,7 +688,13 @@ separate decisions, each requiring its own evidence.
   production entrypoints (`start.py`, `install.py`) continue to
   construct `StrategyEngine` exactly as they do today, with zero code
   change required in either file (§2 — they already take no strategy
-  list argument).
+  list argument). **These registry/API-shape criteria are necessary but
+  not sufficient: per Amendment 1, this phase is not complete unless
+  ORB additionally has at least one approved production pair, at least
+  one opening-range anchor is configured, and deployment startup
+  validation fails closed if either is absent — "registry contains only
+  ORB" alone does not satisfy completion while ORB remains structurally
+  dormant.**
 - **Rollback strategy**: deterministic — reverting the future removal
   commit(s) restores all five files, `StrategyId` members, and registry
   entries exactly as they exist today; no other package holds a
@@ -609,6 +715,7 @@ separate decisions, each requiring its own evidence.
 | Repository consistency | Verified today: no *concrete* reference to any legacy `StrategyId` outside Strategy Engine, but Runtime holds two genuine, self-deriving `StrategyId`-typed fields plus a direct import of `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` (§2, §10) | Runtime requires no code change at retirement (both dependencies self-derive), but must be included in verification, not assumed absent |
 | Runtime test regression | Three files under `tests/titan_protocol/runtime/` (`test_configuration.py:78`, `test_integration.py:77`, `test_phase_3c_ingestion_integration.py:168`) concretely assert `StrategyId.TREND_CONTINUATION` (§11) | Must be rewritten in the same removal phase as Strategy Engine's own tests — a previously undocumented but bounded, foreseeable addition to the known test-migration surface |
 | Historical log artifacts | `runtime/logging_sink.py:47` serializes `record.selected_strategy.value` into operational JSON logs on every cycle; no reader in the repository deserializes this back into a live `StrategyId` (confirmed by search) | No migration action required — historical logs will contain retired `StrategyId` strings indefinitely, which is harmless and does not imply the retired strategies remain production-enabled (§12.B) |
+| **Operational dormancy at retirement (Amendment 1)** | ORB is registered in production today but structurally dormant via two independent config gates (`OPENING_RANGE_BREAKOUT` absent from `approved_pairs_by_strategy`; `opening_range_anchors` empty by default and in the shipped example config). This Roadmap's own steps (§15), executed exactly as written, would satisfy every existing completion criterion (§13's original text) while leaving both gates closed — zero live production strategies, with no metric, log, or health check distinguishing this from routine occasional rejections | **Not bounded by the original Migration Strategy/Roadmap text alone** — Amendment 1 adds the required additional precondition (§13 Completion phase, §12.A, this row) and a fail-closed startup enforcement requirement; retirement may not be considered complete until both gates are lifted and enforced |
 
 No risk above is Critical — every one is a bounded, foreseeable
 consequence of a single-package, single-factory-function change,
@@ -644,7 +751,11 @@ discipline:
    Phase 1 ultimately names it) as the registry's sole member.
 8. Validation: full Strategy Engine **and** Runtime suites green;
    architecture tests green; `git diff --stat` confined to Strategy
-   Engine, Runtime's test directory, and docs.
+   Engine, Runtime's test directory, and docs. **Per Amendment 1, this
+   step's validation must also confirm ORB has at least one approved
+   production pair, at least one opening-range anchor is configured, and
+   deployment startup validation fails closed if either is absent —
+   suite-green and architecture-green alone do not satisfy this step.**
 
 Each numbered step above is its own future RPI Plan, gated by this
 project's standing RPI workflow (`TEAM.md` §9) — this roadmap sequences
@@ -676,7 +787,11 @@ only.** It does not authorize beginning the Implementation Roadmap
 (§15) — step 1 of that roadmap (ADR-035 Phases 1–6) must independently
 reach Accepted-and-implemented status first, and each subsequent step
 remains gated by this project's normal RPI governance regardless of this
-ADR's own status.
+ADR's own status. **Once Amendment 1 is itself Accepted, its
+operational-readiness conditions (§12.A, §13, §14, §15 step 8) become
+part of what "complete" means for the Implementation Roadmap — Roadmap
+steps 2–8 may not be treated as finished on registry/test-suite grounds
+alone.**
 
 ## 17. Consequences
 
