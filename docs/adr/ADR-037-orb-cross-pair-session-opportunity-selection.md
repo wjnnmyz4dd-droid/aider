@@ -1029,3 +1029,399 @@ begin:
 session-scoped cross-pair ORB opportunity selection. It supersedes
 nothing; it is additive context alongside ADR-035 and ADR-036, both
 unmodified by it.*
+
+---
+
+# Amendment 1 (2026-07-29, Proposed — history preserved below, not backdated) — Persistence Semantics Correction
+
+**Status: Proposed.** This amendment has not been independently reviewed
+or Accepted. It does not, by itself, authorize anything §1–§17 above
+does not already authorize, and it does not change ADR-037's own overall
+Accepted status for §1–§17, none of which this amendment alters in
+substance beyond the specific corrections named below (see "Unchanged
+governance," §1).
+
+**Why this amendment exists:** the independent "ADR-037 Implementation
+Plan — Final Independent Plan Re-Review" of `docs/plans/adr-037-
+implementation-plan.md` at commit `0388595` found that the Plan's
+winner-only persistence design — needed to fix a genuine, independently-
+discovered HIGH defect (a literal reading of §9's persistence text would
+permanently lock a `range_start` to "no winner" starting from its very
+first evaluated cycle, which is almost always empty during opening-range
+formation) — could not be reconciled with §8/§9's own text as currently
+written, since that text states plainly that "the fact that no winner
+was selected must be recorded... in a ... persisted store." A dedicated
+Research pass (`docs/plans/adr-037-persistence-semantics-amendment-
+research.md`, commit `1f374d3`) traced ORB's actual multi-cycle lifecycle
+from source (`titan_protocol/evidence_engine/opening_range.py`,
+`titan_protocol/strategy_engine/strategies/orb_breakout.py`) and
+confirmed: `range_start` is calendar-day-stable for a fixed anchor;
+`qualify()` returns `NOT_QUALIFIED` throughout formation, by design; a
+genuine breakout may legitimately arrive on any cycle strictly later
+than a range's own formation cycle; and no source location defines an
+authoritative point, earlier than calendar-day rollover, at which a
+`range_start`'s opportunity to produce a winner can be said to have
+concluded. That Research further found the implementation Plan's own
+winner-only design (never persisting a negative outcome; only ever
+persisting a genuine, immutable winner) is functionally indistinguishable
+from an alternative "persisted provisional absence" design on every
+capital-preservation, cardinality, restart, and concurrency dimension
+tested, and that this codebase already has an Accepted precedent for
+exactly the winner-only shape (`FormationBlackoutStore`, ADR-035 §2/§14
+Amendment 1, Phase 7 — "a cycle that does not change the recorded value
+skips the persist entirely... therefore never touches disk"). This
+amendment implements exactly the correction that Research recommended:
+§8/§9 reworded to match the Plan's already-correct design, a clarifying
+sentence in §12, and procedural updates to §14/§17 — nothing more. No
+discrepancy between the Research and current source was found while
+drafting this amendment; nothing here departs from the Research's own
+findings.
+
+**Governance review and acceptance history:** first drafted Proposed
+(this commit). No independent governance review has yet occurred. Per
+this repository's established amendment pattern (ADR-031 Amendment 1;
+ADR-036 Amendment 1; §17 item 2 above), this amendment requires an
+independent governance review — and, if that review finds defects, a
+revision pass — before it may be recorded as Accepted. Implementation of
+ADR-037's architecture, and reconciliation of the implementation Plan
+against this amendment's text, both remain blocked until that Acceptance
+is recorded.
+
+## 1. Unchanged governance (stated explicitly, not left implicit)
+
+The following are **not reopened** by this amendment and require **no
+textual change**:
+
+- **§1–§4** (problem statement, preserved product requirement, governance
+  vehicle, ownership) — unaffected. The dedicated Opportunity Selection
+  Engine's ownership of the winner reduction (§4) is unchanged; this
+  amendment corrects only what that engine's own store durably records,
+  never who owns the decision.
+- **§5** (pipeline placement and control-flow architecture) — unaffected
+  in every particular: the single shared front-half pass (§5.A), post-
+  front-half classification (§5.B), barrier participation (§5.C),
+  completeness semantics (§5.D), grouping and selection after the shared
+  pass (§5.E), multiple-enabled-windows independence (§5.F), and legacy
+  coexistence (§5.G) are all unchanged. Pre-Risk/pre-Compliance placement
+  is unchanged. This amendment corrects only §9's persistence contract
+  and §8's value-side wording for what that contract stores — it does
+  not touch when selection happens, who computes it, or what happens to
+  a non-winning candidate that cycle (§5.E.5, unchanged: every
+  non-winning candidate still ends its cycle at the barrier with the
+  same explicit "not selected this opportunity window" terminal outcome,
+  regardless of whether anything is persisted for that cycle).
+- **§6** (cross-pair selection contract) — unaffected. Ranking policy
+  remains explicitly unresolved; tie-handling remains flagged, not
+  decided, by this ADR. This amendment does not adopt, alter, or imply
+  any ranking formula, weight, or tie-tolerance value — those remain
+  entirely the implementation Plan's own, separately-justified decisions
+  (`docs/plans/adr-037-implementation-plan.md`'s own `tie_tolerance =
+  0.5`, inclusive `<=`, and reject-on-tie choice are Plan-level content
+  this amendment does not touch, reopen, or ratify).
+- **§7** (candidate-set completeness and synchronization) — unaffected.
+  The frozen candidate universe (Gate A ∩ `allowed_pairs`), the
+  "received" vs. "terminal front-half outcome" distinction, and the
+  fail-closed-on-incompleteness rule are all unchanged. An incomplete
+  scan continues to mean zero candidates from that window may proceed
+  into Risk that cycle — this amendment adds nothing to and removes
+  nothing from that rule; it only confirms (§2 below) that an incomplete
+  scan, like any other no-winner outcome, creates no durable winner-store
+  entry.
+- **§8, identity clause** — `range_start` alone remains the opportunity-
+  window identity, unchanged; this is not reopened. Only §8's
+  *value-side* sentence describing what is stored *for* that key is
+  corrected (§3 below) — the key itself, its uniqueness, its calendar-day
+  inclusion, and every scenario §8 already resolves (two anchors sharing
+  a `SessionName`; overlapping-window rejection at startup; restart
+  recomputing the identical `range_start`) are untouched.
+- **§10** (Risk/Compliance/portfolio interaction) — unaffected. No
+  automatic runner-up fallback remains the only authorized behavior when
+  a winner is rejected downstream; this amendment does not touch, weaken,
+  or reopen that.
+- **§11** (Gate A/Gate B implications, enabled-sessions structural-
+  readiness invariant) — unaffected. The three required checks (matching
+  Gate B anchor; every configured anchor represented in the enabled-
+  sessions list when selection is active; non-empty enabled-sessions list
+  when selection is active), and their explicit separation from dynamic
+  qualification outcomes, are unchanged. No Gate A or Gate B value is set
+  or implied by this amendment.
+- **§13** (relationship to ADR-036) — unaffected. This amendment does not
+  redefine ADR-036's governance gate, Amendment 1's Gates A/B conditions,
+  or the broad-Gate-A-vs-narrow/fixed-Gate-A distinction in any way.
+- **§15** (capital-preservation adversarial review) — the existing 20
+  rows are unaffected in substance; none of their dispositions depend on
+  a negative outcome being durably persisted rather than cycle-local
+  (independently re-checked against every row for this amendment). Row 7
+  ("Winner store is corrupted or unreadable") and row 8 ("Two winners
+  persisted... due to a race") remain accurate as written under the
+  corrected persistence contract (§2 below) without modification — both
+  concern the winner case only, which this amendment leaves unchanged in
+  every fail-closed and cardinality particular.
+- **§16** (preservation constraints) — unaffected; this amendment
+  authorizes no code, no strategy modification, no configuration change,
+  and no Gate A/B activation, exactly as §16 already requires of any
+  change to this document.
+- **ADR-031, ADR-031 Amendment 1, ADR-035, ADR-036, ADR-036 Amendment 1**
+  — none is touched, reopened, or reinterpreted by this amendment. This
+  amendment is entirely self-contained within ADR-037's own text and is
+  independent of, and additional to, the separately-tracked ADR-031 §3
+  amendment §17 item 3 already names.
+
+## 2. Corrected persistence semantics (amends §9)
+
+§9's second bullet is replaced in full:
+
+> **Persistence (corrected):** at most one durable decision may ever
+> exist for a given `range_start` — a genuine, single winning pair — and
+> it is recorded in the same new, dedicated, restart-safe, persisted
+> store §9 already establishes (distinct from `OrbQualificationStore` and
+> `FormationBlackoutStore`, keyed by `range_start` alone). **A cycle that
+> produces no winner — an empty candidate set, an unresolved tie, an
+> incomplete scan (§7), or a selector/store failure of any kind — is
+> fail-closed for that cycle (zero ORB candidates from that window may
+> proceed into Risk) but creates no durable winner-store entry.** The
+> absence of an entry for a `range_start` means exactly one thing: **no
+> durable winner has yet been established for that opportunity window**
+> — never "this opportunity window has permanently concluded with no
+> winner." No terminal-window boundary is invented by this correction:
+> `opening_range_duration_minutes` remains, exactly as before, the
+> duration of the range's own *formation* period only (`range_end =
+> range_start + duration`) — it is never read as marking when a window's
+> opportunity to produce a winner ends, and this amendment does not
+> introduce, imply, or require any other field or computation to serve
+> that purpose. A `range_start` whose opportunity window remains
+> currently relevant (§5.F, §8 — i.e., no newer range for the same anchor
+> has yet formed) and has no durable winner-store entry remains eligible
+> for re-evaluation on its next cycle, for as many cycles as it takes for
+> a genuine winner to appear or for the window to be superseded by a
+> newer range.
+
+The **cardinality** bullet (at most one winner per `range_start`) and the
+**fail-closed-on-store-corruption-or-unavailability** bullet are
+unchanged in substance — restated here only to confirm they apply
+identically under the corrected contract: if the store cannot be read or
+is corrupt, the stage behaves as if no durable winner exists for that
+range (never fail-open), which is now simply the same state as "no
+winner yet established," not a distinct condition.
+
+The **idempotency** bullet is corrected to remove an ambiguity the prior
+text did not have occasion to address (since it assumed a persisted
+negative value might also exist): idempotency is a property of the
+**winner** case only. Once a genuine winner is durably established for a
+`range_start`, it is **immutable** — no later cycle, restart, or
+re-evaluation may replace it, silently overwrite it, or produce a second
+winner for that same `range_start`; every later cycle or restart for that
+`range_start` must converge on that same persisted winner without
+recomputing a new one. Because no durable entry exists for the no-winner
+case, there is no analogous "idempotency of absence" question to answer
+— the absence of an entry is, by construction, always freely
+re-evaluable, and this is not a gap the prior text's idempotency bullet
+needed to close, since that text was itself never adopted as requiring
+a persisted negative value in the first place (§3 below corrects the one
+sentence that suggested otherwise).
+
+**Atomicity, made explicit (a clarification, not a new requirement):**
+the transition from "no durable winner exists for this `range_start`" to
+"a durable winner exists" must be atomic with respect to Runtime's own
+release of any candidate into Risk (§5.E.4) — i.e., the store's decision
+for a given cycle must be fully and durably resolved before Runtime acts
+on its result, and two concurrent attempts to establish a winner for the
+same `range_start` must converge on a single, durably persisted winner;
+neither may independently release a different locally-computed winner
+into Risk. This restates, rather than adds to, §9's own already-Accepted
+cardinality requirement ("never produces a second concurrent winner for
+the same opportunity window") — the exact locking/atomicity mechanism
+remains, as before, implementation/Plan-level work, not specified here.
+
+**Restart, made explicit (a clarification, not a new requirement):**
+restart before a winner is established resumes with no durable entry for
+that `range_start`, exactly as if no cycle had run yet — restart must
+never fabricate a "permanently no winner" decision that was never
+durably made. Restart after a winner is established resumes with that
+winner intact, unchanged and immutable, exactly as before restart —
+identical in kind to `OrbQualificationStore`'s and `FormationBlackout
+Store`'s own already-Accepted restart-resume behavior.
+
+## 3. Corrected identity/value-side wording (amends §8)
+
+§8's closing sentence — *"the value — `range_start` alone is the key;
+the winning `pair` (or its absence) is what is stored *for* that key,
+exactly mirroring `OrbQualificationStore`'s own key/value split"* — is
+replaced:
+
+> **The value:** `range_start` alone remains the key (unchanged, this
+> section). When a value exists for that key, it is always a genuine,
+> single winning pair — never a stored representation of "no winner." A
+> key with no stored value correctly and permanently means "no durable
+> winner has been established yet for this opportunity window" — the
+> identical fact whether that key has never been evaluated or has been
+> evaluated many times without producing a winner. This differs from
+> `OrbQualificationStore`'s own key/value split only in this one respect
+> (that store's value is a count that legitimately starts at, and may
+> remain, zero as a *meaningful*, durably-recorded fact); the opportunity
+> winner store's key/value split instead treats "not yet answered" and
+> "answered in the negative" as the same, unrecorded state, since §9
+> (corrected) establishes there is no negative answer this store durably
+> records.
+
+## 4. Cycle-local no-winner observability (clarifies §12; no redesign)
+
+No signal in §12's existing list is added, removed, or altered by this
+amendment. One clarifying sentence is added immediately following §12's
+existing signal list:
+
+> **Clarification:** the "No candidates available for a session," "Tie /
+> no-winner produced despite candidates existing," "Incomplete scan
+> detected," and "Selector failure of any kind" signals above are
+> themselves how every cycle-local no-winner outcome remains observable
+> and auditable. §9 (as corrected by Amendment 1) and this section
+> describe two distinct mechanisms, not one: §9 governs the single,
+> durable, immutable fact a `range_start` may eventually acquire (a
+> genuine winner); this section governs the ordinary, cycle-local
+> observability of every outcome that is not that fact. A cycle-local
+> no-winner outcome being observable via this section's signals has never
+> required, and does not now require, that it also be a persisted
+> winner-store entry.
+
+## 5. Procedural update (amends §14, §17)
+
+§14's second paragraph gains one clause, appended after its existing
+"Gate A/Gate B activation and legacy-strategy retirement remain governed
+exclusively by ADR-036/Amendment 1" sentence:
+
+> A second, independent, ADR-037-self-contained amendment (this document's
+> own Amendment 1) corrects §8/§9's persistence semantics in light of
+> source evidence gathered during the implementation Plan's own
+> independent review cycle (`docs/plans/adr-037-persistence-semantics-
+> amendment-research.md`); it is required, alongside the ADR-031 §3
+> amendment already named above, before implementation may proceed, and
+> follows the same draft → independent review → revision (if needed) →
+> Acceptance-recorded sequence.
+
+§17's precondition list gains one item, inserted as a new item 3 (existing
+items 3–4 renumber to 4–5):
+
+> 3. **This document's own Amendment 1** (persistence semantics
+>    correction, §8/§9/§12/§14 above) must itself be independently
+>    reviewed and Accepted — a named precondition, not merely a
+>    possibility, exactly as item 4 (renumbered, the ADR-031 amendment)
+>    already is.
+
+## 6. Adversarial re-check of the corrected semantics
+
+Re-checked against the Research's own adversarial matrix
+(`docs/plans/adr-037-persistence-semantics-amendment-research.md` §5),
+independently re-confirmed against this amendment's own final text
+rather than assumed from the Research report:
+
+| Scenario | Durable state after this amendment | May any candidate enter Risk? |
+|---|---|---|
+| Formation-period no winner → later winner | No entry after the formation cycle; a winner entry after the later cycle | Only the eventual winner, only after that later cycle |
+| Formed range/no breakout → later breakout | Same shape | Same |
+| Tie → later unique winner | No entry after the tie cycle; winner entry after the later cycle | Only the eventual unique winner |
+| Repeated zero/tie cycles | No entry persists across any of them | None, for as long as no winner exists |
+| Incomplete scan → later complete scan | No entry after the incomplete cycle (§7's fail-closed rule, unchanged); winner entry (if any) after a later complete, successful scan | None from the incomplete cycle; only a later genuine winner, if one is selected |
+| Selector failure → later successful selection | No entry after the failure; winner entry after later success | None from the failed cycle; only the later winner |
+| Restart before winner | No entry before or after restart — freely re-evaluable | None, until a winner is established |
+| Restart after winner | Winner entry intact, unchanged, immutable, before and after restart | Only the already-established winner, identical to pre-restart behavior |
+| Winner followed by a different/better candidate | Winner entry unchanged; the later, different candidate is never evaluated against it — the entry is returned unchanged | Only the original winner, never the later candidate |
+| Concurrent attempts to establish different winners | Exactly one winner entry ever exists for the key — the store's own atomicity guarantee (§2 above) makes two different persisted winners for the same `range_start` structurally impossible | Never two winners; at most the one that is durably established |
+| Persistence failure while establishing a winner | The in-memory decision stands for the process's remaining lifetime (identical, disclosed risk shape to `OrbQualificationStore`'s/`FormationBlackoutStore`'s own already-Accepted precedent — not introduced or worsened by this amendment) | Only the in-memory-decided winner, for that process's remaining lifetime; a restart before the failed write is retried resumes with no durable entry, per the restart clause above |
+| Corrupted/unavailable winner state | Fails closed at read (as if no durable winner exists) — unchanged from §9's original fail-closed bullet | None, until the store is trustworthy again and a winner is (re-)established |
+| Stale prior-day state | `range_start`'s calendar-day-inclusive construction (§8, unchanged) makes a new day a new key; no stale entry is ever consulted for a new day's `range_start` | Only via that day's own, freshly-evaluated `range_start` |
+| Multiple independent windows | Each `range_start` is an independent key; no cross-window interaction | Each window's own winner (if any) proceeds independently |
+
+**Every no-winner and failure case remains fail-closed for that cycle
+under this amendment.** Nothing in this amendment creates, authorizes, or
+implies any fallback to unrestricted per-pair execution — §12's absolute
+requirement ("any selector failure mode... must result in zero pairs
+proceeding for that session that cycle... never fall back to today's
+unrestricted independent-per-pair execution") is unchanged and is not
+weakened by this amendment in any row above.
+
+## 7. Scope and non-authorization
+
+This amendment does **not** authorize, decide, reopen, or imply:
+
+- Implementation of the Opportunity Selection Engine, `OpportunityWinner
+  Store`, or any Runtime restructuring — this remains governance-document
+  work only.
+- Any ranking formula, ranking weights, or tie-handling policy beyond
+  what §6 (unchanged) already leaves unresolved. The implementation
+  Plan's own `tie_tolerance = 0.5` (inclusive `<=`) and reject-on-tie
+  choice are not reopened, revisited, or ratified here.
+- The initial production policy of London + London–New York Overlap +
+  Early New York, or any other exact session/pair/anchor value —
+  unaffected, untouched, settled elsewhere (`docs/plans/adr-037-ranking-
+  tie-session-policy-decision.md`).
+- Liquidity/spread remaining eligibility **gates** in `orb_breakout.py`
+  rather than ranking criteria — unaffected; this amendment touches
+  neither `orb_breakout.py` nor any ranking mechanism.
+- Any automatic runner-up fallback policy — §10 (unaffected) remains the
+  sole governing text; the only authorized behavior on downstream
+  rejection remains "no trade that session, that cycle."
+- The ADR-036 broad-Gate-A-route relationship, or any ADR-036/Amendment
+  1 text — §13 (unaffected).
+- ADR-031 or ADR-031 Amendment 1 — neither is touched; this is a
+  separate, independent, ADR-037-self-contained amendment.
+- Gate A or Gate B activation, or any exact production pair/anchor/clock
+  value.
+- Legacy-strategy retirement, or any ADR-036 implementation sequencing.
+- The ADR-035 Phase 5 anchor hour/minute validation follow-up — entirely
+  untouched, unrelated, and unauthorized by this amendment.
+- Any concrete store API, locking mechanism, data structure, test name,
+  or implementation sequencing — these remain, exactly as before, the
+  implementation Plan's own work (§2's "Persistence (corrected)" text
+  above states invariants and ownership only; it does not specify
+  `decide_once()`'s signature, `threading.Lock` usage, JSON schema, or
+  any other implementation detail, all of which the Plan already
+  specifies and this amendment does not restate or second-guess).
+- Modification of `tests/titan_protocol/opportunity_selection_engine/
+  test_store.py` or any other test — no test exists yet to modify. The
+  Research's own LOW, non-blocking observation that the Plan's existing
+  concurrency-test specification does not explicitly require differing
+  per-thread candidate sets (`docs/plans/adr-037-persistence-semantics-
+  amendment-research.md` §8) is preserved here as a **future Plan-
+  reconciliation item** — this amendment does not solve a test-
+  specification question inside the ADR, and the reconciliation gate
+  after this amendment's own Acceptance is where that item belongs.
+
+## 8. Acceptance criteria for this amendment
+
+- ✓ `range_start` remains the sole opportunity-window identity,
+  unchanged (§1, §3).
+- ✓ A cycle may produce no winner without permanently concluding that
+  opportunity window (§2).
+- ✓ Empty candidate sets, unresolved ties, incomplete scans, selector
+  failures, and every other no-winner outcome remain fail-closed for
+  that cycle — zero ORB candidates proceed into Risk (§2, §6).
+- ✓ Cycle-local no-winner outcomes remain observable/auditable via §12's
+  existing signals without creating a durable winner-store entry (§4).
+- ✓ Only a genuine selected winning pair becomes durable winner state
+  (§2, §3).
+- ✓ Once durably established, a winner is immutable, and later
+  cycles/restarts converge on it (§2).
+- ✓ Winner establishment is atomic with respect to Runtime's release of
+  any candidate into Risk (§2).
+- ✓ Absence of a winner-store entry means no durable winner has yet been
+  established, never "permanently no winner" (§2, §3).
+- ✓ Restart before winner establishment permits later re-evaluation;
+  restart after winner establishment preserves the established winner
+  (§2).
+- ✓ No terminal opportunity-window boundary is invented;
+  `opening_range_duration_minutes` remains formation duration only (§2).
+- ✓ No settled decision named in §1/§7 above is reopened.
+- ✓ No concrete store API, locking mechanism, data structure, test name,
+  or implementation sequencing is specified by this amendment (§7).
+- ✓ This amendment remains **Proposed** and self-evidently does not mark
+  itself Accepted.
+
+---
+
+*This amendment is Proposed. It requires its own independent governance
+review before Acceptance. It does not authorize implementation of
+ADR-037's architecture, any ranking/tie/session-production-policy
+decision, Gate A/Gate B activation, ADR-036 legacy-strategy retirement,
+or reconciliation of the implementation Plan against this amendment's
+text. The ADR-035 Phase 5 anchor hour/minute validation follow-up
+remains separately gated, unauthorized, and out of scope.*
