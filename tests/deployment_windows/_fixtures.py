@@ -29,18 +29,22 @@ def write_config(
     compliance_overrides: Optional[Dict[str, Any]] = None,
     strategy_engine_overrides: Optional[Dict[str, Any]] = None,
     evidence_engine_overrides: Optional[Dict[str, Any]] = None,
+    opportunity_selection_engine_overrides: Optional[Dict[str, Any]] = None,
     remove_sections: Optional[Sequence[str]] = None,
 ) -> Path:
     """Writes a real config file (based on the shipped example) with
     `overrides` deep-merged into `bridge`, `compliance_overrides` deep-
     merged into `compliance`, `strategy_engine_overrides` deep-merged
-    into `strategy_engine` (ADR-035 Phase 5), and `evidence_engine_overrides`
-    deep-merged into `evidence_engine` (ADR-035 Phase 5) -- points
-    `bridge.api_key_env_var` at a real, always-set test environment
-    variable so `load_settings()` never fails for an unrelated secret-
-    resolution reason. `remove_sections` deletes named top-level sections
-    entirely (e.g. `["strategy_engine", "evidence_engine"]`) to test
-    behavior when a pre-Phase-5 config file omits them."""
+    into `strategy_engine` (ADR-035 Phase 5), `evidence_engine_overrides`
+    deep-merged into `evidence_engine` (ADR-035 Phase 5), and
+    `opportunity_selection_engine_overrides` deep-merged into
+    `opportunity_selection_engine` (ADR-037 Production Activation Plan
+    §3) -- points `bridge.api_key_env_var` at a real, always-set test
+    environment variable so `load_settings()` never fails for an
+    unrelated secret-resolution reason. `remove_sections` deletes named
+    top-level sections entirely (e.g. `["strategy_engine",
+    "evidence_engine"]`) to test behavior when a pre-Phase-5/pre-ADR-037
+    config file omits them."""
     config = load_example_config()
     os.environ[TEST_API_KEY_ENV_VAR] = "test-key-value"
     config["bridge"]["api_key_env_var"] = TEST_API_KEY_ENV_VAR
@@ -52,6 +56,8 @@ def write_config(
         config["strategy_engine"].update(strategy_engine_overrides)
     if evidence_engine_overrides:
         config["evidence_engine"].update(evidence_engine_overrides)
+    if opportunity_selection_engine_overrides:
+        config["opportunity_selection_engine"].update(opportunity_selection_engine_overrides)
     for section in remove_sections or ():
         config.pop(section, None)
     path = tmp_path / "titan_protocol_config.json"

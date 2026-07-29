@@ -613,6 +613,55 @@ question (whether/how to react once this condition is confirmed to
 actually occur) remains open, deferred pending the real runtime
 evidence this signal is now positioned to collect.
 
+## 14. Opportunity Selection Engine (ADR-037) config-loading gap — CLOSED; Gate A remains a source-code constant by design, not a gap
+
+**Config-loading gap (CLOSED):** `start.py` used to hardcode a bare
+`OpportunitySelectionEngineConfig()` — no deployment JSON path existed
+for `enabled_windows` or `cross_pair_selection_enabled`, so an operator
+could not populate ADR-037's cross-pair barrier from the config file at
+all. `config_loader.py` now parses a dedicated
+`opportunity_selection_engine` JSON section (mirroring
+`evidence_engine.opening_range_anchors`'s own established
+JSON-array-to-tuple pattern exactly: `session` validated against
+`SessionName.__members__`, `anchor_hour_utc`/`anchor_minute_utc`
+validated as non-bool integers, malformed values fail closed with a
+`ConfigError`), and `start.py` now consumes
+`settings.opportunity_selection_config` instead of the hardcoded
+default. A config file that has never heard of this section still
+produces the byte-identical inert default (`enabled_windows=()`,
+`cross_pair_selection_enabled=False`) — no existing deployment is
+affected unless it explicitly opts in.
+
+**Gate A (`OPENING_RANGE_BREAKOUT`'s entry in
+`DEFAULT_APPROVED_PAIRS_BY_STRATEGY`) remains a source-code constant —
+this is deliberate, established precedent (ADR-026 Hard Rule 5), not an
+oversight.** Every one of the 5 legacy strategies' own approved-pair
+lists is likewise a hardcoded Python constant, never JSON-configurable
+— changing eligibility means editing `titan_protocol/strategy_engine/
+config.py` and redeploying. ADR-037's Gate A is treated identically, on
+purpose, so that broadening it is always a reviewed code change, never
+a silent config edit.
+
+**Mandatory `--dry-run` mechanism (new):** `start.py` now accepts
+`--dry-run` (constructs the real `RuntimeOrchestrator` with
+`bridge_submit=None`, so no order can reach the Bridge regardless of
+Gate A/OSE configuration — the Bridge HTTP listener itself still binds
+and serves) and `--dry-run-orb-pairs=PAIR1,PAIR2,...` (dry-run-only,
+in-memory override of this one process's own
+`StrategyEngineConfig.approved_pairs_by_strategy` entry for
+`OPENING_RANGE_BREAKOUT` — fails closed if supplied without `--dry-run`,
+never writes to `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` or any file). See
+`docs/plans/adr-037-production-activation-plan.md` §5/§6 for the full
+mandatory dry-run gate specification this implements, and
+`WINDOWS_OPERATOR_GUIDE.md`'s new activation runbook section for the
+operator procedure.
+
+**This closure authorizes no production activation.** Gate A/B
+population, `cross_pair_selection_enabled=True`, and live Bridge
+submission for ORB remain prohibited until the reviewed Plan's own
+mandatory dry-run passes against the real target deployment and a
+separate, explicit Phase E activation authorization is obtained.
+
 ## Everything else in this release is fully implemented
 
 Setup, dependency installation, folder/configuration/write-access

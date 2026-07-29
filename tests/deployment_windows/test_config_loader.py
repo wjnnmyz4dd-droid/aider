@@ -12,6 +12,10 @@ from pathlib import Path
 from tests.deployment_windows._fixtures import load_example_config, write_config
 from titan_protocol.evidence_engine.config import EvidenceEngineConfig
 from titan_protocol.evidence_engine.models import SessionName
+from titan_protocol.opportunity_selection_engine.config import (
+    EnabledOpportunityWindow,
+    OpportunitySelectionEngineConfig,
+)
 from titan_protocol.strategy_engine.config import StrategyEngineConfig
 
 from config_loader import ConfigError, load_settings
@@ -352,6 +356,232 @@ class TestOpeningRangeAnchorsConfigurability(unittest.TestCase):
                 load_settings(config_path)
 
 
+class TestOpportunitySelectionEngineConfigurability(unittest.TestCase):
+    """ADR-037 Production Activation Plan §3: `opportunity_selection_engine`
+    JSON parsing (`enabled_windows`, `cross_pair_selection_enabled`,
+    `tie_tolerance`), proven reachable end-to-end through
+    `load_settings()`, mirroring `TestOpeningRangeAnchorsConfigurability`'s
+    own established pattern exactly."""
+
+    def test_valid_three_window_configuration_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "cross_pair_selection_enabled": True,
+                    "enabled_windows": [
+                        {"session": "LONDON", "anchor_hour_utc": 8, "anchor_minute_utc": 0, "enabled": True},
+                        {"session": "LONDON_NEW_YORK_OVERLAP", "anchor_hour_utc": 13, "anchor_minute_utc": 0, "enabled": True},
+                        {"session": "EARLY_NEW_YORK", "anchor_hour_utc": 13, "anchor_minute_utc": 30, "enabled": True},
+                    ],
+                },
+                evidence_engine_overrides={
+                    "opening_range_anchors": [
+                        {"session": "LONDON", "start_hour_utc": 8, "start_minute_utc": 0},
+                        {"session": "LONDON_NEW_YORK_OVERLAP", "start_hour_utc": 13, "start_minute_utc": 0},
+                        {"session": "EARLY_NEW_YORK", "start_hour_utc": 13, "start_minute_utc": 30},
+                    ],
+                },
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(
+                settings.opportunity_selection_config.enabled_windows,
+                (
+                    EnabledOpportunityWindow(SessionName.LONDON, 8, 0, True),
+                    EnabledOpportunityWindow(SessionName.LONDON_NEW_YORK_OVERLAP, 13, 0, True),
+                    EnabledOpportunityWindow(SessionName.EARLY_NEW_YORK, 13, 30, True),
+                ),
+            )
+            self.assertTrue(settings.opportunity_selection_config.cross_pair_selection_enabled)
+
+    def test_missing_section_defaults_inert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp), remove_sections=["opportunity_selection_engine"])
+            settings = load_settings(config_path)
+            self.assertEqual(settings.opportunity_selection_config, OpportunitySelectionEngineConfig())
+            self.assertEqual(settings.opportunity_selection_config.enabled_windows, ())
+            self.assertFalse(settings.opportunity_selection_config.cross_pair_selection_enabled)
+
+    def test_missing_enabled_windows_key_within_section_defaults_to_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp), opportunity_selection_engine_overrides={"cross_pair_selection_enabled": False},
+            )
+            # write_config's .update() leaves enabled_windows at the shipped
+            # example's own [] -- this asserts that (not a removed key).
+            settings = load_settings(config_path)
+            self.assertEqual(settings.opportunity_selection_config.enabled_windows, ())
+
+    def test_unknown_session_name_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [{"session": "NOT_A_SESSION", "anchor_hour_utc": 8, "anchor_minute_utc": 0}],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_list_enabled_windows_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp), opportunity_selection_engine_overrides={"enabled_windows": "not-a-list"},
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_integer_anchor_hour_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [{"session": "LONDON", "anchor_hour_utc": "8", "anchor_minute_utc": 0}],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_integer_anchor_minute_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [{"session": "LONDON", "anchor_hour_utc": 8, "anchor_minute_utc": "0"}],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_bool_cross_pair_selection_enabled_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp), opportunity_selection_engine_overrides={"cross_pair_selection_enabled": "true"},
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_bool_window_enabled_field_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [{"session": "LONDON", "anchor_hour_utc": 8, "anchor_minute_utc": 0, "enabled": "yes"}],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_window_enabled_field_defaults_true_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [{"session": "LONDON", "anchor_hour_utc": 8, "anchor_minute_utc": 0}],
+                },
+            )
+            settings = load_settings(config_path)
+            self.assertTrue(settings.opportunity_selection_config.enabled_windows[0].enabled)
+
+    def test_duplicate_anchor_key_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [
+                        {"session": "LONDON", "anchor_hour_utc": 8, "anchor_minute_utc": 0},
+                        {"session": "LONDON_NEW_YORK_OVERLAP", "anchor_hour_utc": 8, "anchor_minute_utc": 0},
+                    ],
+                },
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_non_negative_tie_tolerance_is_honored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp), opportunity_selection_engine_overrides={"tie_tolerance": 1.0},
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(settings.opportunity_selection_config.tie_tolerance, 1.0)
+
+    def test_negative_tie_tolerance_fails_closed_at_startup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp), opportunity_selection_engine_overrides={"tie_tolerance": -0.1},
+            )
+            with self.assertRaises(ConfigError):
+                load_settings(config_path)
+
+    def test_arbitrary_cardinality_beyond_three_windows_is_accepted(self):
+        """The reviewed Plan's §1 explicitly authorizes only 3 initial
+        windows as production *policy* -- this proves the config-loading
+        *mechanism* itself imposes no hardcoded cardinality limit (never
+        hardcodes London/Overlap/Early-New-York into the parsing path),
+        matching the task's explicit "preserve arbitrary-cardinality
+        support" requirement. LATE_NEW_YORK/ASIAN/CLOSED are real
+        SessionName members not part of the authorized production set --
+        used here purely to prove the parser itself has no 3-window
+        limit, not to authorize a 4th production window."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [
+                        {"session": "LONDON", "anchor_hour_utc": 8, "anchor_minute_utc": 0},
+                        {"session": "LONDON_NEW_YORK_OVERLAP", "anchor_hour_utc": 13, "anchor_minute_utc": 0},
+                        {"session": "EARLY_NEW_YORK", "anchor_hour_utc": 13, "anchor_minute_utc": 30},
+                        {"session": "LATE_NEW_YORK", "anchor_hour_utc": 18, "anchor_minute_utc": 0},
+                    ],
+                },
+                evidence_engine_overrides={
+                    "opening_range_anchors": [
+                        {"session": "LONDON", "start_hour_utc": 8, "start_minute_utc": 0},
+                        {"session": "LONDON_NEW_YORK_OVERLAP", "start_hour_utc": 13, "start_minute_utc": 0},
+                        {"session": "EARLY_NEW_YORK", "start_hour_utc": 13, "start_minute_utc": 30},
+                        {"session": "LATE_NEW_YORK", "start_hour_utc": 18, "start_minute_utc": 0},
+                    ],
+                },
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(len(settings.opportunity_selection_config.enabled_windows), 4)
+
+
+class TestGateBEnabledWindowMismatchThroughTheLoader(unittest.TestCase):
+    """ADR-037 §11 item 2 / `validate_profile()` check 1: an
+    `enabled_windows` entry whose `session` doesn't match the anchor's
+    own configured `SessionName` is a distinct misconfiguration from an
+    unreferenced anchor -- both must be independently reachable through
+    the real deployment JSON, not merely at the dataclass level."""
+
+    def test_session_mismatch_between_gate_b_and_enabled_window_loads_but_validate_profile_must_catch_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                evidence_engine_overrides={
+                    "opening_range_anchors": [{"session": "LONDON", "start_hour_utc": 8, "start_minute_utc": 0}],
+                },
+                opportunity_selection_engine_overrides={
+                    "enabled_windows": [
+                        {"session": "LONDON_NEW_YORK_OVERLAP", "anchor_hour_utc": 8, "anchor_minute_utc": 0},
+                    ],
+                },
+            )
+            # config_loader itself has no cross-section knowledge (each
+            # section parses independently, matching every other section's
+            # own convention) -- this loads without a ConfigError; it is
+            # validate_profile()'s job (re-verified in
+            # tests/titan_protocol/runtime/test_opportunity_selection_structural_readiness.py)
+            # to catch the mismatch, not the loader's.
+            settings = load_settings(config_path)
+            self.assertEqual(len(settings.opportunity_selection_config.enabled_windows), 1)
+            self.assertEqual(settings.evidence_config.opening_range_anchors[0][0], SessionName.LONDON)
+            self.assertEqual(
+                settings.opportunity_selection_config.enabled_windows[0].session_name,
+                SessionName.LONDON_NEW_YORK_OVERLAP,
+            )
+
+
 class TestBackwardCompatibilityForOmittedNewSections(unittest.TestCase):
     """A pre-Phase-5 config file (neither new section present) must
     produce byte-identical `StrategyEngineConfig`/`EvidenceEngineConfig`
@@ -363,6 +593,17 @@ class TestBackwardCompatibilityForOmittedNewSections(unittest.TestCase):
             settings = load_settings(config_path)
             self.assertEqual(settings.strategy_config, StrategyEngineConfig())
             self.assertEqual(settings.evidence_config, EvidenceEngineConfig())
+
+    def test_opportunity_selection_engine_section_also_absent_produces_pure_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(
+                Path(tmp),
+                remove_sections=["strategy_engine", "evidence_engine", "opportunity_selection_engine"],
+            )
+            settings = load_settings(config_path)
+            self.assertEqual(settings.strategy_config, StrategyEngineConfig())
+            self.assertEqual(settings.evidence_config, EvidenceEngineConfig())
+            self.assertEqual(settings.opportunity_selection_config, OpportunitySelectionEngineConfig())
 
 
 class TestExampleConfigDefaultParity(unittest.TestCase):
@@ -394,6 +635,20 @@ class TestExampleConfigDefaultParity(unittest.TestCase):
                 example["evidence_engine"][field], getattr(defaults, field),
                 f"evidence_engine.{field} in the shipped example does not match EvidenceEngineConfig()'s default",
             )
+
+    def test_shipped_opportunity_selection_engine_section_equals_python_defaults(self):
+        """ADR-037 Production Activation Plan Phase A: the shipped example
+        must remain fully inert (enabled_windows=(), cross_pair_selection_
+        enabled=False) -- Gate A/B production values must never be written
+        into this shipped default (§11's own explicit requirement)."""
+        example = load_example_config()
+        defaults = OpportunitySelectionEngineConfig()
+        self.assertEqual(example["opportunity_selection_engine"]["enabled_windows"], [])
+        self.assertEqual(
+            example["opportunity_selection_engine"]["cross_pair_selection_enabled"],
+            defaults.cross_pair_selection_enabled,
+        )
+        self.assertEqual(example["opportunity_selection_engine"]["tie_tolerance"], defaults.tie_tolerance)
 
 
 if __name__ == "__main__":

@@ -520,5 +520,185 @@ class TestLegacyWinnerUnaffectedWhenSelectionActiveAndAnchorMismatchOccurs(_Barr
         self.assertEqual(by_pair["GBPUSD"].outcome, CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
 
 
+_ORB_PAIRS_3 = ("EURUSD", "GBPUSD", "USDJPY")
+_LONDON_HOUR, _LONDON_MINUTE = 8, 0
+_OVERLAP_HOUR, _OVERLAP_MINUTE = 13, 0
+
+
+class TestF1BroadGateARequiresCompleteBarrierCoverage(_BarrierTestCase):
+    """ADR-037 Production Activation Plan (bb8b4a6) §4.0/§10, F1: the
+    safety-critical finding from the independent Plan review, pinned as
+    executable regression proof -- not merely re-asserted from the
+    review's own report. `enabled_windows` coverage, not
+    `cross_pair_selection_enabled`, is what makes a broadened,
+    multi-pair Gate A safe. Every test below constructs the real
+    `RuntimeOrchestrator` + `OpportunitySelectionEngine` +
+    `OpportunityWinnerStore` (no mocks below the Runtime layer, matching
+    this file's own established convention) and asserts actual
+    `CycleOutcome`/Risk-reachability, never merely configuration state."""
+
+    def test_broad_gate_a_with_empty_enabled_windows_and_flag_false_is_unarbitrated(self):
+        """P6 (forbidden): every independently-qualified ORB pair takes
+        the ordinary non-participating path straight into
+        `_run_back_half()` -- this is the exact defect the Plan revision
+        corrects the activation sequencing to never reach."""
+        strategy_stub = _PerPairStrategyStub(
+            {p: _orb_snapshot(p, 80.0 - i, range_start=T0) for i, p in enumerate(_ORB_PAIRS_3)}, _ORB_PAIRS_3,
+        )
+        engine = self._make_selection_engine(enabled_windows=(), cross_pair_selection_enabled=False)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=_ORB_PAIRS_3)
+        inputs = {
+            p: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for p in _ORB_PAIRS_3
+        }
+
+        report = orchestrator.run_cycle(_ORB_PAIRS_3, profile, inputs, T0 + timedelta(minutes=31), "CYCLE-1")
+
+        by_pair = {r.pair: r.outcome for r in report.records}
+        self.assertEqual(by_pair, {p: CycleOutcome.SUBMITTED for p in _ORB_PAIRS_3})
+        self.assertEqual(orchestrator.risk_engine.call_count, len(_ORB_PAIRS_3))
+
+    def test_broad_gate_a_with_partial_enabled_windows_leaves_the_uncovered_window_unarbitrated(self):
+        """P7 (forbidden): partial coverage protects only the covered
+        window -- candidates sharing an uncovered window's `range_start`
+        are exactly as unarbitrated as P6, independent of the flag."""
+        pairs = ("EURUSD", "GBPUSD", "USDJPY")
+        london_range_start = T0.replace(hour=_LONDON_HOUR, minute=_LONDON_MINUTE)
+        overlap_range_start = T0.replace(hour=_OVERLAP_HOUR, minute=_OVERLAP_MINUTE)
+        strategy_stub = _PerPairStrategyStub(
+            {
+                "EURUSD": _orb_snapshot("EURUSD", 80.0, range_start=overlap_range_start),  # covered window
+                "GBPUSD": _orb_snapshot("GBPUSD", 75.0, range_start=london_range_start),   # uncovered window
+                "USDJPY": _orb_snapshot("USDJPY", 70.0, range_start=london_range_start),   # uncovered window (shared)
+            },
+            pairs,
+        )
+        covered_only = (EnabledOpportunityWindow(
+            session_name=_SESSION, anchor_hour_utc=_OVERLAP_HOUR, anchor_minute_utc=_OVERLAP_MINUTE,
+        ),)
+        engine = self._make_selection_engine(enabled_windows=covered_only, cross_pair_selection_enabled=False)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {
+            p: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for p in pairs
+        }
+
+        now = T0.replace(hour=_LONDON_HOUR, minute=_LONDON_MINUTE + 31)
+        report = orchestrator.run_cycle(pairs, profile, inputs, now, "CYCLE-1")
+
+        by_pair = {r.pair: r.outcome for r in report.records}
+        # The covered window's sole candidate proceeds normally (no
+        # competitor to arbitrate against); both uncovered-window
+        # candidates independently reach Risk -- the exact danger.
+        self.assertEqual(by_pair["EURUSD"], CycleOutcome.SUBMITTED)
+        self.assertEqual(by_pair["GBPUSD"], CycleOutcome.SUBMITTED)
+        self.assertEqual(by_pair["USDJPY"], CycleOutcome.SUBMITTED)
+        self.assertEqual(orchestrator.risk_engine.call_count, 3)
+
+    def test_broad_gate_a_with_complete_enabled_windows_and_flag_false_arbitrates(self):
+        """P4 (safe): the corrected invariant's positive case -- barrier
+        coverage alone, independent of the flag, produces exactly one
+        winner."""
+        strategy_stub = _PerPairStrategyStub(
+            {p: _orb_snapshot(p, 80.0 - i, range_start=T0) for i, p in enumerate(_ORB_PAIRS_3)}, _ORB_PAIRS_3,
+        )
+        engine = self._make_selection_engine(enabled_windows=self._one_window(), cross_pair_selection_enabled=False)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=_ORB_PAIRS_3)
+        inputs = {
+            p: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for p in _ORB_PAIRS_3
+        }
+
+        report = orchestrator.run_cycle(_ORB_PAIRS_3, profile, inputs, T0 + timedelta(minutes=31), "CYCLE-1")
+
+        by_pair = {r.pair: r.outcome for r in report.records}
+        submitted = [p for p, o in by_pair.items() if o == CycleOutcome.SUBMITTED]
+        self.assertEqual(submitted, ["EURUSD"])  # highest score
+        self.assertEqual(orchestrator.risk_engine.call_count, 1)
+
+    def test_broad_gate_a_with_complete_enabled_windows_and_flag_true_arbitrates_identically(self):
+        """P5 (safe, final target state): the flag makes no observable
+        difference to arbitration once coverage is complete -- proves
+        the flag is a defense-in-depth backstop, never the barrier
+        itself."""
+        strategy_stub = _PerPairStrategyStub(
+            {p: _orb_snapshot(p, 80.0 - i, range_start=T0) for i, p in enumerate(_ORB_PAIRS_3)}, _ORB_PAIRS_3,
+        )
+        engine = self._make_selection_engine(enabled_windows=self._one_window(), cross_pair_selection_enabled=True)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=_ORB_PAIRS_3)
+        inputs = {
+            p: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for p in _ORB_PAIRS_3
+        }
+
+        report = orchestrator.run_cycle(_ORB_PAIRS_3, profile, inputs, T0 + timedelta(minutes=31), "CYCLE-1")
+
+        by_pair = {r.pair: r.outcome for r in report.records}
+        submitted = [p for p, o in by_pair.items() if o == CycleOutcome.SUBMITTED]
+        self.assertEqual(submitted, ["EURUSD"])
+        self.assertEqual(orchestrator.risk_engine.call_count, 1)
+
+    def test_gate_a_closed_with_barrier_prepared_leaves_orb_ineligible(self):
+        """P2 (safe, the required Phase C staging state): preparing Gate
+        B/`enabled_windows` while Gate A stays closed cannot itself
+        activate anything -- `check_eligibility()` (not exercised by
+        this Runtime-level stub, already independently verified at the
+        Strategy Engine layer) would reject every pair for ORB before
+        `qualify()` ever runs, so whichever real strategy actually wins
+        proceeds ordinarily, exactly as it does today in production."""
+        pairs = _ORB_PAIRS_3
+        strategy_stub = _PerPairStrategyStub(
+            {p: _legacy_winner_snapshot(p) for p in pairs}, tracked_pairs=(),  # Gate A empty
+        )
+        engine = self._make_selection_engine(enabled_windows=self._one_window(), cross_pair_selection_enabled=False)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {
+            p: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for p in pairs
+        }
+
+        report = orchestrator.run_cycle(pairs, profile, inputs, T0 + timedelta(minutes=31), "CYCLE-1")
+
+        by_pair = {r.pair: r.outcome for r in report.records}
+        # All 3 independently SUBMITTED -- but as ordinary, unrelated
+        # legacy-strategy wins (call_count == 3 is expected and safe
+        # here), never as ORB candidates competing for one opportunity.
+        self.assertEqual(by_pair, {p: CycleOutcome.SUBMITTED for p in pairs})
+        self.assertEqual(orchestrator.risk_engine.call_count, 3)
+
+    def test_rollback_ordering_removing_coverage_reproduces_the_forbidden_state_regardless_of_history(self):
+        """Rollback-ordering invariant (Plan §7.0): there is no code-level
+        distinction between "`enabled_windows` was never staged" and
+        "`enabled_windows` was staged, then removed while Gate A stayed
+        broad" -- both produce the byte-identical P6 state. This is the
+        proof that the corrected sequencing/rollback discipline must be
+        an operational procedure (§6/§7), never a technical guarantee:
+        no test, check, or code path can distinguish "forward activation
+        skipped a step" from "rollback removed coverage out of order."""
+        strategy_stub = _PerPairStrategyStub(
+            {p: _orb_snapshot(p, 80.0 - i, range_start=T0) for i, p in enumerate(_ORB_PAIRS_3)}, _ORB_PAIRS_3,
+        )
+        # Constructing enabled_windows=() directly -- indistinguishable,
+        # by construction, from "previously populated, then cleared."
+        engine = self._make_selection_engine(enabled_windows=(), cross_pair_selection_enabled=False)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=_ORB_PAIRS_3)
+        inputs = {
+            p: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for p in _ORB_PAIRS_3
+        }
+
+        report = orchestrator.run_cycle(_ORB_PAIRS_3, profile, inputs, T0 + timedelta(minutes=31), "CYCLE-1")
+
+        by_pair = {r.pair: r.outcome for r in report.records}
+        self.assertEqual(by_pair, {p: CycleOutcome.SUBMITTED for p in _ORB_PAIRS_3})
+        self.assertEqual(orchestrator.risk_engine.call_count, len(_ORB_PAIRS_3))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ from titan_protocol.compliance_engine.config import ComplianceEngineConfig
 from titan_protocol.evidence_engine.config import EvidenceEngineConfig
 from titan_protocol.evidence_engine.models import SessionName
 from titan_protocol.market_intelligence.config import MarketIntelligenceConfig
+from titan_protocol.opportunity_selection_engine.config import EnabledOpportunityWindow, OpportunitySelectionEngineConfig
 from titan_protocol.risk_engine.config import RiskEngineConfig
 from titan_protocol.reliability.config import ReliabilityConfig
 from titan_protocol.runtime.config import RuntimeConfig
@@ -97,6 +98,7 @@ class DeploymentSettings:
     selected_profile: str
     strategy_config: StrategyEngineConfig
     evidence_config: EvidenceEngineConfig
+    opportunity_selection_config: OpportunitySelectionEngineConfig
     risk_config: RiskEngineConfig
     compliance_config: ComplianceEngineConfig
     compliance_rule_profile_name: str
@@ -457,6 +459,59 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
     except ValueError as exc:
         raise ConfigError(f"evidence_engine: {exc}") from exc
 
+    # ADR-037 Production Activation Plan §3: the Opportunity Selection
+    # Engine owns its own JSON section, mirroring opening_range_anchors's
+    # own JSON-array-to-tuple pattern immediately above. Missing section
+    # (or missing enabled_windows key) resolves to the identical inert
+    # default every existing deployment already gets from the hardcoded
+    # OpportunitySelectionEngineConfig() start.py used to construct --
+    # backward compatible by construction, not by special-casing.
+    opportunity_selection_section = _section(data, "opportunity_selection_engine")
+    _base_opportunity_selection_config = OpportunitySelectionEngineConfig()
+    raw_windows = opportunity_selection_section.get("enabled_windows", [])
+    if not isinstance(raw_windows, list):
+        raise ConfigError("opportunity_selection_engine.enabled_windows must be a JSON array")
+    enabled_windows = []
+    for i, entry in enumerate(raw_windows):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"opportunity_selection_engine.enabled_windows[{i}] must be a JSON object")
+        window_session_name = entry.get("session")
+        if not isinstance(window_session_name, str) or window_session_name not in SessionName.__members__:
+            raise ConfigError(
+                f"opportunity_selection_engine.enabled_windows[{i}].session {window_session_name!r} "
+                f"is not a valid SessionName ({', '.join(SessionName.__members__)})"
+            )
+        anchor_hour_utc = entry.get("anchor_hour_utc")
+        anchor_minute_utc = entry.get("anchor_minute_utc")
+        if isinstance(anchor_hour_utc, bool) or not isinstance(anchor_hour_utc, int):
+            raise ConfigError(f"opportunity_selection_engine.enabled_windows[{i}].anchor_hour_utc must be an integer")
+        if isinstance(anchor_minute_utc, bool) or not isinstance(anchor_minute_utc, int):
+            raise ConfigError(f"opportunity_selection_engine.enabled_windows[{i}].anchor_minute_utc must be an integer")
+        window_enabled_raw = entry.get("enabled", True)
+        if not isinstance(window_enabled_raw, bool):
+            raise ConfigError(f"opportunity_selection_engine.enabled_windows[{i}].enabled must be a boolean")
+        enabled_windows.append(EnabledOpportunityWindow(
+            session_name=SessionName[window_session_name],
+            anchor_hour_utc=anchor_hour_utc,
+            anchor_minute_utc=anchor_minute_utc,
+            enabled=window_enabled_raw,
+        ))
+    try:
+        opportunity_selection_config = dataclasses.replace(
+            _base_opportunity_selection_config,
+            enabled_windows=tuple(enabled_windows),
+            cross_pair_selection_enabled=_get_bool(
+                opportunity_selection_section, "cross_pair_selection_enabled",
+                _base_opportunity_selection_config.cross_pair_selection_enabled,
+            ),
+            tie_tolerance=_get_float(
+                opportunity_selection_section, "tie_tolerance",
+                _base_opportunity_selection_config.tie_tolerance,
+            ),
+        )
+    except ValueError as exc:
+        raise ConfigError(f"opportunity_selection_engine: {exc}") from exc
+
     profile_section = _section(data, "trading_profile")
     selected_profile = _require_str(profile_section, "trading_profile", "selected_profile").lower()
     if selected_profile not in _VALID_PROFILES:
@@ -600,6 +655,7 @@ def load_settings(config_path: Path) -> "DeploymentSettings":
         bridge_config=bridge_config, bridge_host=bridge_host, bridge_port=bridge_port,
         runtime_config=runtime_config, selected_profile=selected_profile,
         strategy_config=strategy_config, evidence_config=evidence_config,
+        opportunity_selection_config=opportunity_selection_config,
         risk_config=risk_config, compliance_config=compliance_config,
         compliance_rule_profile_name=compliance_rule_profile_name,
         compliance_daily_reset_hour_utc=compliance_daily_reset_hour_utc,

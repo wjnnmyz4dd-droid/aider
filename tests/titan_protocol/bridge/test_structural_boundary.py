@@ -124,6 +124,20 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "deployment_windows/install_mt5_files.py",
             "deployment_windows/KNOWN_GAPS.md",
             "deployment_windows/config/titan_protocol_config.example.json",
+            # ADR-037 Production Activation Plan (bb8b4a6) Phases A-D:
+            # opportunity_selection_engine config-loading (config_loader.py/
+            # start.py, already covered above), --dry-run/--dry-run-orb-pairs
+            # CLI mechanism (start.py, already covered above), 2 new
+            # documentation/preparation config artifacts (staged pre-
+            # activation + dry-run, Gate A closed in both), new F1 safety
+            # regression tests, new config-loader tests, and this new
+            # dry-run test file -- no Gate A/B production value or
+            # cross_pair_selection_enabled=True is written anywhere by
+            # this phase.
+            "deployment_windows/config/titan_protocol_config.staged_activation.example.json",
+            "deployment_windows/config/titan_protocol_config.dry_run_activation.example.json",
+            "tests/deployment_windows/test_start_dry_run.py",
+            "tests/deployment_windows/_fixtures.py",
             # Documentation-reconciliation phase (post-ADR-034 Amendment 3):
             # deprecation banners on obsolete pre-Titan-Protocol guides, full
             # rewrites of the two VPS docs, staleness fixes in the current
@@ -260,6 +274,11 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             "docs/plans/adr-037-production-activation-research.md",
             "docs/plans/adr-037-production-activation-policy-decision.md",
             "docs/plans/adr-037-production-activation-plan.md",
+            # ADR-037 Production Activation Plan (bb8b4a6) Phases A-D
+            # evidence record: documents the implementation commit, tests,
+            # dry-run configuration/fingerprints/observations, and PASS
+            # determination -- explicitly does not approve Phase E or F.
+            "docs/plans/adr-037-phase-d-dry-run-evidence.md",
         )
 
         def is_allowed(path: str) -> bool:

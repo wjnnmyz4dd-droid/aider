@@ -286,6 +286,86 @@ Nothing here is destructive:
   and the `MQL5\Experts\TitanProtocol\`/`MQL5\Presets\TitanProtocol\` folders inside
   your MT5 data folder, and delete the 4 desktop shortcuts.
 
+## ADR-037 ORB cross-pair opportunity-selection activation (Phases A-D only — no production activation yet)
+
+This section documents the reviewed
+`docs/plans/adr-037-production-activation-plan.md`'s corrected
+activation procedure. **Following it does not itself activate anything
+in production** — Gate A/B population and live Bridge submission for
+ORB require a separate, explicit Phase E authorization this guide does
+not grant.
+
+**The governing safety invariant:** a broadened, multi-pair Gate A must
+never exist in a running deployment unless `enabled_windows`/Gate B
+already cover it completely — `cross_pair_selection_enabled` is a
+defense-in-depth backstop, **not** the mechanism that makes this safe.
+
+### Step 1 — stage the config while Gate A stays closed
+
+Populate `opportunity_selection_engine.enabled_windows` and
+`evidence_engine.opening_range_anchors` in your real
+`titan_protocol_config.json` at the decided production values (London
+08:00 UTC, London–New York Overlap 13:00 UTC, Early New York 13:30
+UTC), with `cross_pair_selection_enabled` left `false`. Two ready-made
+reference artifacts are provided:
+- `config/titan_protocol_config.staged_activation.example.json` — this
+  exact staged state (flag `false`).
+- `config/titan_protocol_config.dry_run_activation.example.json` — the
+  same Gate B/`enabled_windows`, with the flag `true` (the full intended
+  final state) — **for `--dry-run` use only, never for a live
+  `start.py` process.**
+
+Restart `start.py` with the staged config. **Gate A is still closed at
+this point** (`DEFAULT_APPROVED_PAIRS_BY_STRATEGY` in
+`titan_protocol/strategy_engine/config.py` has no `OPENING_RANGE_
+BREAKOUT` entry yet) — this state is provably inert, safe to apply
+without further authorization.
+
+### Step 2 — manual Bridge/Gate-A cross-check
+
+Before considering Gate A activation, confirm every intended ORB pair
+(EURUSD, GBPUSD, USDJPY) is present in your deployment's actual
+`bridge.allowed_symbols` — no automated check exists for this (a known,
+accepted gap; see the reviewed Policy Decision's C2). A pair missing
+from `bridge.allowed_symbols` is a silent no-op for that pair, never a
+crash — but it should still be confirmed before proceeding.
+
+### Step 3 — mandatory dry run (`--dry-run`)
+
+```
+python start.py --dry-run --dry-run-orb-pairs=EURUSD,GBPUSD,USDJPY --foreground --config config\titan_protocol_config.dry_run_activation.example.json
+```
+
+`--dry-run` constructs the real `RuntimeOrchestrator` with
+`bridge_submit=None` — **no order can reach the Bridge in this mode,
+regardless of Gate A/OSE configuration** (the Bridge HTTP listener
+itself still binds and serves, so EA polling/health-check behavior is
+exercised too). `--dry-run-orb-pairs` is a dry-run-only, in-memory
+override of this one process's own Gate A — it is refused outright if
+`--dry-run` is not also given, and it never writes to
+`DEFAULT_APPROVED_PAIRS_BY_STRATEGY`, any config file, or anywhere else
+persistent. Watch the log/console output for `DRY RUN MODE ACTIVE`,
+`dry_run_orb_pairs_override_active`, `Trading profile ... validated
+OK`, and `Bridge HTTP service listening` — and for the **complete
+absence** of any `FAILED`/exception output. Retain these logs (and the
+resulting `state/opportunity_selection_winners.json`, if any winners
+were persisted during the observation window) as the Phase D evidence
+record. Run this for at least one full trading day spanning all 3
+anchors before considering the dry run complete.
+
+**This dry run does not, and cannot, activate anything in production**
+— it is a separate process instance, `bridge_submit=None` makes
+submission structurally unreachable in it, and its Gate A override is
+process-local only.
+
+### Step 4 and beyond — not covered by this guide
+
+Deploying the Gate A source change, flipping the flag, and any live
+activation step require the reviewed Plan's own Phase E (independent
+activation review/authorization) and Phase F (ordered live activation
+procedure, §6) — not covered here, and not authorized by completing
+Steps 1-3 above.
+
 ## Advanced: manual step-by-step (if you don't want install.py to do everything)
 
 If you'd rather control every step yourself — a custom trading profile,

@@ -69,10 +69,12 @@ Two modes:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import logging.handlers
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -131,7 +133,6 @@ from titan_protocol.news_ingestion.metrics import NewsIngestionMetrics
 from titan_protocol.news_ingestion.models import ProviderName
 from titan_protocol.news_ingestion.providers.forex_factory import ForexFactoryProvider
 from titan_protocol.news_ingestion.providers.trading_economics import TradingEconomicsProvider
-from titan_protocol.opportunity_selection_engine.config import OpportunitySelectionEngineConfig
 from titan_protocol.opportunity_selection_engine.engine import OpportunitySelectionEngine
 from titan_protocol.opportunity_selection_engine.store import OpportunityWinnerStore
 from titan_protocol.reliability.engine import ReliabilityEngine
@@ -144,6 +145,7 @@ from titan_protocol.runtime.metrics import RuntimeMetrics
 from titan_protocol.runtime.models import CycleOutcome
 from titan_protocol.runtime.validation import validate_profile
 from titan_protocol.strategy_engine.engine import StrategyEngine
+from titan_protocol.strategy_engine.models import StrategyId
 from titan_protocol.strategy_engine.strategies import build_default_registry
 from titan_protocol.strategy_state_store.config import StrategyStateStoreConfig
 from titan_protocol.strategy_state_store.formation_blackout_store import FormationBlackoutStore
@@ -1108,9 +1110,34 @@ def _live_cycle_loop(
         _shutdown_event.wait(_LIVE_CYCLE_INTERVAL_SECONDS)
 
 
-def run_foreground(config_path: Path) -> int:
+_DRY_RUN_PAIR_PATTERN = re.compile(r"^[A-Z]{6}$")
+
+
+def run_foreground(
+    config_path: Path, dry_run: bool = False, dry_run_orb_pairs: Optional[Tuple[str, ...]] = None,
+) -> int:
     """The actual long-running process -- what `python start.py
-    --foreground` (and, internally, `python start.py`) runs."""
+    --foreground` (and, internally, `python start.py`) runs.
+
+    ADR-037 Production Activation Plan (bb8b4a6) Phase D: `dry_run=True`
+    is the only way `bridge_submit` below is ever `None` instead of the
+    real submitting closure -- Bridge submission is therefore
+    structurally unreachable whenever this parameter is set, regardless
+    of Gate A/OSE configuration (`RuntimeOrchestrator`/`_run_back_half`
+    already treat `bridge_submit is None` as "never call the Bridge",
+    independent of anything else). `dry_run_orb_pairs`, when also
+    supplied, overrides *only this process's own* in-memory
+    `StrategyEngineConfig.approved_pairs_by_strategy` entry for
+    `OPENING_RANGE_BREAKOUT` -- it never writes to
+    `titan_protocol/strategy_engine/config.py`'s `DEFAULT_APPROVED_
+    PAIRS_BY_STRATEGY`, never touches the config file on disk, and is
+    fail-closed (refused below) if `dry_run` is not also `True` -- so it
+    can never be used to broaden live Gate A."""
+    if dry_run_orb_pairs is not None and not dry_run:
+        print("FAILED: dry_run_orb_pairs was supplied without dry_run=True -- refusing to start "
+              "(this override is dry-run-only and must never affect a live-submitting process)", file=sys.stderr)
+        return 2
+
     try:
         settings = load_settings(config_path)
     except ConfigError as exc:
@@ -1126,22 +1153,58 @@ def run_foreground(config_path: Path) -> int:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 2
 
-    logger.info("Titan Protocol deployment layer starting (pid=%s, config=%s)", os.getpid(), config_path)
+    logger.info(
+        "Titan Protocol deployment layer starting (pid=%s, config=%s, dry_run=%s)",
+        os.getpid(), config_path, dry_run,
+    )
+    if dry_run:
+        logger.warning(
+            "DRY RUN MODE ACTIVE -- bridge_submit=None; no order can reach the Bridge this process "
+            "run, regardless of Gate A/OSE configuration (ADR-037 Production Activation Plan Phase D)",
+        )
+        print("DRY RUN MODE -- Bridge submission is disabled for this process (bridge_submit=None).")
 
     strategy_config = settings.strategy_config
+    if dry_run and dry_run_orb_pairs is not None:
+        for pair in dry_run_orb_pairs:
+            if not _DRY_RUN_PAIR_PATTERN.match(pair):
+                print(f"FAILED: --dry-run-orb-pairs entry {pair!r} is not a valid 6-character pair", file=sys.stderr)
+                return 2
+        # Dry-run-only, in-memory override of the ORB entry -- every other
+        # strategy's approved_pairs_by_strategy entry (and the source
+        # constant DEFAULT_APPROVED_PAIRS_BY_STRATEGY itself) is untouched.
+        # Never persisted: this replacement lives only in this process's
+        # own local `strategy_config` variable for the remainder of this
+        # run, and start.py's ordinary (non-dry-run) path never executes
+        # this branch at all.
+        _other_entries = tuple(
+            (sid, pairs) for sid, pairs in strategy_config.approved_pairs_by_strategy
+            if sid is not StrategyId.OPENING_RANGE_BREAKOUT
+        )
+        strategy_config = dataclasses.replace(
+            strategy_config,
+            approved_pairs_by_strategy=_other_entries + ((StrategyId.OPENING_RANGE_BREAKOUT, dry_run_orb_pairs),),
+        )
+        logger.warning(
+            "dry_run_orb_pairs_override_active",
+            extra={"orb_pairs": dry_run_orb_pairs},
+        )
+        print(f"DRY RUN: ORB Gate A override active for this process only: {dry_run_orb_pairs}")
+
     try:
         profile = build_trading_profile(settings)
     except ConfigError as exc:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 2
-    # ADR-037 + Amendment 1, ADR-031 Amendment 1: the safe migration
-    # default -- empty enabled_windows, cross_pair_selection_enabled
-    # False -- so this deployment remains entirely inert with respect to
-    # every structural-readiness invariant regardless of Gate A's width,
-    # exactly matching Gate A/B's own closed/empty default state.
-    # Populating enabled_windows/flipping the flag is a separately-gated
-    # deployment-profile decision, not made here.
-    opportunity_selection_config = OpportunitySelectionEngineConfig()
+    # ADR-037 Production Activation Plan §3: the Opportunity Selection
+    # Engine's config now comes from the deployment JSON's own dedicated
+    # section (config_loader.py), exactly like every other engine's
+    # section -- never a hardcoded default here. An operator who never
+    # populates opportunity_selection_engine in their config gets the
+    # identical inert state (enabled_windows=(), cross_pair_selection_
+    # enabled=False) this used to hardcode, so an existing deployment is
+    # unaffected unless it explicitly opts in.
+    opportunity_selection_config = settings.opportunity_selection_config
     validation_result = validate_profile(
         profile, strategy_config, settings.compliance_config, settings.evidence_config, opportunity_selection_config,
     )
@@ -1252,8 +1315,18 @@ def run_foreground(config_path: Path) -> int:
         )
     )
 
-    def bridge_submit(command, now):
+    def _real_bridge_submit(command, now):
         return bridge_engine.submit_command(command, now)
+
+    # ADR-037 Production Activation Plan Phase D: the ONLY place
+    # bridge_submit becomes None -- `_run_back_half()`'s own
+    # `self.bridge_submit is not None and compliance.ready_for_bridge`
+    # gate (titan_protocol/runtime/engine.py) then makes Bridge
+    # submission structurally unreachable for this entire process,
+    # independent of Gate A/OSE configuration. The Bridge HTTP server
+    # above still binds and listens either way (EA polling/health-check
+    # behavior is unaffected) -- only this one call is suppressed.
+    bridge_submit = None if dry_run else _real_bridge_submit
 
     runtime_metrics = RuntimeMetrics()
     in_flight_commands = InFlightCommandRegistry(
@@ -1368,9 +1441,15 @@ def _existing_pid(state_dir: Path) -> "int | None":
     return None
 
 
-def launch_and_report(config_path: Path) -> int:
+def launch_and_report(
+    config_path: Path, dry_run: bool = False, dry_run_orb_pairs: Optional[Tuple[str, ...]] = None,
+) -> int:
     """Default mode: spawn `--foreground` as a detached child process,
     wait, health-check it, print HEALTHY/DEGRADED/FAILED, return."""
+    if dry_run_orb_pairs is not None and not dry_run:
+        print("FAILED: dry_run_orb_pairs was supplied without dry_run=True -- refusing to start", file=sys.stderr)
+        return 2
+
     try:
         settings = load_settings(config_path)
     except ConfigError as exc:
@@ -1400,9 +1479,14 @@ def launch_and_report(config_path: Path) -> int:
     settings.log_dir.mkdir(parents=True, exist_ok=True)
     console_log_path = settings.log_dir / "bridge_console.log"
     console_log = open(console_log_path, "a", encoding="utf-8")
+    child_argv = [python_exe, str(_HERE / "start.py"), "--foreground", "--config", str(config_path)]
+    if dry_run:
+        child_argv.append("--dry-run")
+    if dry_run_orb_pairs is not None:
+        child_argv.append(f"--dry-run-orb-pairs={','.join(dry_run_orb_pairs)}")
     try:
         subprocess.Popen(
-            [python_exe, str(_HERE / "start.py"), "--foreground", "--config", str(config_path)],
+            child_argv,
             cwd=str(_HERE), creationflags=creation_flags,
             stdout=console_log, stderr=console_log,
             start_new_session=(os.name != "nt"),
@@ -1438,14 +1522,38 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Titan Protocol live runtime launcher")
     parser.add_argument("--config", default=str(_HERE / "titan_protocol_config.json"))
     parser.add_argument("--foreground", action="store_true", help="run as the actual long-lived process (used internally)")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="ADR-037 Production Activation Plan Phase D: construct bridge_submit=None so no order "
+             "can reach the Bridge this run, regardless of Gate A/OSE configuration -- everything "
+             "else (config loading, engines, the Bridge HTTP listener) runs exactly as it would live.",
+    )
+    parser.add_argument(
+        "--dry-run-orb-pairs", default=None,
+        help="Dry-run only: comma-separated pairs (e.g. EURUSD,GBPUSD,USDJPY) overriding this "
+             "process's own in-memory Gate A (OPENING_RANGE_BREAKOUT approved_pairs_by_strategy) "
+             "so the intended production ORB universe can be exercised end-to-end without ever "
+             "broadening DEFAULT_APPROVED_PAIRS_BY_STRATEGY. Requires --dry-run; refused otherwise.",
+    )
     args = parser.parse_args()
+
+    dry_run_orb_pairs: Optional[Tuple[str, ...]] = None
+    if args.dry_run_orb_pairs is not None:
+        dry_run_orb_pairs = tuple(p.strip() for p in args.dry_run_orb_pairs.split(",") if p.strip())
+        if not args.dry_run:
+            print(
+                "FAILED: --dry-run-orb-pairs was supplied without --dry-run -- refusing to start "
+                "(this override is dry-run-only and must never affect a live-submitting process)",
+                file=sys.stderr,
+            )
+            return 2
 
     _check_running_under_venv()
 
     config_path = Path(args.config)
     if args.foreground:
-        return run_foreground(config_path)
-    return launch_and_report(config_path)
+        return run_foreground(config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs)
+    return launch_and_report(config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs)
 
 
 if __name__ == "__main__":
