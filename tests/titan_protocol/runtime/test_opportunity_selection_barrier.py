@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -129,7 +130,7 @@ class _BarrierTestCase(unittest.TestCase):
             enabled_windows=enabled_windows, tie_tolerance=tie_tolerance,
             cross_pair_selection_enabled=cross_pair_selection_enabled,
         )
-        return OpportunitySelectionEngine(config, store, opening_range_duration_minutes=30)
+        return OpportunitySelectionEngine(config, store)
 
     def _make_orchestrator(self, strategy_stub, opportunity_selection_engine=None, risk=None, compliance=None) -> RuntimeOrchestrator:
         return RuntimeOrchestrator(
@@ -164,6 +165,69 @@ class TestScoreOnlyWinnerSelection(_BarrierTestCase):
         self.assertEqual(by_pair["EURUSD"].outcome, CycleOutcome.SUBMITTED)
         self.assertEqual(by_pair["GBPUSD"].outcome, CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
         self.assertEqual(orchestrator.risk_engine.call_count, 1)
+
+
+class TestRealisticPostFormationTimingSelectsAWinner(_BarrierTestCase):
+    """Post-implementation conformance re-review correction: every other
+    test in this file historically called `run_cycle(..., T0, ...)` with
+    `now == T0 == range_start`, which the now-removed duration-based
+    staleness gate happened to tolerate -- masking the fact that a real
+    ORB candidate can only ever exist once `now >= range_start +
+    opening_range_duration_minutes` (`orb_breakout.py`'s own `is_formed`
+    gate). This proves the full production path (`run_cycle()` -> barrier
+    -> `OpportunitySelectionEngine` -> `OpportunityWinnerStore`) still
+    selects and persists a winner when `now` reflects that reality."""
+
+    def test_winner_selected_when_now_is_realistically_past_formation(self):
+        pairs = ("EURUSD", "GBPUSD")
+        strategy_stub = _PerPairStrategyStub(
+            {"EURUSD": _orb_snapshot("EURUSD", 80.0), "GBPUSD": _orb_snapshot("GBPUSD", 60.0)}, pairs,
+        )
+        engine = self._make_selection_engine(enabled_windows=self._one_window())
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {
+            pair: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for pair in pairs
+        }
+        # now.replace(hour=_WINDOW_HOUR, minute=_WINDOW_MINUTE, ...) still
+        # reproduces T0 regardless of now's own hour/minute (same
+        # calendar day) -- this is a realistic post-formation `now`, not
+        # `now == range_start`.
+        realistic_now = T0 + timedelta(minutes=31)
+        report = orchestrator.run_cycle(pairs, profile, inputs, realistic_now, "CYCLE-1")
+
+        by_pair = {r.pair: r for r in report.records}
+        self.assertEqual(by_pair["EURUSD"].outcome, CycleOutcome.SUBMITTED)
+        self.assertEqual(by_pair["GBPUSD"].outcome, CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
+        self.assertEqual(orchestrator.risk_engine.call_count, 1)
+
+    def test_persisted_winner_still_wins_a_much_later_same_day_cycle(self):
+        pairs = ("EURUSD", "GBPUSD")
+        engine = self._make_selection_engine(enabled_windows=self._one_window())
+
+        strategy_stub_1 = _PerPairStrategyStub(
+            {"EURUSD": _orb_snapshot("EURUSD", 60.0), "GBPUSD": _orb_snapshot("GBPUSD", 50.0)}, pairs,
+        )
+        orchestrator_1 = self._make_orchestrator(strategy_stub_1, engine)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {
+            pair: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for pair in pairs
+        }
+        first_cycle_now = T0 + timedelta(minutes=31)
+        report1 = orchestrator_1.run_cycle(pairs, profile, inputs, first_cycle_now, "CYCLE-1")
+        self.assertEqual({r.pair: r.outcome for r in report1.records}["EURUSD"], CycleOutcome.SUBMITTED)
+
+        strategy_stub_2 = _PerPairStrategyStub(
+            {"EURUSD": _orb_snapshot("EURUSD", 10.0), "GBPUSD": _orb_snapshot("GBPUSD", 99.0)}, pairs,
+        )
+        orchestrator_2 = self._make_orchestrator(strategy_stub_2, engine)
+        much_later_same_day_now = T0 + timedelta(hours=6)
+        report2 = orchestrator_2.run_cycle(pairs, profile, inputs, much_later_same_day_now, "CYCLE-2")
+        outcome2 = {r.pair: r.outcome for r in report2.records}
+        self.assertEqual(outcome2["EURUSD"], CycleOutcome.SUBMITTED, "the persisted winner must not be masked as stale")
+        self.assertEqual(outcome2["GBPUSD"], CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
 
 
 class TestTieProducesNoWinner(_BarrierTestCase):

@@ -37,4 +37,20 @@ def log_opportunity_window_result(range_start: datetime, session_name: SessionNa
     )
 
 
-__all__ = ["log_opportunity_window_result"]
+def log_superseded_opportunity_window(range_start: datetime, session_name: SessionName, latest_seen: datetime) -> None:
+    """ADR-037 §12's "stale winner" signal, corrected: fires only when a
+    genuinely older `range_start` for this session is queried after a
+    newer one has already been current -- never on elapsed formation
+    duration alone (Amendment 1 §2)."""
+    _safe_log(
+        logging.WARNING,
+        "superseded_opportunity_window_encountered",
+        {
+            "range_start": range_start.isoformat(),
+            "session_name": session_name.value,
+            "latest_seen_range_start": latest_seen.isoformat(),
+        },
+    )
+
+
+__all__ = ["log_opportunity_window_result", "log_superseded_opportunity_window"]

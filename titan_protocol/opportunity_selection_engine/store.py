@@ -35,6 +35,27 @@ already-Accepted design precedent):
 - Corrupt/unreadable persisted state fails closed at construction --
   never silently treated as "no winner has been established for any
   window."
+
+**Stale-window correction (post-implementation conformance re-review
+finding, `b526ae1`..`254e9d6` era, corrected here):** an earlier revision
+of this module derived "staleness" from `range_start + opening_range_
+duration_minutes < now` and used it to refuse to even look up an
+existing entry. Amendment 1 SS2 explicitly forbids reading
+`opening_range_duration_minutes` as marking when a window's opportunity
+to produce a winner ends, and `orb_breakout.py`'s own `is_formed` gate
+guarantees every genuine candidate already satisfies `now >= range_
+start + duration` -- so that check suppressed essentially every real
+candidate and could mask an already-persisted winner on a later cycle,
+violating this module's own immutability guarantee. This module now
+performs **no time-based staleness computation at all**: the key
+(`range_start`, already unique per calendar day and anchor -- SS8) is
+the sole source of "which opportunity this is," so an older instance can
+never contaminate a newer one, and the already-persisted-winner lookup
+below is always the first and only gate. Session-lifecycle-level
+"genuinely superseded" observability (SS12) is owned by
+`OpportunitySelectionEngine`/`logging_sink.py`, which already holds the
+per-session bookkeeping (`SessionName`) this module deliberately does
+not need -- see that module's docstring.
 """
 
 from __future__ import annotations
@@ -44,7 +65,7 @@ import logging
 import os
 import tempfile
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -69,16 +90,6 @@ def _safe_log_persist_failure(exc: Exception) -> None:
     try:
         _LOGGER.error("opportunity winner state persist failed", exc_info=exc)
     except Exception:  # noqa: BLE001 -- intentionally unconditional, see docstring
-        pass
-
-
-def _safe_log_stale_window(range_start: datetime, now: datetime) -> None:
-    try:
-        _LOGGER.warning(
-            "stale_window_encountered",
-            extra={"range_start": range_start.isoformat(), "now": now.isoformat()},
-        )
-    except Exception:  # noqa: BLE001 -- logging must never fail closed-in-the-wrong-direction
         pass
 
 
@@ -159,32 +170,24 @@ class OpportunityWinnerStore:
         session_name: SessionName,
         candidates: Tuple[OpportunityCandidate, ...],
         tie_tolerance: float,
-        duration_minutes: int,
         now: datetime,
     ) -> Optional[str]:
         """Atomically, under one lock:
 
-        1. Stale-window defense-in-depth (ADR-037 §12): if this
-           `range_start`'s window should already be closed, log
-           distinctly and return `None` without touching the store at
-           all -- a should-never-happen guard, since the caller only
-           ever presents a `range_start` Evidence Engine just computed
-           as currently relevant this cycle.
-        2. If `range_start.isoformat()` is already a key (a genuine
+        1. If `range_start.isoformat()` is already a key (a genuine
            winner was durably decided on a prior call): return the
            persisted pair unchanged, without even constructing
-           `candidates` into `select_winner()`.
-        3. Else: call `select_winner(candidates, tie_tolerance)`. A
+           `candidates` into `select_winner()`. This is always the
+           first and only gate -- no time-based staleness check ever
+           precedes or overrides it (Amendment 1 §2's immutability
+           guarantee).
+        2. Else: call `select_winner(candidates, tie_tolerance)`. A
            genuine single winner is persisted and returned. A "no
            winner" result (zero candidates or an unresolved tie)
            persists nothing and returns `None` for this cycle only --
            the key remains absent, so any later cycle recomputes fully
            fresh.
         """
-        if range_start + timedelta(minutes=duration_minutes) < now:
-            _safe_log_stale_window(range_start, now)
-            return None
-
         key = range_start.isoformat()
         with self._lock:
             existing = self._entries.get(key)

@@ -1234,9 +1234,7 @@ def run_foreground(config_path: Path) -> int:
     # already constructed (and passed to validate_profile()) before this
     # point -- inert by default (empty enabled_windows).
     opportunity_winner_store = OpportunityWinnerStore(settings.state_dir / "opportunity_selection_winners.json")
-    opportunity_selection_engine = OpportunitySelectionEngine(
-        opportunity_selection_config, opportunity_winner_store, settings.evidence_config.opening_range_duration_minutes,
-    )
+    opportunity_selection_engine = OpportunitySelectionEngine(opportunity_selection_config, opportunity_winner_store)
     risk_engine = RiskEngine(settings.risk_config)
     compliance_engine = ComplianceEngine(settings.compliance_config)
     # Run Status diagnostics (item 10): the position-limit invariant an
