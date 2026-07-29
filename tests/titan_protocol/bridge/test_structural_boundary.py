@@ -251,6 +251,14 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # status/history recording the authorization-through-review
             # chain -- no architecture or implementation design altered.
             "docs/plans/adr-037-implementation-plan.md",
+            # ADR-037 production-activation governance: two new,
+            # documentation-only artifacts recording the Research pass
+            # (ea53932) and this Policy Decision pass -- no code, ADR, or
+            # production configuration changed by either; both explicitly
+            # authorize no Gate A/B activation, no cross_pair_selection_
+            # enabled flip, no legacy-strategy retirement.
+            "docs/plans/adr-037-production-activation-research.md",
+            "docs/plans/adr-037-production-activation-policy-decision.md",
         )
 
         def is_allowed(path: str) -> bool:
