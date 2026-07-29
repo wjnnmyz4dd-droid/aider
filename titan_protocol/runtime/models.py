@@ -117,6 +117,15 @@ class CycleOutcome(Enum):
     # from BRIDGE_ERROR (submission was attempted and rejected) -- here,
     # submission is never attempted at all.
     IN_FLIGHT_COMMAND_PENDING = "IN_FLIGHT_COMMAND_PENDING"
+    # Cross-pair opportunity-selection barrier (ADR-037 + Amendment 1,
+    # ADR-031 Amendment 1 SS9's one authorized new member): this pair
+    # produced a genuine, otherwise-terminal-worthy ORB candidate for an
+    # enabled window, but was not the window's winner -- either another
+    # candidate was selected, the window's own scan was incomplete this
+    # cycle, or selection itself failed. Never used for a non-ORB winner
+    # or for a non-enabled-window ORB result -- those proceed unmodified
+    # through the ordinary six-stage outcomes above.
+    NOT_SELECTED_OPPORTUNITY_WINDOW = "NOT_SELECTED_OPPORTUNITY_WINDOW"
 
 
 @dataclass(frozen=True)

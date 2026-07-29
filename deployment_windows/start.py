@@ -131,6 +131,9 @@ from titan_protocol.news_ingestion.metrics import NewsIngestionMetrics
 from titan_protocol.news_ingestion.models import ProviderName
 from titan_protocol.news_ingestion.providers.forex_factory import ForexFactoryProvider
 from titan_protocol.news_ingestion.providers.trading_economics import TradingEconomicsProvider
+from titan_protocol.opportunity_selection_engine.config import OpportunitySelectionEngineConfig
+from titan_protocol.opportunity_selection_engine.engine import OpportunitySelectionEngine
+from titan_protocol.opportunity_selection_engine.store import OpportunityWinnerStore
 from titan_protocol.reliability.engine import ReliabilityEngine
 from titan_protocol.risk_engine.engine import RiskEngine
 from titan_protocol.risk_engine.models import Direction, OpenPosition, PortfolioState
@@ -1131,7 +1134,17 @@ def run_foreground(config_path: Path) -> int:
     except ConfigError as exc:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 2
-    validation_result = validate_profile(profile, strategy_config, settings.compliance_config)
+    # ADR-037 + Amendment 1, ADR-031 Amendment 1: the safe migration
+    # default -- empty enabled_windows, cross_pair_selection_enabled
+    # False -- so this deployment remains entirely inert with respect to
+    # every structural-readiness invariant regardless of Gate A's width,
+    # exactly matching Gate A/B's own closed/empty default state.
+    # Populating enabled_windows/flipping the flag is a separately-gated
+    # deployment-profile decision, not made here.
+    opportunity_selection_config = OpportunitySelectionEngineConfig()
+    validation_result = validate_profile(
+        profile, strategy_config, settings.compliance_config, settings.evidence_config, opportunity_selection_config,
+    )
     if not validation_result.valid:
         logger.error("Trading profile %s failed validation: %s", profile.profile_id, validation_result.issues)
         print(f"FAILED: trading profile validation failed: {validation_result.issues}", file=sys.stderr)
@@ -1215,6 +1228,15 @@ def run_foreground(config_path: Path) -> int:
     )
     strategy_registry = build_default_registry(orb_qualification_store, orb_formation_blackout_store)
     strategy_engine = StrategyEngine(strategy_config, registry=strategy_registry)
+    # ADR-037 + Amendment 1: winner-only cross-pair opportunity selection
+    # persistence, same settings.state_dir-relative convention as the
+    # ORB stores immediately above. opportunity_selection_config was
+    # already constructed (and passed to validate_profile()) before this
+    # point -- inert by default (empty enabled_windows).
+    opportunity_winner_store = OpportunityWinnerStore(settings.state_dir / "opportunity_selection_winners.json")
+    opportunity_selection_engine = OpportunitySelectionEngine(
+        opportunity_selection_config, opportunity_winner_store, settings.evidence_config.opening_range_duration_minutes,
+    )
     risk_engine = RiskEngine(settings.risk_config)
     compliance_engine = ComplianceEngine(settings.compliance_config)
     # Run Status diagnostics (item 10): the position-limit invariant an
@@ -1263,6 +1285,7 @@ def run_foreground(config_path: Path) -> int:
         strategy_engine, risk_engine, compliance_engine, bridge_submit,
         metrics=runtime_metrics, timeframe=_PRIMARY_TIMEFRAME.name,
         in_flight_commands=in_flight_commands,
+        opportunity_selection_engine=opportunity_selection_engine,
     )
     logger.info("RuntimeOrchestrator constructed")
 

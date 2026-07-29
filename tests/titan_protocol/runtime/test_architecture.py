@@ -23,6 +23,7 @@ FORBIDDEN_IMPORT_PREFIXES = ("phantom_pipeline", "titan_protocol.validation_engi
 ALLOWED_UPSTREAM_PREFIXES = (
     "titan_protocol.evidence_engine", "titan_protocol.market_intelligence", "titan_protocol.strategy_engine",
     "titan_protocol.risk_engine", "titan_protocol.compliance_engine", "titan_protocol.bridge",
+    "titan_protocol.opportunity_selection_engine",
 )
 
 

@@ -229,7 +229,7 @@ class OrbBreakoutStrategy(Strategy):
             score=score, confidence=confidence,
             reason=f"Breakout beyond {boundary_name} with volatility expansion",
             strengths=tuple(strengths),
-            weaknesses=(), trade_intent=trade_intent,
+            weaknesses=(), trade_intent=trade_intent, range_start=opening_range.range_start,
         )
 
         if not self._store.try_consume(pair, opening_range.range_start, config.orb_max_qualifications_per_range):

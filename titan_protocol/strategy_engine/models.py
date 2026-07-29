@@ -65,7 +65,11 @@ class QualificationResult:
     ineligibility and self-disqualification are never partially
     scored (ADR-026 Hard Rules 3-4). `trade_intent` defaults to `NONE`
     -- a strategy sets a real value only on its `QUALIFIED` path
-    (Amendment 1)."""
+    (Amendment 1). `range_start` (ADR-037 §4) is the opening range's own
+    already-computed identity, set only on ORB's `QUALIFIED` path --
+    `None` for every other strategy and for every non-`QUALIFIED` ORB
+    result. Never derived or re-derived here; carried through from
+    `orb_breakout.py`'s own `opening_range.range_start`."""
 
     strategy_id: StrategyId
     pair: str
@@ -76,6 +80,7 @@ class QualificationResult:
     strengths: Tuple[str, ...]
     weaknesses: Tuple[str, ...]
     trade_intent: TradeIntent = TradeIntent.NONE
+    range_start: Optional[datetime] = None
 
 
 @dataclass(frozen=True)

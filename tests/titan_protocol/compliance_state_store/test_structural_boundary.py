@@ -165,6 +165,15 @@ class TestFrozenPackagesAreUntouched(unittest.TestCase):
         # package for OrbQualificationStore -- no compliance_state_store
         # behavior touched.
         "titan_protocol/strategy_engine/config.py",
+        # ADR-037 + Amendment 1, ADR-031 Amendment 1 (later, separately-
+        # authorized): cross-pair opportunity selection barrier.
+        # validation.py gains two new optional parameters (evidence_config,
+        # opportunity_selection_config) and four structural-readiness
+        # checks that only ever run when both are supplied and gated
+        # behind an explicit cross_pair_selection_enabled flag -- every
+        # existing caller passing only the first three parameters is
+        # unaffected. No compliance_state_store behavior touched.
+        "titan_protocol/runtime/validation.py",
     )
 
     def test_no_frozen_pipeline_package_is_touched_by_this_change(self):
