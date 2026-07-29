@@ -259,6 +259,7 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # enabled flip, no legacy-strategy retirement.
             "docs/plans/adr-037-production-activation-research.md",
             "docs/plans/adr-037-production-activation-policy-decision.md",
+            "docs/plans/adr-037-production-activation-plan.md",
         )
 
         def is_allowed(path: str) -> bool:
