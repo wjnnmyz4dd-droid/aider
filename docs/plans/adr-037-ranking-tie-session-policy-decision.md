@@ -1,16 +1,48 @@
 # Policy Decision — ADR-037 Ranking, Tie Handling, and Initial Production Sessions
 
-Status: **Policy decision drafted — awaiting independent policy review before
-it may inform an ADR-037 implementation Plan.** This document decides
-trading-policy and deployment-profile content within the envelope
-`docs/plans/adr-037-ranking-tie-session-policy-research.md` (commit
-`1d43759`) established as evidenced and unresolved. It amends no ADR,
-implements no code, and does not by itself authorize implementation.
+Status: **Policy decision finalized.** All product-policy content this
+document governs — ranking, tie handling, tie tolerance, and initial
+production sessions — is now resolved, following an independent policy
+review that confirmed the ranking/tie decisions sound and identified one
+MEDIUM, now-closed finding on session count (see "Review and resolution
+history" below). This document decides trading-policy and deployment-profile
+content within the envelope `docs/plans/adr-037-ranking-tie-session-policy-
+research.md` (commit `1d43759`) established as evidenced and unresolved. It
+amends no ADR, implements no code, and does not by itself authorize
+implementation.
 
 Depends on: ADR-037 (Accepted, `527e6ba`); ADR-031 Amendment 1 (Accepted,
 `5e6bbea`); the Research artifact above. Every decision below is traceable to
-a specific finding in that Research; nothing here reopens the architecture
-Research and ADR-037/ADR-031 Amendment 1 already settled.
+a specific finding in that Research or the independent review; nothing here
+reopens the architecture Research and ADR-037/ADR-031 Amendment 1 already
+settled.
+
+**Review and resolution history:** first drafted at commit `379fabb`,
+proposing London + Early New York as the two initial production windows. An
+independent "ADR-037 Independent Product-Policy Review" re-derived every
+claim fresh from source (not from this document's own report) and found the
+ranking policy (score-alone), the liquidity/spread disposition (gates only),
+the tie policy (reject-on-tie), and the tie tolerance (`0.5`, `<=`) all
+independently sound, plus two LOW, non-blocking observations: (a) `score`'s
+un-clamped ceiling of 115 means genuinely different high-quality candidates
+can both saturate at the clamped 100.0 ceiling and appear as an exact tie —
+already handled safely by the no-winner tie policy, not a defect; (b) the
+tolerance-reuse justification, while correct, under-argued why cross-pair
+reuse of `score_tie_tolerance` is legitimate (it is at least as justified as
+the original cross-strategy use, since ORB's score formula is identical
+across pairs). The review identified one **MEDIUM** finding: the exclusion
+of `LONDON_NEW_YORK_OVERLAP` from the initial session set was justified in
+the original drafting as evidence-settled, when the cited evidence
+(`preferred_sessions`, `SESSION_QUALITY_SCORES`) actually favors including
+it — `LONDON_NEW_YORK_OVERLAP` is itself a member of the `preferred_sessions`
+default and scores highest of all considered sessions (100, above London's
+own 80) — and the true basis for its exclusion was the product's own word
+choice ("two sessions"), which neither ADR-037 nor ADR-031 Amendment 1
+commits to a specific `SessionName` count or set. That finding is now
+resolved: the initial production-policy decision is revised to include
+`LONDON_NEW_YORK_OVERLAP` as a third initial window (§5, revised). The two
+LOW observations are preserved unchanged, per the review's own instruction
+not to invent a secondary ranking criterion to eliminate clamp-induced ties.
 
 ---
 
@@ -134,59 +166,79 @@ sharing a field across two unrelated engines is itself a new cross-engine
 coupling requiring its own justification, which is implementation wiring,
 not policy content, and is correctly Plan-level work.
 
-## 5. Initial production-session decision
+## 5. Initial production-session decision (revised — independent review's MEDIUM finding)
 
-**Decision: the initial production-policy content is two enabled
-opportunity windows — London and Early New York — with `LONDON` and
-`EARLY_NEW_YORK` as the two `SessionName` values.**
+**Decision: the initial production-policy content is three enabled
+opportunity windows — London, London–New York Overlap, and Early New
+York — with `LONDON`, `LONDON_NEW_YORK_OVERLAP`, and `EARLY_NEW_YORK` as
+the three `SessionName` values.**
 
-**Evidence for the "New York" interpretation (§8 of this task), found, not
-guessed:** `MarketIntelligenceConfig.preferred_sessions` (`market_
-intelligence/config.py:40-43`) already defaults to exactly `(SessionName.
-LONDON, SessionName.LONDON_NEW_YORK_OVERLAP, SessionName.EARLY_NEW_YORK)` —
-an existing, already-Accepted (ADR-025), already-shipped preference default
-that already excludes `LATE_NEW_YORK` and `ASIAN`. This is corroborated by
-`evidence_engine/session.py`'s own `SESSION_QUALITY_SCORES` table (ADR-024,
-Accepted): `LONDON_NEW_YORK_OVERLAP=100`, `LONDON=80`, `EARLY_NEW_YORK=75`,
-`LATE_NEW_YORK=55` (notably lower — the lowest-scoring tradeable session
-after Asian), `ASIAN=40`, `CLOSED=10`. Both tables — independently produced,
-under different Accepted ADRs, for different purposes (MI preference
-weighting vs. Evidence session-quality scoring) — agree that `EARLY_NEW_YORK`
-is the New-York-family session this system already treats as valuable, and
-that `LATE_NEW_YORK` is not.
+**Why this supersedes the original two-window decision:** the independent
+review found that the original decision's own cited evidence did not
+actually support excluding `LONDON_NEW_YORK_OVERLAP` — it supports the
+opposite. `MarketIntelligenceConfig.preferred_sessions`
+(`market_intelligence/config.py:40-43`, independently re-verified, unchanged)
+defaults to exactly `(SessionName.LONDON, SessionName.LONDON_NEW_YORK_
+OVERLAP, SessionName.EARLY_NEW_YORK)` — `LONDON_NEW_YORK_OVERLAP` **is** a
+member of this already-Accepted (ADR-025), already-shipped preference
+default, on equal footing with `LONDON` and `EARLY_NEW_YORK`, and is
+excluded from nothing this evidence establishes. `evidence_engine/
+session.py`'s `SESSION_QUALITY_SCORES` table (ADR-024, Accepted,
+independently re-verified, unchanged): `LONDON_NEW_YORK_OVERLAP=100`,
+`LONDON=80`, `EARLY_NEW_YORK=75`, `LATE_NEW_YORK=55`, `ASIAN=40`,
+`CLOSED=10` — `LONDON_NEW_YORK_OVERLAP` scores **highest of every
+considered session**, including London itself. The original decision cited
+both tables as its evidentiary basis for `EARLY_NEW_YORK`'s inclusion while
+separately, and without citing either table for this specific step,
+excluding the one member both tables treat as most valuable. That exclusion
+rested on the product's own word choice ("two sessions") rather than on the
+evidence — and neither ADR-037 (§2/§8/§11) nor ADR-031 Amendment 1 (§11)
+ever commits "London and New York" to a specific `SessionName` count or set;
+both texts name London and New York only as *intended initial policy
+content*, without resolving whether their natural intersection (Overlap)
+counts as a third window or is implied by naming the two parent sessions.
 
-**Why not `LONDON_NEW_YORK_OVERLAP` as the second window:** the product
-intent named in this task is explicitly **"the two principal sessions:
-London and New York"** — two, not three. `LONDON_NEW_YORK_OVERLAP` is its
-own distinct `SessionName`, not a sub-interval of "New York" or "London" in
-the enum's own vocabulary, and treating it as either would make the initial
-policy a de facto three-window (or ambiguous two-window-with-overlap-
-folded-in) policy that this task's own framing does not ask for. Nothing in
-this decision forecloses adding `LONDON_NEW_YORK_OVERLAP` as a third,
-independently-configured window in a later, separately-reviewed policy
-revision — the configurable-list architecture (§6 below) already supports
-that without any code change.
+**Resolution, per explicit instruction not to manufacture additional
+justification:** `LONDON_NEW_YORK_OVERLAP` is included in the initial
+production-policy content for exactly the reason the evidence already
+supports and no other — it is already a `preferred_sessions` member and
+carries the single highest session-quality score of any session this
+repository's already-Accepted scoring tables recognize. No further
+rationale is added.
 
-**Why not `LATE_NEW_YORK`:** it is excluded from the existing `preferred_
-sessions` default and scores lowest of the four tradeable, non-Asian
-sessions (55, versus Early New York's 75) in the already-Accepted quality
-table. No repository evidence supports it as the intended "New York" content;
-it is not adopted.
+**`LATE_NEW_YORK` remains excluded, unchanged from the original decision:**
+it is absent from `preferred_sessions` and scores lowest of the four
+tradeable, non-Asian sessions (55, versus Early New York's 75 and Overlap's
+100) in the same already-Accepted quality table. No repository evidence
+supports it as intended production content; it is not adopted.
 
 **What remains explicitly not decided here, per this task's own
-instruction:** the exact anchor clock hour/minute for either window's
-opening range. `SessionName` labels a *kind* of session (per ADR-037 §8,
-descriptive only, never the identifying key); the actual Gate B anchor
-(`opening_range_anchors` entry) that realizes "the opening range for London"
-or "the opening range for Early New York" as a concrete `(SessionName, hour,
-minute)` tuple is deployment-profile content this task explicitly reserves,
-and this document does not choose it. (`evidence_engine/config.py`'s own
-`london_session_start_hour`/`early_new_york_end_hour`-style fields describe
-*session classification* boundaries for Evidence/MI scoring — a separate
-mechanism from Gate B's `opening_range_anchors`, per ADR-037 §8/§11's
-explicit "third, independent configuration concept" language — and are not
-themselves opening-range anchor values, so they do not by themselves settle
-an anchor choice either.)
+instruction (unchanged):** the exact anchor clock hour/minute for any of
+the three windows' opening ranges. `SessionName` labels a *kind* of session
+(per ADR-037 §8, descriptive only, never the identifying key); the actual
+Gate B anchor (`opening_range_anchors` entry) that realizes "the opening
+range for London," "for the Overlap," or "for Early New York" as a concrete
+`(SessionName, hour, minute)` tuple is deployment-profile content this task
+explicitly reserves, and this document does not choose it. (`evidence_engine/
+config.py`'s own `london_session_start_hour`/`early_new_york_end_hour`-style
+fields describe *session classification* boundaries for Evidence/MI
+scoring — a separate mechanism from Gate B's `opening_range_anchors`, per
+ADR-037 §8/§11's explicit "third, independent configuration concept"
+language — and are not themselves opening-range anchor values, so they do
+not by themselves settle an anchor choice either.)
+
+**Feasibility note (independent review, not a decision):** `evidence_engine/
+config.py::_validate_no_overlapping_anchors` rejects only configured anchors
+whose actual `[range_start, range_end)` opening-range windows coincide or
+overlap in clock time — it does not reject two anchors merely because their
+parent sessions' broader hour ranges overlap. Since each of the three
+windows' opening range would naturally be anchored near that session's own
+start (London near its open, Overlap near its own start, Early New York near
+its own start), configuring all three as simultaneously valid, non-colliding
+Gate B anchors is expected to remain feasible — this is not, and is not
+treated as, a blocker to the three-window decision above; the exact anchor
+values themselves remain unresolved and deployment-profile content, per this
+task's instruction not to choose clock times here.
 
 ## 6. Session configurability contract (restated, not altered)
 
@@ -196,10 +248,14 @@ the frame this policy operates inside:
 - Enabled windows are configuration-driven, never a code constant.
 - Zero, one, two, or more windows remain architecturally representable at
   all times.
-- **This decision's choice of two (London, Early New York) is production
-  policy content, not an architectural bound** — nothing in the
-  Opportunity Selection Engine or Runtime may hardcode "exactly two" or
-  name either session directly; both must be ordinary configured entries.
+- **This decision's choice of three (London, London–New York Overlap,
+  Early New York) is production policy content, not an architectural
+  bound** — nothing in the Opportunity Selection Engine or Runtime may
+  hardcode "exactly three," or any specific count, or name any of the three
+  sessions directly; all must be ordinary configured entries, and a
+  deployment enabling zero, one, two, three, or more valid configured
+  windows remains equally supported by the architecture regardless of
+  which count this initial production policy happens to choose.
 - Enabling or disabling a window is a configuration change only, never a
   selection-architecture change.
 
@@ -219,12 +275,14 @@ implementation Plan, exactly as Research §10 and ADR-037 §17 already state.
 
 **No anchor hour/minute values are chosen.** The only relationship this
 decision requires, restating ADR-037 §7–§9/§11 without alteration: each of
-the two initial production windows (London, Early New York) must resolve,
-when eventually configured, to its own valid, non-overlapping Gate B anchor
-entry; each window's `range_start` and selection are computed and resolved
-independently (Research §9, re-confirmed, not reopened); no winner from one
-window ever carries into the other. Exact anchor clock times remain future
-deployment-profile content, not decided here.
+the three initial production windows (London, London–New York Overlap,
+Early New York) must resolve, when eventually configured, to its own valid,
+non-overlapping Gate B anchor entry; each window's `range_start` and
+selection are computed and resolved independently (Research §9, re-
+confirmed, not reopened); no winner from any one window ever carries into
+another. Exact anchor clock times remain future deployment-profile content,
+not decided here (see §5's feasibility note on why configuring all three
+simultaneously is expected to remain possible without contradiction).
 
 ## 9. Adversarial pass — proposed policy against required scenarios
 
@@ -238,12 +296,12 @@ deployment-profile content, not decided here.
 | 6 | Pair iteration order reversed | No effect — ranking is a pure function of `score` values, not input order (ADR-031 Amendment 1 §8's deterministic-assembly-order requirement, unaltered, guarantees this independently of which ranking rule is chosen) |
 | 7 | Higher score, worse-but-still-eligible liquidity | Higher-score candidate still wins — liquidity is a gate the candidate already passed, not a ranking input in v1 (§2.1) |
 | 8 | Higher score, wider-but-still-eligible spread | Same as #7 — spread is a gate, not a ranking input in v1 |
-| 9 | London winner, then independent New York scan | Each window's scan/selection is fully independent (§8, Research §9) — London's winner has no effect on New York's candidate set or outcome |
-| 10 | Same pair wins both windows independently | Explicitly permitted, unchanged from ADR-037 §9 — `range_start`-alone identity means each window is its own key |
-| 11 | London tie, New York clear winner | London: no winner (§3). New York: highest-score candidate wins. The two outcomes are computed and recorded independently; neither affects the other |
+| 9 | London winner, then independent Overlap/Early-NY scans | Each window's scan/selection is fully independent (§8, Research §9) — London's winner has no effect on either other window's candidate set or outcome |
+| 10 | Same pair wins multiple windows independently (e.g. London and Early New York, or all three) | Explicitly permitted, unchanged from ADR-037 §9 — `range_start`-alone identity means each window is its own key regardless of how many windows are enabled |
+| 11 | London tie, Early-NY clear winner (Overlap unaffected either way) | London: no winner (§3). Early New York: highest-score candidate wins. Overlap's own outcome is computed independently of both. No window's tie/no-winner or clear-winner result affects any other |
 | 12 | One enabled window | Policy applies identically — cardinality is a configuration matter (§6), not a policy-rule dependency |
-| 13 | Two enabled windows | The initial production case (§5) — no special-casing required |
-| 14 | More than two enabled windows | Policy applies identically to each window's own independent candidate set — no architectural or policy change needed for a third or later window |
+| 13 | Three enabled windows | The initial production case (§5, revised) — London, Overlap, and Early New York each scanned and selected fully independently; no special-casing required for the third window |
+| 14 | More than three enabled windows | Policy applies identically to each window's own independent candidate set — no architectural or policy change needed for a fourth or later window |
 | 15 | Disabled window | Produces no candidates for that window by construction (ADR-037 §5.C/§11) — this policy is never invoked for it |
 | 16 | Selector failure | Governed by ADR-037 §7/§12's existing fail-closed rule (zero winners, no fallback) — unaffected by, and not weakened by, this ranking/tie policy |
 | 17 | Missing ranking input (`score` itself unavailable for a candidate) | Cannot occur for a candidate that reached `QUALIFIED` status — `score` is populated as part of qualification itself (Research §3/§4); a pair that never produced a terminal front-half outcome is excluded before reaching the selector at all by ADR-037 §5.D/§7's completeness rule, unaltered here |
@@ -287,15 +345,22 @@ no config class, field, or file is created by this document.
 
 ## 11. Governance artifact and next gate
 
-Per this task's §11: no architectural contradiction was found anywhere in
-this decision pass, so no new ADR is created and ADR-037/ADR-031 Amendment 1
-are not amended. This document is the dedicated policy-decision artifact
-recording the outcome, created (per this task's own instruction) **before**
-any implementation Plan drafting, so that the policy content itself can
-receive its own independent review — consistent with this repository's
-established RPI/governance-gate discipline (every substantive artifact this
-session has received an independent review before being relied upon by the
-next step).
+No architectural contradiction was found anywhere in this decision pass or
+in the subsequent independent review, so no new ADR is created and
+ADR-037/ADR-031 Amendment 1 are not amended. This document is the dedicated
+policy-decision artifact recording the outcome, created **before** any
+implementation Plan drafting so that the policy content itself could receive
+its own independent review — consistent with this repository's established
+RPI/governance-gate discipline (every substantive artifact this session has
+received an independent review before being relied upon by the next step).
+That review has now run, found the ranking/tie/tolerance decisions sound,
+and identified the one MEDIUM finding this revision resolves (§5). **With
+this revision, the product-policy gate this document governs is closed.**
+The next appropriate governance step is drafting the ADR-037 implementation
+Plan (its own RPI Research → Plan → Implement cycle, including independent
+Plan review) — exact Gate A production pairs and Gate B anchor clock times
+remain deployment-profile decisions for that Plan (or a later deployment
+gate) to leave open, not blockers to finalizing it, per §7/§8 above.
 
 ## 12. Explicit non-authorization (restated)
 
@@ -310,14 +375,22 @@ throughout).
 ## 13. Unresolved policy decisions (explicitly left open)
 
 - Whether a secondary ranking criterion should ever be added (not adopted
-  for v1; revisitable only via a future, separately-reviewed decision).
+  for v1; revisitable only via a future, separately-reviewed decision). The
+  independent review's LOW observation that score-clamping can produce
+  100-point ties among genuinely different candidates does not change this
+  — the existing no-winner tie policy already handles it safely, and no
+  secondary criterion is introduced on account of it.
 - The exact production Gate A pair list.
-- The exact opening-range anchor clock hour/minute for the London and Early
-  New York windows.
-- Whether `LONDON_NEW_YORK_OVERLAP` should become a third production
-  window in a later revision.
+- The exact opening-range anchor clock hour/minute for the London,
+  London–New York Overlap, and Early New York windows.
+- Whether a fourth or later window (e.g. Late New York, or a session this
+  document does not consider) should ever be added in a later revision —
+  the three-window initial policy (§5) does not foreclose this; the
+  architecture already supports it without change.
 - The Opportunity Selection Engine's own config class name/module
-  placement (recommendation given in §10; not implemented).
+  placement (recommendation given in §10; not implemented) — independently
+  reviewed and found to be a legitimate, correctly-cited precedent, still
+  left to the Plan.
 - Whether the tie-tolerance value should literally share `StrategyEngine
   Config.score_tie_tolerance` or be an independently-named field with the
   same default (Plan-level wiring decision, §4).
@@ -327,6 +400,7 @@ throughout).
 
 ---
 
-*This document is a policy-decision artifact. It requires its own
-independent policy review before it may inform an ADR-037 implementation
-Plan. It authorizes no implementation.*
+*This document is a policy-decision artifact. It has received its own
+independent policy review, which found the ranking/tie/tolerance decisions
+sound and one MEDIUM finding (session count) now resolved in this revision
+(§5). The product-policy gate is closed. It authorizes no implementation.*
