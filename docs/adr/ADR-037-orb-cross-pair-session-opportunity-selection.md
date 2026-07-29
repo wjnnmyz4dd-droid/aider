@@ -1032,14 +1032,20 @@ unmodified by it.*
 
 ---
 
-# Amendment 1 (2026-07-29, Proposed — history preserved below, not backdated) — Persistence Semantics Correction
+# Amendment 1 (2026-07-29, Accepted 2026-07-29 — history preserved below, not backdated) — Persistence Semantics Correction
 
-**Status: Proposed.** This amendment has not been independently reviewed
-or Accepted. It does not, by itself, authorize anything §1–§17 above
-does not already authorize, and it does not change ADR-037's own overall
-Accepted status for §1–§17, none of which this amendment alters in
-substance beyond the specific corrections named below (see "Unchanged
-governance," §1).
+**Status: Accepted.** This amendment's own status is now Accepted; it
+takes effect and authorizes exactly the persistence-semantics
+architectural correction §1–§8 below state — the corrected §8/§9 value/
+persistence contract, the §12 observability clarification, and the
+§14/§17 procedural updates — no more. **This Acceptance does not
+authorize implementation of ADR-037's architecture, any ranking/tie/
+session-production-policy decision, Gate A/Gate B activation, ADR-036
+legacy-strategy retirement, or reconciliation of the implementation Plan
+against this amendment's text** (§7 below, unchanged by this Acceptance).
+It does not change ADR-037's own overall Accepted status for §1–§17
+above, none of which this amendment alters in substance beyond the
+specific corrections named below (see "Unchanged governance," §1).
 
 **Why this amendment exists:** the independent "ADR-037 Implementation
 Plan — Final Independent Plan Re-Review" of `docs/plans/adr-037-
@@ -1078,14 +1084,34 @@ drafting this amendment; nothing here departs from the Research's own
 findings.
 
 **Governance review and acceptance history:** first drafted Proposed
-(this commit). No independent governance review has yet occurred. Per
-this repository's established amendment pattern (ADR-031 Amendment 1;
-ADR-036 Amendment 1; §17 item 2 above), this amendment requires an
-independent governance review — and, if that review finds defects, a
-revision pass — before it may be recorded as Accepted. Implementation of
-ADR-037's architecture, and reconciliation of the implementation Plan
-against this amendment's text, both remain blocked until that Acceptance
-is recorded.
+(commit `d4462de`). An independent "ADR-037 Amendment 1 — Independent
+Governance Review" of that draft re-verified the central lifecycle facts
+fresh from source (`opening_range.py`'s calendar-day-stable `range_start`
+construction; `orb_breakout.py`'s formation-period `NOT_QUALIFIED`
+behavior and its legitimate later transition to `QUALIFIED` under the
+same `range_start`; the absence of any source-derivable terminal-window
+boundary), independently re-examined the `FormationBlackoutStore`
+precedent rather than accepting it as asserted, cross-checked this
+amendment's corrected §9 against ADR-031 Amendment 1's own persistence-
+adjacent text for consistency, re-derived the full adversarial matrix,
+and confirmed no settled decision (Opportunity Selection Engine
+ownership, the shared front-half pass, pre-Risk placement, frozen-
+universe semantics, `range_start` identity, enabled-window cardinality,
+the structural-readiness invariant, ranking/tie policy, the initial
+session policy, liquidity/spread gates, no-runner-up-fallback, the
+ADR-036 relationship, ADR-031 Amendment 1, or Gate A/B values) was
+reopened. That review found the amendment's core correction sound and
+identified one LOW, non-blocking wording-precision observation (§17's
+described renumbering does not restate the renumbered item's own
+internal cross-reference text) — comparable in kind and severity to
+ADR-031 Amendment 1's own disclosed, non-blocking F1 finding, and, per
+that same precedent, not corrected in this Acceptance. That review
+returned: **ADR-037 AMENDMENT 1 CONFORMS — ACCEPTED**. This entry now
+formally records that Acceptance. Implementation of ADR-037's
+architecture, and reconciliation of the implementation Plan against this
+amendment's now-Accepted text, remain blocked until the implementation
+Plan is itself revised to reconcile with this amendment and that revision
+passes its own independent Plan re-review.
 
 ## 1. Unchanged governance (stated explicitly, not left implicit)
 
@@ -1413,15 +1439,21 @@ This amendment does **not** authorize, decide, reopen, or imply:
 - ✓ No settled decision named in §1/§7 above is reopened.
 - ✓ No concrete store API, locking mechanism, data structure, test name,
   or implementation sequencing is specified by this amendment (§7).
-- ✓ This amendment remains **Proposed** and self-evidently does not mark
-  itself Accepted.
+- ✓ This amendment's status above records **Accepted**, per the
+  independent governance review's `ADR-037 AMENDMENT 1 CONFORMS —
+  ACCEPTED` disposition — Acceptance of the architectural correction
+  only, not of implementation (§7 above, unchanged).
 
 ---
 
-*This amendment is Proposed. It requires its own independent governance
-review before Acceptance. It does not authorize implementation of
-ADR-037's architecture, any ranking/tie/session-production-policy
-decision, Gate A/Gate B activation, ADR-036 legacy-strategy retirement,
-or reconciliation of the implementation Plan against this amendment's
-text. The ADR-035 Phase 5 anchor hour/minute validation follow-up
-remains separately gated, unauthorized, and out of scope.*
+*This amendment is Accepted, following independent governance review
+(`ADR-037 AMENDMENT 1 CONFORMS — ACCEPTED`). It authorizes only the
+persistence-semantics architectural correction recorded above. It does
+not authorize implementation of ADR-037's architecture, any ranking/tie/
+session-production-policy decision, Gate A/Gate B activation, ADR-036
+legacy-strategy retirement, or reconciliation of the implementation Plan
+against this amendment's text — that reconciliation, and its own
+independent Plan re-review, are the required next steps before
+implementation may proceed. The ADR-035 Phase 5 anchor hour/minute
+validation follow-up remains separately gated, unauthorized, and out of
+scope.*
