@@ -660,6 +660,7 @@ class RuntimeOrchestrator:
             # never `None` here.
             winning_strategy = result.strategy.winning_strategy
             window = None
+            candidate_range_start = None
             if winning_strategy.strategy_id is StrategyId.OPENING_RANGE_BREAKOUT:
                 candidate_range_start = winning_strategy.qualification.range_start
                 # Invariant, verified directly against `orb_breakout.py`'s
@@ -673,12 +674,54 @@ class RuntimeOrchestrator:
                 if candidate_range_start is not None:
                     window = enabled_range_starts.get(candidate_range_start)
 
-            if window is None:
+            # ADR-037 SS11 item 2 / SS12's defense-in-depth backstop
+            # (adversarial-review row 18): a genuine, currently-relevant
+            # ORB win whose own range_start does not match any enabled
+            # window is, by construction, either an ordinary non-enabled/
+            # narrow-Gate-A configuration (inert, ADR-authorized -- SS11
+            # item 3) or -- only when `cross_pair_selection_enabled` is
+            # `True` -- the exact startup-invariant-bypass SS11 item 2
+            # describes. The startup check (`validate_profile()`) is the
+            # primary defense; this is only the required backstop if it
+            # is ever bypassed anyway. Distinguishing this case from an
+            # ordinary legacy-strategy winner needs no additional lookup
+            # against `evidence_config.opening_range_anchors` -- ORB
+            # having produced a QUALIFIED result with a real
+            # `range_start` already proves a genuine Gate B anchor exists
+            # for it; the only question is whether that anchor's own
+            # window was ever enabled.
+            anchor_not_enabled_while_selection_active = (
+                window is None
+                and candidate_range_start is not None
+                and self.opportunity_selection_engine is not None
+                and self.opportunity_selection_engine.config.cross_pair_selection_enabled
+            )
+
+            if anchor_not_enabled_while_selection_active:
+                # SS12's "must emit distinct signals" requirement: never
+                # conflated with ordinary "no candidates"/non-participating
+                # observability. SS12's own "Absolute requirement": this
+                # encounter must result in zero pairs proceeding for this
+                # range_start this cycle -- fail closed, never fall back
+                # to unrestricted execution.
+                _log_anchor_not_enabled_for_selection(pair, candidate_range_start)
+                if self.metrics is not None:
+                    self.metrics.record_cycle()
+                records.append(self._build_audit_record(
+                    cycle_id, pair, profile, result.started_at, now, result.stage_timings,
+                    CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW, CycleStage.STRATEGY,
+                    evidence_id=result.evidence_id,
+                    selected_strategy=StrategyId.OPENING_RANGE_BREAKOUT,
+                    trade_intent=result.strategy.trade_intent,
+                    reasons=("currently-relevant opening range anchor is not enabled for cross-pair selection",),
+                    evidence=result.evidence, market_intelligence=result.market_intelligence,
+                ))
+            elif window is None:
                 # Non-participating: a legacy-strategy winner, an ORB
                 # result whose range belongs to a non-enabled or
-                # unconfigured window, or no formed range at all.
-                # Proceeds immediately, unmodified -- no waiting, no
-                # added latency.
+                # unconfigured window (with cross-pair selection not
+                # active), or no formed range at all. Proceeds
+                # immediately, unmodified -- no waiting, no added latency.
                 records.append(self._run_back_half(result, portfolio_state, trade_history, account_state, profile, now, cycle_id))
             else:
                 # Barrier participant: hold for this window's
@@ -791,6 +834,24 @@ def _log_opportunity_selection_failure(range_start: datetime, session_name, exc:
             extra={"range_start": range_start.isoformat(), "session_name": session_name.value, "error": repr(exc)},
         )
     except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_anchor_not_enabled_for_selection(pair: str, range_start: datetime) -> None:
+    """ADR-037 SS12's own required, distinct runtime signal: a pair's
+    currently-relevant opening-range anchor has no matching enabled
+    window while cross-pair selection is declared active (SS11 item 2's
+    defense-in-depth backstop, adversarial-review row 18) -- never
+    conflated with the ordinary 'no candidates'/non-participating
+    signals, since it indicates the startup-time invariant was either
+    bypassed or is itself defective and warrants distinct operator
+    attention."""
+    try:
+        _logger.error(
+            "opportunity_anchor_not_enabled_for_selection",
+            extra={"pair": pair, "range_start": range_start.isoformat()},
+        )
+    except Exception:  # noqa: BLE001 -- logging must never fail closed-in-the-wrong-direction
         pass
 
 

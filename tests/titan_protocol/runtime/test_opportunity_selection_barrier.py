@@ -123,9 +123,12 @@ class _BarrierTestCase(unittest.TestCase):
         self.addCleanup(self._tmpdir.cleanup)
         self.state_file = Path(self._tmpdir.name) / "opportunity_winners.json"
 
-    def _make_selection_engine(self, enabled_windows=(), tie_tolerance=0.5) -> OpportunitySelectionEngine:
+    def _make_selection_engine(self, enabled_windows=(), tie_tolerance=0.5, cross_pair_selection_enabled=False) -> OpportunitySelectionEngine:
         store = OpportunityWinnerStore(self.state_file)
-        config = OpportunitySelectionEngineConfig(enabled_windows=enabled_windows, tie_tolerance=tie_tolerance)
+        config = OpportunitySelectionEngineConfig(
+            enabled_windows=enabled_windows, tie_tolerance=tie_tolerance,
+            cross_pair_selection_enabled=cross_pair_selection_enabled,
+        )
         return OpportunitySelectionEngine(config, store, opening_range_duration_minutes=30)
 
     def _make_orchestrator(self, strategy_stub, opportunity_selection_engine=None, risk=None, compliance=None) -> RuntimeOrchestrator:
@@ -357,6 +360,100 @@ class TestWinnerImmutabilityAcrossCycles(_BarrierTestCase):
         # GBPUSD's dramatically higher score this cycle.
         self.assertEqual(winner2["EURUSD"], CycleOutcome.SUBMITTED)
         self.assertEqual(winner2["GBPUSD"], CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
+
+
+class TestAnchorNotEnabledForSelectionFailsClosedWithDistinctSignal(_BarrierTestCase):
+    """ADR-037 SS11 item 2 / SS12's defense-in-depth backstop (adversarial-
+    review row 18, post-implementation correction): a genuine, currently-
+    relevant ORB win whose range_start matches no enabled window, while
+    `cross_pair_selection_enabled` is `True`, must (a) emit a distinct
+    runtime signal, never conflated with ordinary non-participating
+    observability, and (b) never reach Risk -- fail closed, exactly as
+    SS12's "Absolute requirement" states."""
+
+    def test_pair_never_reaches_risk_and_distinct_signal_is_emitted(self):
+        pairs = ("EURUSD",)
+        strategy_stub = _PerPairStrategyStub({"EURUSD": _orb_snapshot("EURUSD", 80.0)}, pairs)
+        # No enabled windows at all -- EURUSD's own range_start (T0)
+        # cannot match anything, exactly the "anchor not enabled"
+        # scenario, with selection declared active.
+        engine = self._make_selection_engine(enabled_windows=(), cross_pair_selection_enabled=True)
+        risk_stub = make_stub_risk_engine()
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        orchestrator.risk_engine = risk_stub
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {"EURUSD": (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())}
+
+        with self.assertLogs("titan_protocol.runtime.engine", level="ERROR") as logs:
+            report = orchestrator.run_cycle(pairs, profile, inputs, T0, "CYCLE-1")
+
+        self.assertEqual(len(report.records), 1)
+        record = report.records[0]
+        self.assertEqual(record.outcome, CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
+        self.assertIn("not enabled for cross-pair selection", record.reasons[0])
+        self.assertEqual(risk_stub.call_count, 0, "the pair must never reach Risk in this scenario")
+        self.assertTrue(
+            any("opportunity_anchor_not_enabled_for_selection" in line for line in logs.output),
+            f"expected the distinct SS12 signal in logs, got: {logs.output}",
+        )
+
+
+class TestAnchorNotEnabledForSelectionInactiveProceedsUnchanged(_BarrierTestCase):
+    """Regression proof: when `cross_pair_selection_enabled` is `False`
+    (the default, matching production wiring today), the identical
+    "anchor matches no enabled window" scenario proceeds exactly as
+    before this correction -- immediately, unrestricted -- since SS11
+    item 3's narrow/inert flavor never requires suppression."""
+
+    def test_pair_proceeds_to_risk_when_selection_is_not_active(self):
+        pairs = ("EURUSD",)
+        strategy_stub = _PerPairStrategyStub({"EURUSD": _orb_snapshot("EURUSD", 80.0)}, pairs)
+        engine = self._make_selection_engine(enabled_windows=())  # cross_pair_selection_enabled defaults False
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {"EURUSD": (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())}
+
+        report = orchestrator.run_cycle(pairs, profile, inputs, T0, "CYCLE-1")
+
+        self.assertEqual(report.records[0].outcome, CycleOutcome.SUBMITTED)
+
+    def test_no_opportunity_selection_engine_at_all_proceeds_unchanged(self):
+        pairs = ("EURUSD",)
+        strategy_stub = _PerPairStrategyStub({"EURUSD": _orb_snapshot("EURUSD", 80.0)}, pairs)
+        orchestrator = self._make_orchestrator(strategy_stub, opportunity_selection_engine=None)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {"EURUSD": (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())}
+
+        report = orchestrator.run_cycle(pairs, profile, inputs, T0, "CYCLE-1")
+
+        self.assertEqual(report.records[0].outcome, CycleOutcome.SUBMITTED)
+
+
+class TestLegacyWinnerUnaffectedWhenSelectionActiveAndAnchorMismatchOccurs(_BarrierTestCase):
+    """Proves the correction is isolated: an ordinary legacy-strategy
+    winner in the *same* cycle as an anchor-not-enabled ORB suppression
+    still proceeds to Risk exactly as always -- the new check never
+    touches non-ORB routing."""
+
+    def test_legacy_winner_still_proceeds_while_orb_anchor_mismatch_is_suppressed(self):
+        pairs = ("EURUSD", "GBPUSD")
+        strategy_stub = _PerPairStrategyStub(
+            {"EURUSD": _legacy_winner_snapshot("EURUSD"), "GBPUSD": _orb_snapshot("GBPUSD", 80.0)}, pairs,
+        )
+        engine = self._make_selection_engine(enabled_windows=(), cross_pair_selection_enabled=True)
+        orchestrator = self._make_orchestrator(strategy_stub, engine)
+        profile = make_profile(allowed_pairs=pairs)
+        inputs = {
+            pair: (make_bars(), (), 1.0, 1.0, make_market_safety_inputs(), PortfolioState(), None, make_account_state())
+            for pair in pairs
+        }
+
+        with self.assertLogs("titan_protocol.runtime.engine", level="ERROR"):
+            report = orchestrator.run_cycle(pairs, profile, inputs, T0, "CYCLE-1")
+
+        by_pair = {r.pair: r for r in report.records}
+        self.assertEqual(by_pair["EURUSD"].outcome, CycleOutcome.SUBMITTED)
+        self.assertEqual(by_pair["GBPUSD"].outcome, CycleOutcome.NOT_SELECTED_OPPORTUNITY_WINDOW)
 
 
 if __name__ == "__main__":

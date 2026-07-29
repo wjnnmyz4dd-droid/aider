@@ -240,6 +240,17 @@ class TestGitDiffTouchesNoUnrelatedPackage(unittest.TestCase):
             # changed, reuses BridgeConfig's existing
             # heartbeat_timeout_seconds as the log threshold.
             "tests/deployment_windows/test_positions_staleness_observability.py",
+            # ADR-037 post-implementation conformance correction: closes
+            # two findings from an independent post-implementation review
+            # (b526ae1) -- a distinct runtime observability signal plus
+            # fail-closed suppression for ADR-037 SS11 item 2/SS12's
+            # defense-in-depth backstop (titan_protocol/runtime/engine.py,
+            # already covered by "titan_protocol/" above, plus its test
+            # file, already covered by "tests/titan_protocol/" above), and
+            # an administrative-only update to this Plan document's own
+            # status/history recording the authorization-through-review
+            # chain -- no architecture or implementation design altered.
+            "docs/plans/adr-037-implementation-plan.md",
         )
 
         def is_allowed(path: str) -> bool:

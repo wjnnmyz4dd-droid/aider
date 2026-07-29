@@ -1,11 +1,14 @@
 # Plan — ADR-037 Implementation (Opportunity Selection Engine + Runtime Barrier)
 
-Status: **Plan — revised after independent review; awaiting independent
-re-review. No implementation performed by this document.** Written per
-`.claude/commands/rpi/plan.md` (RPI Plan phase, `TEAM.md` §9). Acting as
-**Software Architect** (this change introduces a new engine/package and
-crosses the `runtime` / `strategy_engine` package boundary —
-`.claude/commands/rpi/plan.md`'s own routing rule).
+Status: **Plan — independently re-reviewed and authorized; implementation
+performed under this Plan at commit `b526ae1`, and post-implementation
+conformance-reviewed once already (findings below, correction in
+progress). This document remains the Plan artifact; it records but does
+not itself perform implementation.** Written per `.claude/commands/rpi/
+plan.md` (RPI Plan phase, `TEAM.md` §9). Acting as **Software Architect**
+(this change introduces a new engine/package and crosses the `runtime` /
+`strategy_engine` package boundary — `.claude/commands/rpi/plan.md`'s own
+routing rule). See §15 for the full authorization-through-review chain.
 
 **Revision history:** first finalized at commit `cac2ba0`. An independent
 "ADR-037 Implementation Plan — Independent Plan Review" re-derived every
@@ -1256,6 +1259,85 @@ runner-up fallback policy; the ADR-035 Phase 5 anchor hour/minute
 validation follow-up (separately gated, unrelated throughout); or any
 change to Risk, Compliance, or Bridge behavior (all VERIFIED UNCHANGED,
 §8).
+
+## 15. Authorization, implementation, and post-implementation review (administrative record)
+
+This section records, without altering, the governance events after this
+document's third revision (§13) — the Plan's own design (§1–§11) is
+unchanged by anything in this section.
+
+**Final independent Plan re-review.** After the third revision above, a
+further independent "ADR-037 Implementation Plan — Final Independent
+Plan Re-Review" re-derived every remaining claim fresh from source and
+returned **ADR-037 IMPLEMENTATION PLAN CONFORMS — IMPLEMENTATION
+AUTHORIZED UNDER THE REVIEWED PLAN**, with no outstanding finding against
+this document. That disposition is recorded here as the durable governance
+artifact of record; it authorized the implementation pass below.
+
+**Implementation.** An `/rpi:implement`-equivalent pass ("ADR-037 —
+Opportunity Selection Engine Implementation Pass") implemented this Plan
+exactly, adding `titan_protocol/opportunity_selection_engine/`,
+restructuring `titan_protocol/runtime/engine.py` (front/back-half split
+plus the cross-pair barrier), extending `titan_protocol/runtime/
+validation.py` additively, and wiring inert defaults into
+`deployment_windows/start.py`. Landed at commit `b526ae1`. Two
+implementation-time gaps in this Plan's own specification were
+discovered and corrected as behavior-preserving completions, not
+architectural deviations: (1) `_FrontHalfResult`'s field list (§3) omitted
+`pair`, which this Plan's own "byte-for-byte identical observable
+behavior" guarantee (§3) required; a `pair` field carrying the
+caller-supplied value (never `strategy.pair`) was added. (2) `run_cycle()`
+predates this Plan (it already existed as a plain per-pair loop with its
+own existing direct callers using Strategy Engine stubs lacking
+`.config`); the new `tracked_pairs` computation was gated behind
+`opportunity_selection_engine is not None` so those existing callers
+remain unaffected, exactly as this Plan's own additive-collaborator
+pattern (§1, mirroring `bridge_submit`/`in_flight_commands`) already
+requires.
+
+**Post-implementation conformance review (first pass).** A fresh,
+independent, read-only "ADR-037 — Final Independent Post-Implementation
+Conformance Review" at `b526ae1` re-derived every claim against ADR-037
+base, Amendment 1, ADR-031 + Amendment 1, the closed product-policy
+decision, and this Plan directly from source — never trusting the
+implementation's own report. It found no capital-preservation defect, no
+unauthorized architectural deviation, and Gate A/B/legacy-strategy/
+`cross_pair_selection_enabled` all confirmed untouched, but returned
+**ADR-037 IMPLEMENTATION REQUIRES CORRECTION** on two findings: (1) a
+governance-record gap — this Plan document's own status header had not
+been updated to reflect the final-authorization disposition above (§15
+now closes this); (2) ADR-037 §12's explicit "must emit distinct
+signals" requirement for "a pair's currently-relevant Gate B anchor has
+no matching enabled session, encountered at runtime" (§11 item 2's
+defense-in-depth backstop, adversarial-review row 18) was not
+implemented — `run_cycle()`'s non-participating path treated this case
+identically to an ordinary legacy-strategy winner, with no distinguishing
+signal, and (on closer reading of row 18's "fail-closed suppression"
+language during the subsequent correction pass) no suppression either
+when `cross_pair_selection_enabled` is `True`. Three further low-severity,
+non-blocking observations were also recorded (stale-window log volume
+across multiple enabled windows; `SessionName` sourced indirectly via
+`strategy_engine.models` rather than its origin module; no
+Runtime-layer, as opposed to store-layer, concurrency test).
+
+**Targeted correction pass.** A narrowly-scoped correction (commit
+recorded in `CHANGELOG.md`/git history following this revision) closed
+both blocking findings: it added the distinct runtime observability
+signal §12 requires, added fail-closed suppression (gated strictly on
+`cross_pair_selection_enabled`, still inert today since that flag is
+`False` in production wiring) for the row-18 misconfiguration-backstop
+case, and updated this Plan document's own status/history (this
+section). It did not redesign ranking/tie/persistence policy, activate
+Gate A/B, choose production pairs/anchors/clock values, retire legacy
+strategies, add runner-up fallback, or perform ADR-035 Phase 5 work. Its
+own validation and file-level detail are recorded in the implementation's
+commit message and the subsequent independent re-review, not duplicated
+here.
+
+**This Plan does not declare its own conformance.** Final conformance of
+the implementation (as corrected) requires a further independent
+post-implementation conformance re-review; that re-review's own
+disposition, not this section, is authoritative.
 
 ---
 
