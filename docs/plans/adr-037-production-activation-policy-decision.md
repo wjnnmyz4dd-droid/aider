@@ -1,17 +1,18 @@
 # Policy Decision — ADR-037 Production Activation
 
-Status: **Partial policy decision.** The activation-mechanics and
-pre-activation-process questions (§C, §D below) are decided by this
-document. **The two principal value decisions — the exact Gate A pair
-list and the exact Gate B anchor hour/minute values — are not resolved
-here.** Independent re-verification of every authoritative source this
-repository contains (ADR-036 + Amendment 1, ADR-037 + Amendment 1, the
-ranking/tie/session-policy Decision document, ADR-035, and Research
-Engine's own pair-intelligence module) confirms neither value is
-uniquely determined by existing evidence — each requires a genuine,
-irreducible product choice this document does not manufacture. This
-document amends no ADR, implements no code, and does not authorize
-production activation.
+Status: **Policy decision finalized.** The activation-mechanics/
+pre-activation-process questions (§C, §D) and, following an explicit
+user decision, the two principal value questions (§A Gate A pair list,
+§B Gate B anchor clock values) are now all resolved by this document.
+Neither value decision was manufactured from evidence — repository
+evidence independently confirmed (below, and in the prior revision of
+this document) that neither is uniquely determined by anything already
+Accepted; both were supplied as an explicit user decision, recorded
+here verbatim, and independently verified for structural compatibility
+with every governing constraint this repository already enforces. This
+document amends no ADR and does not itself implement code or authorize
+production activation — it records the policy that a future Activation
+Plan implements.
 
 Depends on: ADR-037 (Accepted, base + Amendment 1); ADR-031 Amendment 1
 (Accepted); ADR-036 (Accepted, base + Amendment 1);
@@ -19,11 +20,11 @@ Depends on: ADR-037 (Accepted, base + Amendment 1); ADR-031 Amendment 1
 policy gate closed for ranking/tie/session-identity); the ADR-037
 implementation, independently re-reviewed conformant through `aed4e65`;
 `docs/plans/adr-037-production-activation-research.md` (the Research
-artifact this document closes what it can of).
+artifact this document closes).
 
 ## 0. Repository / governance baseline (re-verified fresh for this pass)
 
-- Branch `claude/phantom-ea-visibility-cjjf3a`, HEAD `ea53932`, clean
+- Branch `claude/phantom-ea-visibility-cjjf3a`, HEAD `cea4a96`, clean
   tree, in sync with upstream, before this pass began.
 - ADR-037 base: Accepted (status header, re-read directly). Amendment 1
   (Persistence Semantics Correction): Accepted 2026-07-29 (re-read
@@ -41,7 +42,7 @@ artifact this document closes what it can of).
 - 6 `StrategyId` members; `build_default_registry()` contains exactly
   the 5 legacy strategies, ORB absent.
 
-## A. Gate A — initial production ORB pair universe
+## A. Gate A — initial production ORB pair universe — decided
 
 **Architectural eligibility vs. deployment availability vs. trading-
 policy preference, explicitly separated:**
@@ -96,14 +97,32 @@ specific list:**
   constrain *how a named pair must behave to qualify*, not *which pairs
   should be named*.
 
-**Conclusion — Gate A: USER DECISION REQUIRED.** The irreducible choice
-remaining is exactly: **which specific pairs (at minimum 2, all already
-present in, or to be added to, `bridge.allowed_symbols`) should
-initially be granted ORB eligibility.** This document does not
-manufacture a ranking, threshold, or preference to answer it — no such
-evidence exists to manufacture it from.
+**Decision (user-supplied, recorded verbatim): initial Gate A production
+pair list is `EURUSD, GBPUSD, USDJPY`.** This is a trading-policy
+preference, not a conclusion derived from repository evidence — none
+exists to derive it from (above). Independently re-verified for
+structural compatibility, not merely accepted on faith:
 
-## B. Gate B — anchor hour/minute values for the three initial windows
+- All three pairs are already present in the shipped example config's
+  `bridge.allowed_symbols` (`EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD,
+  USDCAD, NZDUSD`, re-read directly) — **no widening of Bridge's own
+  symbol universe is required** for this specific list, unlike the
+  general case §1 of the Research artifact flagged.
+- Width is 3, satisfying `validate_profile()` check 4's `>1` requirement
+  when `cross_pair_selection_enabled=True` (re-verified against the live
+  check, not merely cited).
+- All three already appear in multiple legacy strategies' own pair
+  lists (`_LIQUIDITY_SWEEP_MSS_PAIRS`, `_BOS_FVG_PAIRS`,
+  `_TREND_CONTINUATION_PAIRS`) — a pre-existing, already-Accepted signal
+  that these three are considered tradeable, liquid majors in this
+  deployment's own established convention, though this observation is
+  offered only as corroborating context, not as the basis this document
+  used to choose them (the choice itself is the user's).
+
+No further Gate A decision is required before an Activation Plan may be
+drafted.
+
+## B. Gate B — anchor hour/minute values for the three initial windows — decided
 
 **Session identity vs. clock-time realization, explicitly separated:**
 the Decision document §5 (re-read directly, Accepted product policy)
@@ -178,12 +197,32 @@ unauthorized by that amendment. No other Accepted document in the
 repository assigns UTC clock values to Gate B anchors for these three
 sessions.
 
-**Conclusion — Gate B: USER DECISION REQUIRED.** The irreducible choice
-remaining is exactly: **the UTC anchor hour/minute for each of London,
-London–New York Overlap, and Early New York's opening range**, subject
-only to the already-governed non-overlap constraint (feasible, not
-chosen, by this document) and the already-Accepted DST-is-an-operator-
-responsibility convention (inherited, not invented, by this document).
+**Decision (user-supplied, recorded verbatim): Gate B anchors are London
+08:00 UTC, London–New York Overlap 13:00 UTC, Early New York 13:30
+UTC** — i.e. `opening_range_anchors = ((SessionName.LONDON, 8, 0),
+(SessionName.LONDON_NEW_YORK_OVERLAP, 13, 0), (SessionName.EARLY_
+NEW_YORK, 13, 30))`. This is a deployment-profile clock-time choice, not
+a conclusion derived from repository evidence — none exists to derive
+it from (above). Independently re-verified for structural compatibility
+against the actual validator, not merely by arithmetic:
+
+- Constructed a real `EvidenceEngineConfig` with exactly these three
+  anchors (default `opening_range_duration_minutes=30`) — construction
+  succeeds with no `ValueError` from `_validate_no_overlapping_anchors`
+  or any other `__post_init__` check.
+- The three resulting windows are `[08:00, 08:30)`, `[13:00, 13:30)`,
+  `[13:30, 14:00)` — Overlap and Early New York are exactly
+  back-to-back (Overlap's `range_end` equals Early New York's
+  `range_start`), which `_validate_no_overlapping_anchors`'s own
+  half-open-interval test (`start_i < end_j and start_j < end_i`)
+  correctly treats as adjacent, not overlapping — independently
+  computed and confirmed against the live check, not assumed.
+- DST handling for these three values follows the already-Accepted,
+  repository-wide operator-runbook convention (above) — no new
+  mechanism is introduced or required by choosing these specific hours.
+
+No further Gate B decision is required before an Activation Plan may be
+drafted.
 
 ## C. Activation/config policy — decided
 
@@ -276,6 +315,14 @@ implementation, not assumed from a prior report.
 
 ## Decisions made (this document)
 
+- **A: Gate A production pair list is `EURUSD, GBPUSD, USDJPY`**
+  (user-supplied; independently re-verified structurally compatible —
+  all three already in `bridge.allowed_symbols`, width `>1`).
+- **B: Gate B anchors are London 08:00 UTC, London–New York Overlap
+  13:00 UTC, Early New York 13:30 UTC** (user-supplied; independently
+  re-verified against the live `_validate_no_overlapping_anchors` check
+  — no overlap, adjacent-but-touching Overlap/Early-New-York windows
+  accepted).
 - C1: production `enabled_windows`/`cross_pair_selection_enabled`
   values originate from the same deployment JSON config file as Gate
   A/B, via a dedicated OSE-owned config section.
@@ -288,15 +335,10 @@ implementation, not assumed from a prior report.
 - C4: a `bridge_submit=None` dry-run phase, using the full intended
   production configuration, is mandatory before live activation.
 
-## Unresolved decisions (explicitly left open — USER DECISION REQUIRED)
+## Unresolved decisions
 
-- **The exact Gate A production pair list** (§A) — no repository
-  evidence uniquely determines it.
-- **The exact Gate B anchor UTC hour/minute for London, London–New York
-  Overlap, and Early New York** (§B) — no repository evidence uniquely
-  determines it; the DST *handling policy* is resolved (operator
-  runbook responsibility, per existing convention), but the *initial
-  values themselves* are not.
+None remaining for §A/§B or §C. All product-policy and process
+decisions this document's scope covers are now closed.
 
 ## Recommendations not yet binding
 
@@ -320,30 +362,41 @@ implementation, not assumed from a prior report.
 
 ## Explicit authorization boundaries
 
-This document authorizes nothing beyond the four process decisions in
-§C. It does not authorize: Gate A or Gate B activation; any exact
-production pair, anchor, or clock value; `cross_pair_selection_
-enabled=True`; the `enabled_windows` config-loading code change;
-legacy-strategy retirement; runner-up fallback; ADR-035 Phase 5 work.
-Production activation remains unauthorized regardless of this
-document's disposition.
+This document records policy (§A, §B, §C) — it does not itself
+implement, configure, or activate anything. It authorizes an
+Activation Plan to be drafted using the pair list and anchor values
+recorded in §A/§B and the process decisions in §C. **It does not
+authorize:** actually writing these values into Gate A
+(`approved_pairs_by_strategy`) or Gate B (`opening_range_anchors`) in
+any deployment config; setting `cross_pair_selection_enabled=True`;
+the `enabled_windows` config-loading code change (C1); legacy-strategy
+retirement; runner-up fallback; ADR-035 Phase 5 work. Production
+activation remains unauthorized regardless of this document's
+disposition — that requires the future Activation Plan's own
+independent review and, ultimately, an explicit separate authorization
+to deploy.
 
 ## Validation (this pass)
 
 `compileall` clean (`titan_protocol`, `tests`, `deployment_windows`).
 Targeted suites re-run fresh: `opportunity_selection_engine` (68),
 `runtime` (189), architecture/structural-boundary suites (5 files, 27
-tests) — all green. Gate A closed; Gate B empty;
+tests) — all green. The Gate B anchor tuple's overlap-safety
+(`_validate_no_overlapping_anchors`) was independently re-verified by
+constructing a real `EvidenceEngineConfig` with the exact decided
+anchors, not merely by arithmetic. Gate A closed; Gate B empty;
 `cross_pair_selection_enabled=False`; 6 `StrategyId` members; legacy
-registry intact (5 strategies, ORB absent); clean tree before, during,
-and after this pass; diff confined to this one new documentation
-artifact.
+registry intact (5 strategies, ORB absent) — all reconfirmed unchanged
+in the shipped deployment config; clean tree before, during, and after
+this pass; diff confined to this one modified documentation artifact.
 
 ---
 
 *This document is a policy-decision artifact. It closes four process
-questions (§C) on existing architectural precedent. It does not close,
-and does not attempt to close by inventing evidence, the two remaining
-irreducible product choices (§A, §B) — those require the user's own
-decision. It amends no ADR and authorizes no implementation or
-activation.*
+questions (§C) and, per the user's explicit decision, the two
+principal product-policy value questions (§A Gate A pairs, §B Gate B
+anchors) — the latter two independently re-verified for structural
+compatibility, not merely recorded on faith. It amends no ADR and
+authorizes no implementation, configuration change, or activation —
+those remain the future Activation Plan's own scope, itself subject to
+independent review before any deployment.*
