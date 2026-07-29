@@ -31,7 +31,7 @@ already-held `self.evidence_engine.config` reference, never invented or
 recomputed. Every other section is reconciled against these fixes (§8–§11
 below).
 
-**Second revision (this document, building on `e139076`):** a subsequent
+**Second revision (`0388595`, building on `e139076`):** a subsequent
 independent "ADR-037 Implementation Plan — Independent Plan Re-Review"
 found one HIGH finding — the persistence design would durably persist a
 "no winner" outcome (zero candidates, or an unresolved tie) starting from
@@ -42,21 +42,48 @@ calendar-day-stable (`evidence_engine/opening_range.py`), idempotency on
 that persisted `None` would then silently prevent any later legitimate
 breakout from ever being selected for the rest of that day — plus one LOW
 finding (two duplicated text blocks in §5) and a sequential-re-invocation
-proof-coverage observation for §10. This revision fixes the HIGH finding
+proof-coverage observation for §10. That revision fixed the HIGH finding
 by never persisting a "no winner this cycle" outcome at all (§1/§6): only
 a genuine, single winning pair is ever durably written; the key remains
 absent until then, so every pre-winner cycle stays freely re-computable
-with no invented "window closed" boundary, while a genuine winner, once
-persisted, remains permanently locked exactly as ADR-037 §9 requires. Both
-duplicated §5 blocks are removed, and §10 gains six new multi-cycle
-lifecycle tests including a sequential (non-concurrent) same-window
-re-invocation case. See §11 row 18 and §13 for the full disposition.
+with no invented "window closed" boundary. Both duplicated §5 blocks were
+removed, and §10 gained six new multi-cycle lifecycle tests including a
+sequential (non-concurrent) same-window re-invocation case.
+
+**Third revision (this document, building on `0388595`) — reconciliation
+with ADR-037 Amendment 1:** a further independent "ADR-037 Implementation
+Plan — Final Independent Plan Re-Review" found that, although the second
+revision's winner-only persistence design was correct, it could not be
+reconciled with ADR-037 §8/§9's own text as then written, which stated
+unconditionally that "the fact that no winner was selected must be
+recorded... in a ... persisted store" — a governance-textual gap between
+the Plan and its own governing, Accepted ADR, not an architectural defect.
+That gap has since been closed by governance action, not by this Plan: a
+dedicated Research pass (`docs/plans/adr-037-persistence-semantics-
+amendment-research.md`, `1f374d3`) traced ORB's multi-cycle lifecycle from
+source and recommended a governance amendment; **ADR-037 Amendment 1 —
+Persistence Semantics Correction was drafted, independently reviewed, and
+formally recorded as Accepted (`340f713`)**, correcting §8/§9 to state
+exactly the winner-only contract this Plan already implements. This
+revision reconciles the Plan's own language with that now-Accepted text
+(§1, §6, §11 row 18) — no architectural or behavioral change was required,
+since the Plan's design already conformed to what Amendment 1 now
+requires; only the Plan's framing (previously an argued deviation from an
+unamended base ADR) is corrected to state direct conformance. This
+revision also resolves the same re-review's one remaining MEDIUM,
+non-blocking finding by tightening the concurrent `decide_once()` test
+(§10) to use differing per-thread candidate sets that would independently
+produce different winners absent synchronization, proving convergence on
+a single durable winner rather than mere agreement on identical inputs
+(§11 row 19). See §13 for the full disposition.
 
 Research this Plan builds on, without reopening: `docs/adr/ADR-037-orb-
-cross-pair-session-opportunity-selection.md` (Accepted, `527e6ba`);
+cross-pair-session-opportunity-selection.md` (Accepted, `527e6ba`) and its
+Amendment 1 — Persistence Semantics Correction (Accepted, `340f713`);
 `docs/adr/ADR-031-runtime-orchestrator.md` Amendment 1 (Accepted, `5e6bbea`);
 `docs/plans/adr-031-pipeline-amendment-research.md` (`489eb8a`); `docs/plans/
-adr-037-ranking-tie-session-policy-research.md` (`1d43759`); `docs/plans/
+adr-037-persistence-semantics-amendment-research.md` (`1f374d3`);
+`docs/plans/adr-037-ranking-tie-session-policy-research.md` (`1d43759`); `docs/plans/
 adr-037-ranking-tie-session-policy-decision.md`, independently reviewed and
 closed (`a140210`). This Plan treats every decision in those documents as
 settled input, not open for renegotiation — it exists solely to translate
@@ -221,35 +248,38 @@ use):
   select between, so no additional lookup or matching logic is needed
   beyond reading this one field.
 
-  **Persistence timing — corrected (a second, HIGH-severity finding from
-  the independent Plan re-review, resolved here): only a genuine, single
-  winning pair is ever written to the store. A "no winner this cycle"
-  outcome (zero candidates, or an unresolved tie) is never persisted at
-  all — it is a cycle-local result only, and the key remains absent so a
-  later cycle recomputes fresh.** The original design persisted every
-  `decide_once()` outcome unconditionally, including an empty-candidate
-  result — because `orb_breakout.py::qualify()` returns `NOT_QUALIFIED`
-  throughout a range's entire *formation* period (`is_formed = now >=
-  range_end`, verified directly against `evidence_engine/opening_range.py`
-  — no pair can possibly produce an enabled-window ORB candidate before a
-  range has even formed), the very first evaluated cycle of a window's
-  life will, in the overwhelming majority of real deployments, have zero
-  candidates. Persisting that as a locked `None` would, via idempotency,
-  permanently and silently prevent any genuine breakout detected in a
-  *later* cycle of the *same still-relevant* window from ever being
-  selected — the window remains `currently_relevant` (via `orb_breakout.
-  py`'s own `latest_range_end` filtering) for as long as no newer range for
-  the same anchor has formed, which for a once-daily anchor is effectively
-  the rest of the calendar day (`compute_opening_ranges()`'s own `range_
-  start = now.replace(hour=..., minute=..., ...)` construction, verified
-  directly against source, produces the identical `range_start` for the
-  entire day — there is no source-derivable boundary earlier than calendar-
-  day rollover at which a window's opportunity to produce a candidate can
-  be said to have definitively ended). **Rather than inventing an
-  unsupported terminal-window cutoff, this Plan avoids needing one
-  entirely**: because only a genuine winner is ever locked in, no negative
-  decision ever needs a "when is it too late to reconsider" boundary — every
-  cycle before a winner exists remains fully, safely re-triable.
+  **Persistence timing — conforms directly to ADR-037 §9 as corrected by
+  Amendment 1 (Accepted, `340f713`): only a genuine, single winning pair
+  is ever written to the store. A "no winner this cycle" outcome (zero
+  candidates, or an unresolved tie) is never persisted at all — it is a
+  cycle-local result only, and the key remains absent so a later cycle
+  recomputes fresh.** This is no longer a Plan-level design choice argued
+  against the base ADR's text — Amendment 1's own §2 states this exact
+  contract as the ADR's own persistence requirement: "a cycle that
+  produces no winner... is fail-closed for that cycle... but creates no
+  durable winner-store entry," and "the absence of an entry for a
+  `range_start` means exactly one thing: no durable winner has yet been
+  established for that opportunity window." This Plan's `decide_once()`
+  design is a direct, one-to-one implementation of that Accepted text, not
+  a reinterpretation of it. The source evidence that originally motivated
+  this design remains true and is restated here for traceability, not as
+  independent justification: `orb_breakout.py::qualify()` returns
+  `NOT_QUALIFIED` throughout a range's entire *formation* period
+  (`is_formed = now >= range_end`, verified directly against
+  `evidence_engine/opening_range.py`), so the very first evaluated cycle
+  of a window's life will, in the overwhelming majority of real
+  deployments, have zero candidates; `compute_opening_ranges()`'s
+  `range_start = now.replace(hour=..., minute=..., ...)` construction
+  produces the identical `range_start` for an entire calendar day; and no
+  source location defines a boundary earlier than calendar-day rollover at
+  which a window's opportunity to produce a candidate can be said to have
+  definitively ended — exactly the lifecycle facts Amendment 1 §2 itself
+  cites as the basis for this corrected contract. **No terminal-window
+  cutoff is invented**, consistent with Amendment 1 §2's own explicit
+  requirement that none be: because only a genuine winner is ever locked
+  in, no negative decision ever needs a "when is it too late to
+  reconsider" boundary — every cycle before a winner exists remains fully,
+  safely re-triable, exactly as Amendment 1 requires.
 
   Exact contract, under the lock (the stale-window check runs first,
   unconditionally, exactly as before):
@@ -292,21 +322,25 @@ use):
   anything of its own, so it can never independently select and persist a
   second, different winner.
 
-  **Observability of a "no winner yet" cycle is unaffected by this
-  correction** — ADR-037 §12's own already-required per-cycle signals
-  ("No candidates available for a session," "Tie / no-winner produced
-  despite candidates existing") are emitted by `logging_sink.py`/
-  `metrics.py` (§1 above) on every such cycle regardless of whether the
-  store persists anything; an operator can already reconstruct "this
-  window never produced a winner" from the absence of a "winner selected"
-  signal across the window's relevant cycles, without the winner store
-  itself needing to record every negative outcome. ADR-037 §9's own
-  "Persistence: the winner (or the fact that no winner was selected) must
-  be recorded" is satisfied by this observability trail, not by requiring
-  the cardinality-enforcing winner store to durably lock in every negative
-  cycle — §9's own idempotency constraint is worded specifically around
-  "after **a winner** is already persisted," never around a persisted
-  negative outcome, which is consistent with this reading.
+  **Observability of a "no winner yet" cycle is required by ADR-037 §12
+  directly, not merely a Plan-level substitute for durable persistence**
+  — ADR-037's own §12 (as clarified by Amendment 1 §4) states explicitly
+  that its per-cycle signals ("No candidates available for a session,"
+  "Tie / no-winner produced despite candidates existing") are "themselves
+  how every cycle-local no-winner outcome remains observable and
+  auditable," and that "§9 (as corrected by Amendment 1) and this section
+  describe two distinct mechanisms, not one": §9 governs the single,
+  durable, immutable fact a `range_start` may eventually acquire (a
+  genuine winner); §12 governs the ordinary, cycle-local observability of
+  every outcome that is not that fact. This Plan's `logging_sink.py`/
+  `metrics.py` (§1 above) emit exactly those signals on every no-winner
+  cycle, regardless of whether the store persists anything — an operator
+  can reconstruct "this window never produced a winner" from the absence
+  of a "winner selected" signal across the window's relevant cycles. This
+  is a direct implementation of Amendment 1 §4's clarification, not an
+  argument for why the Plan's design should be read as compatible with an
+  unamended §9 — Amendment 1 is now the governing text for this exact
+  point, and this Plan conforms to it directly.
 - **`engine.py`** — `OpportunitySelectionEngine.evaluate_window(range_start,
   session_name, candidates, now) -> SelectionOutcome`, thin composition of
   `select_winner()` (via the store's `decide_once()`, so persistence and
@@ -869,7 +903,9 @@ engine/`, `runtime/`, or `validation.py` itself.
 
 ## 6. Persistence contract
 
-Specified fully in §1's `store.py` description. Summary against the
+Specified fully in §1's `store.py` description, which is a direct
+implementation of ADR-037 §9 as corrected by Amendment 1 (Accepted,
+`340f713`), not a Plan-level deviation from it. Summary against the
 task's own required dimensions:
 
 - **Key:** `range_start` alone (`isoformat()`-encoded string), never a
@@ -891,11 +927,16 @@ task's own required dimensions:
   `compute_opening_ranges()` makes `range_start` calendar-day-stable
   (`evidence_engine/opening_range.py`), so no source-derivable boundary
   exists for declaring an opportunity window's negative outcome final
-  before a genuine winner appears. Re-evaluating a `range_start` whose key
-  **is present** returns the persisted winner unchanged, without
+  before a genuine winner appears — this is exactly what Amendment 1 §2
+  requires ("a `range_start` whose opportunity window remains currently
+  relevant... and has no durable winner-store entry remains eligible for
+  re-evaluation on its next cycle"). Re-evaluating a `range_start` whose
+  key **is present** returns the persisted winner unchanged, without
   reconstructing candidates or calling `select_winner()` at all — this
-  matches ADR-037 §9's idempotency requirement exactly as worded, which
-  applies specifically to "after a winner is already persisted."
+  matches ADR-037 §9's idempotency requirement (as corrected by Amendment
+  1) exactly as worded, which applies specifically to "after a winner is
+  already persisted," per both the base §9 and Amendment 1 §2's own
+  restatement of that scoping.
 - **Restart behavior:** `_entries` loads once at construction (mirroring
   the existing precedent). If a genuine winner was durably persisted
   before the restart, it resumes locked in, unchanged. If nothing was
@@ -1092,7 +1133,7 @@ land as one atomic unit, never partially.
 | Selector exception/timeout | `tests/titan_protocol/runtime/test_engine.py::...test_selector_exception_yields_zero_winners_for_that_window_only` |
 | Store corruption at construction | `tests/titan_protocol/opportunity_selection_engine/test_store.py::test_corrupt_state_fails_closed_at_construction` |
 | Store persist-failure mid-run | `...test_persist_failure_logged_in_memory_decision_still_stands` |
-| Duplicate-winner race / idempotency | `...test_concurrent_decide_once_calls_never_produce_two_winners` (threaded test, mirroring `OrbQualificationStore`'s own concurrency test convention) |
+| **Duplicate-winner race / idempotency — concurrent callers with genuinely differing candidate sets** | `...test_concurrent_decide_once_calls_with_different_candidates_converge_on_one_winner` — tightened per the independent Plan re-review's MEDIUM, non-blocking test-specification finding: this is **not** a test of identical concurrent inputs (which would trivially agree even without synchronization). Multiple threads call `decide_once()` for the *same* `range_start` simultaneously, each passed a **distinct** candidate tuple whose own top-scoring pair differs from every other thread's (e.g. thread 1 sees `{EURUSD: 90}`, thread 2 sees `{GBPUSD: 95}`, thread 3 sees `{USDJPY: 85}` — three different pairs that would each independently win their own thread's `select_winner()` call if run unsynchronized). Asserts: (a) every thread's return value is identical — the single pair that acquired the lock first and persisted; (b) exactly one entry exists in the store afterward, and its `pair` matches every thread's returned value; (c) the losing threads' own locally-would-have-been-computed winners are never persisted, never returned by any thread, and never reach `_run_back_half`/Risk in the accompanying Runtime-level concurrency test. This directly proves "competing selector invocations cannot result in two different candidates being released as winners for the same `range_start`" (Amendment 1 §2's atomicity requirement) rather than merely "concurrent identical inputs don't disagree with themselves." |
 | Restart | `...test_restart_resumes_from_persisted_decision` |
 | Stale winner | `...test_stale_range_start_fails_closed_and_is_logged` |
 | **Zero candidates on cycle N, valid unique candidate on cycle N+1** | `...test_zero_candidates_cycle_does_not_block_later_unique_winner` — calls `decide_once()` with an empty candidate tuple for a given `range_start`, asserts the return is `None` **and no key is persisted** (`path.exists()` is `False`, or the entries dict has no matching key), then calls `decide_once()` again for the same `range_start` with one qualifying candidate and asserts it is now selected and persisted. Directly proves the HIGH persistence/re-evaluation defect is fixed. |
@@ -1138,13 +1179,14 @@ named plus every row the original pass already covered:
 | 15 | Accidental coupling to ADR-036 retirement | Re-verified unchanged: no ADR-036/legacy-retirement file appears in the file-impact matrix (§8); the five legacy strategies remain VERIFIED UNCHANGED; `StrategyId`'s six members are untouched. |
 | 16 | Downstream engines importing the new package | Re-verified unchanged: nothing in `risk_engine/`, `compliance_engine/`, or `bridge/` imports `opportunity_selection_engine` under this Plan. |
 | 17 | The new package's own `ALLOWED_UPSTREAM_PREFIXES` too broad | Re-verified unchanged: exactly `("titan_protocol.strategy_engine",)`. |
-| 18 | **Persisting a "no winner this cycle" outcome (zero candidates, or an unresolved tie) could permanently lock a window to `None` starting from its very first evaluated cycle, since `orb_breakout.py::qualify()` returns `NOT_QUALIFIED` throughout formation and `range_start` is calendar-day-stable (`evidence_engine/opening_range.py`), leaving no source-derivable "window is definitively over" boundary before real breakouts can occur** | Fixed by this revision (§1/§6): a "no winner this cycle" outcome is never persisted at all — the key remains absent, and the cycle is fully re-computable on every later call, with no boundary needing to be invented. Once a genuine winner is persisted it remains permanently locked, exactly as ADR-037 §9 requires. §10 carries six dedicated regression tests for this exact defect (zero-candidates-then-later-winner, tie-then-later-winner, winner-cannot-be-replaced, restart-before-winner, restart-after-winner, sequential re-invocation). |
+| 18 | **Persisting a "no winner this cycle" outcome (zero candidates, or an unresolved tie) could permanently lock a window to `None` starting from its very first evaluated cycle, since `orb_breakout.py::qualify()` returns `NOT_QUALIFIED` throughout formation and `range_start` is calendar-day-stable (`evidence_engine/opening_range.py`), leaving no source-derivable "window is definitively over" boundary before real breakouts can occur** | Fixed by this revision (§1/§6): a "no winner this cycle" outcome is never persisted at all — the key remains absent, and the cycle is fully re-computable on every later call, with no boundary needing to be invented. Once a genuine winner is persisted it remains permanently locked. **Reconciled with governance (this revision): ADR-037 Amendment 1 (Accepted, `340f713`) now states this exact contract as §9's own corrected text, closing the original governance-textual gap between this Plan's design and the base ADR's literal words — this is no longer a Plan-level argument for why the deviation was safe, it is direct conformance with Accepted ADR text.** §10 carries six dedicated regression tests for this exact defect (zero-candidates-then-later-winner, tie-then-later-winner, winner-cannot-be-replaced, restart-before-winner, restart-after-winner, sequential re-invocation). |
+| 19 (new — this reconciliation) | **Independent Plan re-review's MEDIUM, non-blocking observation: the pre-existing concurrent `decide_once()` test did not specify differing per-thread candidate sets, leaving unproven the specific claim that competing selector invocations converge on one winner rather than merely agreeing by coincidence on identical inputs** | Fixed by this revision (§10): the concurrency test is tightened to require each thread's candidate set to independently produce a *different* winning pair absent synchronization, and asserts both that exactly one entry is ever persisted and that no losing thread's locally-computed winner is ever returned or released downstream — directly proving Amendment 1 §2's atomicity requirement ("two concurrent attempts to establish a winner for the same `range_start` must converge on a single, durably persisted winner"), not merely that identical inputs don't disagree with themselves. |
 
 Every row in this table either identifies the exact revision that closed a
-previously-real gap (rows 1–7 and 18, mapped directly to independent review
-findings across both revisions) or re-confirms a prior finding still holds
-after the corrections around it (rows 8–17) — none required a further
-design change beyond what §1–§10 already specify.
+previously-real gap (rows 1–7, 18, and 19, mapped directly to independent
+review findings across three revisions) or re-confirms a prior finding
+still holds after the corrections around it (rows 8–17) — none required a
+further design change beyond what §1–§10 already specify.
 
 ## 12. Validation (Plan-only — no production behavior changes; this Plan itself contains no code)
 
@@ -1159,7 +1201,7 @@ Since this is a Plan artifact, the validation below confirms the *existing* repo
 
 ## 13. Unresolved blockers
 
-**None found after this second revision.** The first revision (`e139076`)
+**None found after this third revision.** The first revision (`e139076`)
 resolved four findings (two HIGH, one MEDIUM-HIGH, one MEDIUM) from the
 first independent review, in §1/§3/§5/§6, with a single, unambiguous
 mechanism each — no residual ambiguity is left for a later implementer to
@@ -1167,25 +1209,41 @@ invent. The two remaining smaller observations from that pass
 (barrier-pending-state proof; the inapplicable `scripts/
 check_architecture.py` citation) are also closed (§3, §1, §10).
 
-This second revision resolves the one HIGH finding raised by the
-subsequent independent Plan re-review — the persistence/re-evaluation
+The second revision (`0388595`) resolved the one HIGH finding raised by
+the subsequent independent Plan re-review — the persistence/re-evaluation
 defect (§1/§6/§10/§11 row 18) — plus the LOW duplicate-text finding (§5,
-both duplicated blocks removed). No source/governance contradiction was
-found while designing the fix: `orb_breakout.py`, `evidence_engine/
-opening_range.py`, and ADR-037 §9 together support "only a genuine winner
-is ever durably persisted" as the smallest correct design, without
-inventing any unsupported terminal-window cutoff or trading policy.
+both duplicated blocks removed).
+
+**This third revision (this document) reconciles the Plan with ADR-037
+Amendment 1 — Persistence Semantics, now Accepted (`340f713`).** A
+further independent review of the second revision's Plan (the "Final
+Independent Plan Re-Review") found that the persistence-timing fix,
+though correct, could not be reconciled with ADR-037 §8/§9's own text as
+then written — a governance-textual gap, not an architectural defect. A
+dedicated Research pass and a formally-reviewed, Accepted ADR-037
+Amendment 1 closed that gap by correcting §8/§9 to match this Plan's
+already-correct winner-only design. This revision updates the Plan's own
+language (§1, §6, §11 row 18) to express direct conformance with
+Amendment 1's now-Accepted text, rather than presenting the design as a
+Plan-level argument for deviating from an unamended base ADR — no
+architectural or behavioral change was needed, since the Plan's design
+was already what Amendment 1 now requires. This revision also resolves
+the review's one remaining MEDIUM, non-blocking finding: the concurrent
+`decide_once()` test (§10) is tightened to require differing per-thread
+candidate sets capable of independently producing different winners,
+proving convergence rather than mere agreement on identical inputs
+(§11 row 19).
 
 Every item this Plan's own instructions forbade inventing (exact Gate A
 pairs, exact Gate B anchor clock times, Watchdog inclusion decided by
 fiat rather than evidence, config-ownership left vague, a fabricated
 "window closed" boundary) remains either resolved with fresh evidence
 (§7's Watchdog determination; §1's config-ownership specification; §1/§6's
-persistence-timing correction) or explicitly identified as
-deployment-profile content this Plan's mechanism does not require to
-exist yet (§5's Gate A/B values, and the eventual flip of
-`cross_pair_selection_enabled` itself). All are correctly deferred, not
-blocking.
+persistence-timing correction, now grounded directly in Accepted Amendment
+1) or explicitly identified as deployment-profile content this Plan's
+mechanism does not require to exist yet (§5's Gate A/B values, and the
+eventual flip of `cross_pair_selection_enabled` itself). All are correctly
+deferred, not blocking.
 
 ## 14. Explicit authorization boundaries (restated)
 
