@@ -336,14 +336,13 @@ message.
 
 ---
 
-# Amendment 1 (2026-07-29, Status: **Proposed** — not yet Accepted) — ORB Cross-Pair Opportunity-Selection Pipeline Compatibility
+# Amendment 1 (2026-07-29, Accepted 2026-07-29 — history preserved below, not backdated) — ORB Cross-Pair Opportunity-Selection Pipeline Compatibility
 
-**This amendment is Proposed only. It does not change ADR-031's own
-overall Accepted status for §0–§14 above, none of which this amendment
-alters in substance (see "Unchanged governance" below). It requires its
-own independent governance review and Acceptance, per this repository's
-established RPI/amendment precedent (`ADR-026` Amendment 1, `ADR-036`
-Amendment 1), before it takes effect or authorizes anything.**
+**Status: Accepted.** This amendment's own status is now Accepted; it
+takes effect and authorizes exactly what §1–§12 below state, no more.
+It does not change ADR-031's own overall Accepted status for §0–§14
+above, none of which this amendment alters in substance (see
+"Unchanged governance" below).
 
 **Why this amendment exists:** `ADR-037-orb-cross-pair-session-
 opportunity-selection.md` (Accepted, commit `527e6ba`) designed a
@@ -365,6 +364,38 @@ re-confirmed against source for this drafting pass (`run_cycle()`/
 `tests/titan_protocol/runtime/test_architecture.py`) — no discrepancy
 between the Research and current source was found; nothing here departs
 from the Research's own findings.
+
+**Governance review and acceptance history:** first drafted Proposed
+(commit `e86a5d3`). An independent "ADR-031 Amendment 1 — Independent
+Governance Review" of that draft re-verified every source claim fresh
+(not taken from the drafting report), independently re-tested the §2
+Hard Rules boundary, the pipeline/early-exit/completeness mechanics,
+the `RuntimeContext`/observability/fail-closed additions, the lifecycle-
+vocabulary deferral, the determinism requirement, the disclosed
+architecture-test consequence, and coexistence with the five still-
+registered legacy strategies against a full adversarial matrix, and
+found the draft's substance sound. That review identified one finding,
+**F1 (LOW, non-blocking)**: §3's terminal-front-half-outcome
+enumeration ("whether that result is an explicit ORB `QUALIFIED`, an
+explicit ORB `NOT_QUALIFIED`/rejection..., or a legacy strategy winning
+instead of ORB") does not *explicitly* name the case where **no
+strategy at all wins** (`StrategySnapshot.rejected` / `CycleOutcome.
+NO_STRATEGY`) — a case the review confirmed, from source, still counts
+as a terminal outcome under the natural reading (`StrategySnapshot.
+all_qualifications` shows ORB's own qualification genuinely ran),
+since the enumeration is illustrative ("whether... X, Y, or Z"), not
+exhaustive, and the operative test is "Evidence, Market Intelligence,
+and Strategy have all been invoked... and produced a final result."
+The review found this wording gap can only make the system *more*
+fail-closed than necessary under a stricter misreading, never less —
+a capital-preservation-safe direction — and explicitly judged it
+non-blocking, comparable in kind and severity to ADR-037's own already-
+accepted H1/G3 observations. That review returned: **ADR-031 AMENDMENT
+1 CONFORMS — ACCEPTED**. This entry now formally records that
+Acceptance. **F1 is recorded here as a disclosed, non-blocking wording
+observation for a possible future clarifying pass — it is not corrected
+in this Acceptance, and no change to the reviewed architecture or
+operative contract (§1–§12 below) is made on account of it.**
 
 ## 1. Unchanged governance (stated explicitly, not left implicit)
 
