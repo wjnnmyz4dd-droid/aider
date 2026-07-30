@@ -267,7 +267,75 @@ sufficient mechanism-correctness proof, but should still require (or
 explicitly waive, if it judges the automated proof sufficient) the
 live-market observation window before Phase F.
 
-## 9. Remaining authorization boundaries (restated explicitly)
+## 9. Target-deployment real-market dry-run attempt (this pass) — environment capability finding
+
+**Task:** execute the Plan §5 mandatory dry run against "the actual
+target deployment with real broker/market-data connectivity," for at
+least one full trading day spanning all 3 Gate B windows, collecting
+real-market evidence for PASS criteria 1–10 (in particular the
+unconditional, no-substitution-clause criteria 4 and 9).
+
+**Environment capability check performed before attempting anything
+(read-only, no fabrication):**
+- No MetaTrader/MT5 terminal, `wine`, or any Windows-EA-hosting runtime
+  present in this execution environment (`find / -iname "*terminal64*"`,
+  `*MetaTrader*"` → no matches; `which wine` → not found).
+- No broker/market-data credentials or environment variables configured
+  (`env | grep -iE "mt5|broker|bridge|titan"` → empty;
+  `FOREX|TRADING_ECON|MT5|MARKET_DATA|BROKER_API` → empty).
+- No Bridge process already running/listening on `8787`/`8788`
+  (`ss -tlnp` → no match).
+- This has been a standing, previously-documented characteristic of this
+  development environment throughout this repository's history, not a
+  new discovery — see `docs/mt5_validation/07_production_readiness_
+  checklist.md` and `deployment_windows/REAL_MT5_VALIDATION_CHECKLIST.md`,
+  both of which have always treated real-MT5/broker validation as a
+  separate, not-yet-performed activity requiring an actual MT5 terminal
+  and broker account, distinct from anything achievable in a coding
+  sandbox.
+
+**Conclusion: this coding environment has no reachable target
+deployment with real broker/market-data connectivity.** There is no
+running production instance, no MT5 terminal, and no live price feed
+anywhere this session can reach. Per the task's own explicit instruction
+— "Do not manufacture market conditions to force a winner, tie, or
+failure. Record what actually occurs" and "If real market conditions...
+do not produce the mandatory real-data evidence required by §5 criteria
+4 or 9, report the criterion as NOT SATISFIED. Do not infer it from
+automated tests" — no attempt was made to simulate, fabricate, or infer
+a real-market observation. Nothing beyond what §5–§9 above already
+document (the mechanical sandbox subprocess boot + the automated F1
+regression suite) was produced.
+
+**Per-criterion result against Plan §5:**
+
+| Plan §5 criterion | Result | Basis |
+|---|---|---|
+| 1. London 08:00 UTC window observed | **NOT OBSERVED (real market)** | No real market-data feed reachable from this environment |
+| 2. Overlap 13:00 UTC window observed | **NOT OBSERVED (real market)** | Same |
+| 3. Early NY 13:30 UTC window observed | **NOT OBSERVED (real market)** | Same |
+| 4. Cross-pair barrier arbitration against real market data | **NOT SATISFIED** — no substitution clause exists in the Plan for this criterion | Automated-test proof exists (§5 above, `TestF1BroadGateARequiresCompleteBarrierCoverage`) but is explicitly *not* real-market evidence and the Plan does not permit substituting it for this criterion |
+| 5. Tie/no-winner behavior | Automated proof retained (`TestTieProducesNoWinner`), explicitly distinguished from real-market evidence, per the Plan's own substitution allowance for this criterion | No natural occurrence observed (none possible without a real feed) |
+| 6. Incomplete-scan fail-closed behavior | Automated proof retained (`TestIncompleteScanFailsClosed`), explicitly distinguished, per the Plan's own substitution allowance | Same |
+| 7. No live Bridge submissions | **PASS** | Structurally guaranteed (`bridge_submit=None`) and confirmed by log absence across all sandbox boots performed to date |
+| 8. No FAILED/Traceback/fail-open | **PASS** | Confirmed across all sandbox boots performed to date |
+| 9. Persisted-winner behavior against real market data | **NOT SATISFIED** — no substitution clause exists for this criterion | Automated proof exists (`TestWinnerImmutabilityAcrossCycles`) but is not real-market evidence |
+| 10. Clean shutdown; production state inert afterward | **PASS** | Confirmed across all sandbox boots; `DEFAULT_APPROVED_PAIRS_BY_STRATEGY` re-verified empty after every run |
+
+**This is an environment-capability finding, not a defect in the Phases
+A–D implementation.** The implementation itself (config loading,
+dry-run mechanism, fail-closed isolation, F1 invariant) has been
+independently re-verified multiple times and found sound. What is
+missing is evidence that can only be produced by running the reviewed
+dry-run configuration on a host with an actual MT5 terminal and a real
+broker/data-vendor connection — infrastructure this session does not
+have and cannot fabricate.
+
+**No new code, configuration, or test changes were made in this pass.**
+This section is a documentation-only addition recording the attempt and
+its outcome.
+
+## 10. Remaining authorization boundaries (restated explicitly)
 
 Not authorized by this document or this implementation pass:
 - Broadening Gate A (`DEFAULT_APPROVED_PAIRS_BY_STRATEGY`) in any running
