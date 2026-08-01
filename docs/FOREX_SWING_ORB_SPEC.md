@@ -1,53 +1,49 @@
 # Forex Swing Opening-Range-Breakout (Swing-ORB) — Strategy Specification
 
-**Status:** **FROZEN v1.1.0 — DESIGN ONLY (awaiting approval to begin Phase 1).**
+**Status:** **FROZEN v1.2.0 — DESIGN ONLY (awaiting approval to begin Phase 1).**
 No implementation, no backtest-engine changes, no EA, and no MT5 connection is
 authorized by this document.
-**Strategy version anchor:** `swing_orb.v1.1.0` (the version the first
-implementation must stamp into every emitted signal's `strategy_version`).
+**Strategy version anchor:** `swing_orb.v1.2.0` (stamped into every emitted
+signal's `strategy_version`).
 **Trade-instruction schema version:** `1` (see §8).
 **Audited platform baseline:** Vibe-Trading `v0.1.12` @ commit `e0b236c` (see
 `docs/VIBE_TRADING_PHASE0_AUDIT.md`).
 
-This document defines the *first candidate* strategy. It deliberately fixes a
-single, deterministic baseline so a clean, unoptimized result can be produced
-before any parameter tuning. Every rule below is reducible to code with no
-discretionary or natural-language-only qualification.
+This document defines the *first candidate* strategy. It fixes a single,
+deterministic baseline so a clean, unoptimized result can be produced before any
+parameter tuning. Every rule is reducible to code with **no discretionary,
+visual, natural-language, or LLM-interpreted qualification**.
 
 ---
 
 ## 0. Purpose and scope
 
 - Market: **Forex only**. Initial validation symbol: **EURUSD** (canonical
-  internal format `EURUSD.FX`; see §13 on the symbol-format hazard).
-- Style: **Swing trading.** Expected holding period **several hours to several
-  days**. This is explicitly **not** a scalping strategy.
-- The strategy produces a **signal / trade instruction**. It does **not** place
-  orders (see §0.2 Execution boundary).
+  internal format `EURUSD.FX`; see §15 on the symbol-format hazard).
+- Style: **Swing trading.** Holding period **several hours to several days**.
+  Explicitly **not** scalping.
+- The strategy produces a **signal / trade instruction** only (see §0.2).
 
 ### 0.1 Freeze status & change control
 
-- This spec is **frozen at v1.1.0**. It is the authoritative reference for Phase 1.
-- Once approved, any change to a **rule or a default value** requires a version
-  bump (patch `v1.1.x` for clarifications/fixes; minor `v1.y.0` for a rule or
-  schema change), recorded in §17 Change log, and the code's `strategy_version`
-  must track it.
-- Phase 1 implements **exactly** this baseline — **no optimization, no rule
-  additions** beyond what is written here. Anything discovered during
-  implementation that requires a rule change is raised as a spec change, not
-  silently coded.
+- This spec is **frozen at v1.2.0** and is the authoritative reference for Phase 1.
+- Any change to a **rule or default value** requires a version bump (patch
+  `v1.2.x` for clarifications/fixes; minor `v1.y.0` for a rule/schema change),
+  recorded in §19, and the code's `strategy_version` must track it.
+- Phase 1 implements **exactly** this baseline — no optimization, no rule
+  additions beyond what is written here. Anything requiring a rule change is
+  raised as a spec change, not silently coded.
 
 ### 0.2 Execution boundary (NORMATIVE)
 
 - The Swing-ORB `SignalEngine` **generates trade instructions only** (§8). It
-  performs **research, qualification, and signal formation** and nothing else.
-- It **does not** connect to, authenticate with, send orders to, modify orders
-  on, or read live account state from **MT5 or any broker**. It performs **no**
-  network I/O to any execution venue.
-- The instruction it emits is a **passive data object**. Whether, when, and how
-  an instruction is ever executed is the sole responsibility of a **separate,
-  later execution layer** (the future Titan MT5 EA), which is out of scope for
-  this document and for Phase 1.
+  performs research, qualification, and signal formation and nothing else.
+- It **does not** connect to, authenticate with, send/modify orders on, or read
+  live account state from **MT5 or any broker**, and performs **no** network I/O
+  to any execution venue.
+- The emitted instruction is a **passive data object**. Whether/when/how it is
+  executed is the sole responsibility of a **separate, later execution layer**
+  (the future Titan MT5 EA), out of scope here and for Phase 1.
 - This boundary is a **frozen invariant**: no Phase 1 code may cross it.
 
 ---
@@ -56,177 +52,235 @@ discretionary or natural-language-only qualification.
 
 | Purpose | Timeframe | Notes |
 |---|---|---|
-| Directional bias | **D1** and **H4** | Both must align (see §3). |
-| Opening range, breakout, retest, continuation | **M15** (default execution TF) | Configurable; must be an intraday TF supported by the engine (`1m/5m/15m/30m/1H/4H`). |
+| Directional trend (market structure) | **D1** and **H4** | Both must agree (§2). |
+| Opening range, breakout, retest, confirmation | **M15** (execution TF) | Configurable; must divide H4 (`5m/15m/30m/1H`). |
 
-All timeframe interactions use **closed/completed bars only**. A forming
-(incomplete) bar is never used for any decision (see §13 Failure semantics).
+All decisions use **closed/completed bars only**. A forming bar is never used.
 
 ### 1.1 Single-interval backtest constraint → deterministic multi-TF derivation (NORMATIVE)
 
-**Platform fact (audit §E):** the backtest `SignalEngine.generate(data_map)`
-receives OHLCV for each symbol at **one** interval only — the run's configured
-`interval`. It is **not** handed separate H4/D1 frames. Therefore:
-
-- **Backtest path (authoritative for validation):** the strategy runs at the
-  **execution timeframe** (`execution_tf`, default `15m`) and **derives** the H4
-  and D1 bias frames by **resampling the execution-TF closed bars** up to H4 and
-  D1 inside `generate()`. Resampling is standard OHLC aggregation
-  (`open=first, high=max, low=min, close=last`) on right-closed, right-labeled
-  calendar buckets, using **only bars whose higher-TF bucket has fully closed**
-  (a partially-formed H4/D1 bucket is excluded — fail-closed, §13).
-- **Live path (later phase):** the MT5 data layer *can* provide native H4/D1
-  bars; the live adapter MAY use native higher-TF bars provided the bias
-  definition (§3) yields identical results to the resampled definition. Any
-  divergence is a spec change.
-- Consequence: `execution_tf` must be a divisor of H4. `5m`, `15m`, `30m`, `1H`
-  satisfy this. The config validator must reject an `execution_tf` that does not
-  divide H4.
+The backtest `SignalEngine.generate(data_map)` receives OHLCV at **one** interval
+only (audit §E). Therefore the strategy runs at `execution_tf` (default `15m`) and
+**derives H4/D1 by resampling the execution-TF closed bars** (`open=first,
+high=max, low=min, close=last`, right-closed/right-labeled buckets), using **only
+fully-closed higher-TF buckets** (a partial H4/D1 bucket is excluded — fail-closed,
+§14). `execution_tf` must divide H4; the config validator rejects one that does
+not. The live path MAY use native H4/D1 bars only if it yields identical structure
+results (§2); any divergence is a spec change.
 
 ### 1.2 No-lookahead rule (NORMATIVE)
 
-A decision made from a bar that closes at time *t* may only affect positions
-**from the next bar (*t+1*) onward**. The signal series returned by `generate()`
-for each symbol is computed on closed bars up to and including *t* and then
-**shifted forward by one bar** before being returned, so the engine (which fills
-at the following bar's open) cannot act on same-bar close information. No
-indicator, range, breakout, retest, or confirmation may read a bar that has not
-fully closed.
+A decision from a bar closing at *t* may only affect positions from bar *t+1*.
+The returned signal series is computed on closed bars ≤ *t* and **shifted forward
+one bar** before return (the engine fills at the next bar's open). No indicator,
+pivot, range, breakout, retest, or confirmation may read a bar not yet closed.
+See §2.2 for how this applies to pivot confirmation latency.
 
 ---
 
-## 2. Opening range (FROZEN — exact window, timezone, DST)
+## 2. Market structure & directional trend (FROZEN)
 
-- **Session anchor (FROZEN):** the **London session open at 08:00 local time**.
-- **Timezone (FROZEN):** **`Europe/London`** (IANA tz database), resolved with
-  `zoneinfo`. No fixed numeric offset is ever hard-coded.
-- **Opening-range window (FROZEN default):** the **first 60 minutes** from the
-  London open, i.e. the local clock interval **`[08:00, 09:00)` Europe/London**.
-  The 60-minute duration and 08:00 start are configurable (`or_start_local`,
-  `or_window`) but the frozen baseline is 08:00–09:00 London.
-- **Daylight-saving handling (FROZEN, explicit):** the local window is converted
-  to UTC **per calendar date** using the Europe/London offset in effect that day:
+Trend is defined by **deterministic swing structure** on H4 and D1 (derived per
+§1.1). This supersedes the v1.1.0 EMA-alignment bias (see §19).
+
+### 2.1 Frozen pivot / swing algorithm
+
+- **Fractal pivot of strength `pivot_k`** (default **2**, i.e. a 5-bar fractal):
+  - **Swing high** confirmed at bar index *i* iff
+    `high[i] > high[j]` for all *j* ∈ `[i-pivot_k, i-1]` **and**
+    `high[i] > high[j]` for all *j* ∈ `[i+1, i+pivot_k]` (strict `>`).
+  - **Swing low** confirmed at bar index *i* iff
+    `low[i] < low[j]` for all *j* ∈ `[i-pivot_k, i-1]` **and**
+    `low[i] < low[j]` for all *j* ∈ `[i+1, i+pivot_k]` (strict `<`).
+  - Strict inequalities mean **equal highs/lows are not pivots** (deterministic).
+- **Alternation (frozen):** the confirmed pivot list is kept in strict
+  chronological **alternation** of high/low. If two consecutive same-type pivots
+  occur, keep the more extreme one (the higher high / the lower low); discard the
+  other. This yields one deterministic alternating swing sequence.
+
+### 2.2 No-lookahead for pivots (NORMATIVE)
+
+A pivot at index *i* needs `pivot_k` bars to its right to be confirmed, so it is
+**confirmed only once bar `i+pivot_k` has closed**. At decision time *t* (latest
+closed bar) only pivots with `i ≤ t - pivot_k` are usable. No pivot is ever
+inferred from bars unavailable at decision time.
+
+### 2.3 Frozen trend definition (required swing count)
+
+Using the most recent **confirmed** alternating pivots on a timeframe, with
+equality tolerance `swing_eq_tol = max(eq_min_pips_in_price, eq_atr_mult·ATR14)`
+(default `eq_atr_mult = 0.1`):
+
+- **Bullish** iff there are ≥ `min_confirmed_highs` (default **2**) confirmed
+  swing highs and ≥ `min_confirmed_lows` (default **2**) confirmed swing lows, and
+  the two most recent confirmed highs are ascending
+  (`SH_n > SH_{n-1} + swing_eq_tol`) **and** the two most recent confirmed lows
+  are ascending (`SL_n > SL_{n-1} + swing_eq_tol`) — i.e. a confirmed sequence of
+  **higher highs and higher lows**.
+- **Bearish** iff the mirror holds: ≥2 confirmed highs and lows, the two most
+  recent highs descending (`SH_n < SH_{n-1} - swing_eq_tol`) **and** the two most
+  recent lows descending (`SL_n < SL_{n-1} - swing_eq_tol`) — **lower highs and
+  lower lows**.
+- **Neutral / ambiguous → no trade** in every other case, explicitly including:
+  mixed structure (high/low comparisons disagree); insufficient confirmed swings
+  (fewer than the minimum of either type); equal or overlapping structure — any
+  required comparison falling **within** `swing_eq_tol`; or **disagreement
+  between H4 and D1**.
+
+### 2.4 Multi-timeframe agreement (frozen)
+
+Compute the trend independently on **H4** and **D1**. Combined trend is
+**BULLISH** iff both are bullish, **BEARISH** iff both are bearish, else
+**NEUTRAL → no trade**. **Long setups require BULLISH; short setups require
+BEARISH; ambiguous or ranging structure means no trade.**
+
+---
+
+## 3. Range & ORB breakout contract
+
+### 3.1 London opening range (PRIMARY, FROZEN)
+
+- **Session anchor:** London session open at **08:00 local**.
+- **Timezone:** **`Europe/London`** (IANA tz), resolved with `zoneinfo`; no fixed
+  offset is hard-coded.
+- **Window (frozen default):** first **60 minutes**, local `[08:00, 09:00)`
+  (`or_start_local`/`or_window` configurable; baseline frozen at 08:00–09:00).
+- **DST (frozen, explicit):** convert the local window to UTC **per date** via
+  `zoneinfo`:
 
   | Period | London offset | Range window in **UTC** |
   |---|---|---|
   | Winter (GMT) | UTC+0 | **08:00–09:00 UTC** |
-  | Summer (BST, last Sun Mar → last Sun Oct) | UTC+1 | **07:00–08:00 UTC** |
+  | Summer (BST) | UTC+1 | **07:00–08:00 UTC** |
 
-  The DST boundary is taken from `zoneinfo`, not from a hard-coded date. If the
-  offset for a date/instant is **ambiguous or non-existent** (a DST-transition
-  hour) → the day is **ineligible → no trade** (§13).
-- **Expected bar count:** `or_expected_bars = or_window_minutes / tf_minutes`
-  (e.g. 60 / 15 = 4 M15 bars). `or_min_bars` defaults to `or_expected_bars`.
-- **Range construction (deterministic, closed bars only):**
-  - `range_high = max(high)` over the fully-closed bars whose **open timestamp**
-    falls inside the UTC window above.
-  - `range_low  = min(low)` over the same set of closed bars.
-  - The range is **frozen** at the first bar close **after** the window ends; no
-    later bar modifies it.
-  - Fewer than `or_min_bars` closed bars in the window → day ineligible → no trade.
+  DST-transition ambiguity/nonexistence → day ineligible → no trade (§14).
+- **Construction (closed bars only):** `range_high = max(high)`,
+  `range_low = min(low)` over closed bars whose **open timestamp** is in the UTC
+  window; **frozen** at the first bar close after the window; never modified later.
+  Fewer than `or_min_bars` (default = `or_window/tf`) closed bars → ineligible.
 
----
+### 3.2 Generic consolidation range contract (FROZEN, DEFINED; v1 use deferred)
 
-## 3. Directional bias (H4 + D1 alignment)
+A deterministic consolidation range, defined for completeness and future use.
+**For v1 the London OR (§3.1) is the sole trade trigger; the generic range is a
+frozen, defined structure but is NOT an independent v1 entry trigger** (deferred
+to keep one deterministic baseline — see §0.1 / ambiguity note in the return).
 
-Computed on **closed** H4 and D1 bars (derived per §1.1), deterministically:
+- **Duration:** `min_range_bars` (default 6) ≤ closed-bar count ≤ `max_range_bars`
+  (default 48); equivalently `min_range_duration`/`max_range_duration`.
+- **Boundaries:** `range_high = max(high)`, `range_low = min(low)` over the window.
+- **Maximum boundary variation:** the top must be tested by ≥ `min_boundary_touches`
+  (default 2) closed bars whose `high` is within `boundary_touch_tol`
+  (default `max(2 pip, 0.1·ATR14)`) of `range_high`, and symmetrically for the
+  bottom; any bar exceeding a boundary by more than `boundary_touch_tol`
+  invalidates the range (that is a breakout, not consolidation).
+- **Width:** `min_range_width` ≤ `range_high − range_low` ≤ `max_range_width`.
+- **Volatility-normalized width (used):** `min_width_atr` ≤
+  `(range_high − range_low)/ATR14` ≤ `max_width_atr` (defaults 0.5 and 5.0).
+- **Range invalid if:** too few/many bars, width or normalized width out of
+  bounds, boundary variation exceeded, insufficient boundary touches, or price
+  already broke out during formation.
 
-- EMAs on closes: `bias_ema_fast = 20`, `bias_ema_slow = 50` (configurable).
-- **Bullish on a timeframe** iff `close > ema_slow` AND `ema_fast > ema_slow`.
-- **Bearish on a timeframe** iff `close < ema_slow` AND `ema_fast < ema_slow`.
-- **Neutral** otherwise.
+### 3.3 Valid breakout (FROZEN)
 
-Combined bias:
-- **BULLISH** iff both D1 and H4 are bullish.
-- **BEARISH** iff both D1 and H4 are bearish.
-- **NEUTRAL / CONFLICTING** in every other case.
-
-**Fail-closed:** NEUTRAL/CONFLICTING bias → **no trade**. BULLISH permits only
-longs; BEARISH permits only shorts. Insufficient warmup for either EMA on either
-TF → no trade.
-
----
-
-## 4. Breakout
-
-- Requires a **completed candle close** beyond the opening-range boundary — a
-  wick beyond the boundary alone is **not** a breakout.
-  - Long: closed execution-TF candle with `close > range_high + buffer`.
-  - Short: closed execution-TF candle with `close < range_low  - buffer`.
-- **Minimum breakout distance / volatility buffer (configurable):**
-  `buffer = max(breakout_min_pips_in_price, atr_mult * ATR14)` where
-  `breakout_min_pips` default = 2 pips and `atr_mult` default = 0.25 on the
-  execution-TF ATR(14).
-- **Direction gating:** long breakout valid only when bias BULLISH; short only
-  when bias BEARISH. Breakouts against bias are ignored.
-- **No entry on the breakout candle.** The breakout only *arms* the setup.
+A valid breakout requires **all** of:
+- a **completed candle close** beyond the relevant boundary — long:
+  `close > range_high + buffer`; short: `close < range_low − buffer`
+  (**a wick beyond the boundary alone is not a breakout**);
+- a **minimum breakout buffer**: `buffer = max(breakout_min_pips_in_price,
+  atr_mult·ATR14)`, defaults `breakout_min_pips = 2`, `atr_mult = 0.25`;
+- **alignment with higher-timeframe trend** (§2): long only when BULLISH, short
+  only when BEARISH; against-trend breakouts are ignored;
+- **no breakout chasing / no immediate entry**: the breakout only *arms* the
+  setup; entry is never taken on the breakout candle (§4/§6/§7).
 - **Setup expiry:** breakout must reach retest + confirmation within
-  `setup_max_bars` (default 12 execution-TF bars) or the setup is discarded.
+  `setup_max_bars` (default 12) execution-TF bars, else discarded.
 
 ---
 
-## 5. Retest contract
+## 4. Retest contract
 
-After a valid breakout, price must **revisit the broken boundary** and hold it.
-The following four states are **deterministic and mutually exclusive**; evidence
-uses **completed candles only**.
+After a valid breakout, price must **revisit the broken boundary and hold it**.
+States are deterministic and mutually exclusive; **all retest evidence uses
+completed, temporally contiguous bars** (see §4.1).
 
 - **Valid retest.** A completed candle whose retest extreme reaches the boundary
-  zone **without** over-penetrating:
-  - Long: candle `low <= range_high + retest_tol` **and** `low >= range_high - max_retest_deviation`.
-  - Short: candle `high >= range_low - retest_tol` **and** `high <= range_low + max_retest_deviation`.
-  - i.e. the pullback must *touch* within `retest_tol` of the boundary but must
-    not pierce deeper than `max_retest_deviation` into the range, and the candle
-    must **not** close decisively back inside the range (see invalidation).
-- **Failed retest (setup invalidated → no trade).** Any of:
-  1. **Over-penetration:** the retest extreme pierces beyond
-     `max_retest_deviation` into the range
-     (long: `low < range_high - max_retest_deviation`;
-     short: `high > range_low + max_retest_deviation`).
-  2. **Decisive reclaim:** a completed candle **closes** back inside the range
-     past `range_high - reentry_tol` (long) / `range_low + reentry_tol` (short).
-- **Timeout (setup expires → no trade).** No valid retest occurs within
-  `setup_max_bars` execution-TF bars measured from the breakout candle close.
-- **Maximum retest deviation (configurable):** `max_retest_deviation =
-  max(retest_tol, retest_dev_atr_mult * ATR14)`, default `retest_dev_atr_mult
-  = 0.5`. This caps how far the pullback may go before the breakout is treated as
-  failed rather than a healthy retest.
-- **Retest touch tolerance (configurable):** `retest_tol =
-  max(retest_min_pips_in_price, retest_atr_mult * ATR14)`; defaults
-  `retest_min_pips = 2`, `retest_atr_mult = 0.15`.
-- **Reentry tolerance (configurable):** `reentry_tol` default = `retest_tol`.
+  zone without over-penetrating and without a decisive reclaim:
+  - Long: `low ≤ range_high + retest_tol` **and** `low ≥ range_high − max_retest_deviation`.
+  - Short: `high ≥ range_low − retest_tol` **and** `high ≤ range_low + max_retest_deviation`.
+- **Successful boundary hold:** the retest candle does **not** close decisively
+  back inside the range (see reclaim below) and does not over-penetrate.
+- **Failed retest (invalidated → no trade):**
+  1. **Over-penetration:** extreme pierces beyond `max_retest_deviation`
+     (long: `low < range_high − max_retest_deviation`; short: mirror).
+  2. **Close-back-inside (decisive reclaim):** a completed candle **closes** past
+     `range_high − reentry_tol` (long) / `range_low + reentry_tol` (short).
+- **Maximum retest duration / timeout:** no valid retest within `setup_max_bars`
+  execution-TF bars from the breakout close → setup expires → no trade.
+- **Maximum permitted penetration:** `max_retest_deviation =
+  max(retest_tol, retest_dev_atr_mult·ATR14)` (default `retest_dev_atr_mult = 0.5`).
+- **Retest tolerance:** `retest_tol = max(retest_min_pips_in_price,
+  retest_atr_mult·ATR14)` (defaults `retest_min_pips = 2`, `retest_atr_mult = 0.15`).
+- **Reentry tolerance:** `reentry_tol` default = `retest_tol`.
 
-**Invalidation rules (consolidated).** A setup is invalidated (→ no trade) on the
-first of: over-penetration, decisive reclaim, bias flip to non-permitting (§3),
-or timeout. Once invalidated, the setup is discarded — it cannot be revived by a
-later touch; a fresh breakout is required.
+### 4.1 Data contiguity, gaps, and no skip-resume (NORMATIVE)
+
+- Evidence bars must be **temporally contiguous** at `execution_tf`. If the bar
+  sequence has a **gap or missing bar** within a live setup window, the setup is
+  **invalidated → no trade** (fail-closed); the strategy does **not** stitch
+  across the gap.
+- **No skipping-and-resuming:** once a setup's evidence is broken or invalid
+  (over-penetration, reclaim, gap, timeout, or trend flip), the setup is
+  **discarded permanently**. It **cannot** be revived by ignoring the invalid
+  evidence and continuing later; a fresh breakout is required.
+
+**Invalidation rules (consolidated):** a setup is invalidated on the first of —
+over-penetration, decisive reclaim, data gap/missing bar, trend flip to
+non-permitting (§2), or timeout.
 
 ---
 
-## 6. Continuation confirmation
+## 5. Price-action confirmation (FROZEN v1 model)
 
-- **Confirmation count (configurable):** `confirm_bars`, default **1**.
-  Requires `confirm_bars` consecutive **completed** candles each satisfying, in
-  the trade direction:
-  1. **close beyond the boundary again** (long: `close > range_high`; short:
-     `close < range_low`), AND
-  2. **directional body**: `abs(close-open) >= body_min_frac * (high-low)` with
-     `body_min_frac` default 0.5, body sign matching direction (long:
-     `close > open`; short: `close < open`), AND
-  3. **structural progression**: close beyond the prior confirming/retest
-     candle's extreme in the trade direction.
+After a valid retest, require **exactly one deterministic confirmation model**,
+**frozen for v1** (no discretionary selection):
+
+**v1 model — minor-swing break (frozen):** confirmation occurs when a **completed
+execution-TF candle closes beyond the most recent confirmed minor swing** in the
+trend direction:
+- Long: a completed candle **closes above** the most recent **confirmed minor
+  swing high** formed during/after the retest.
+- Short: a completed candle **closes below** the most recent **confirmed minor
+  swing low** formed during/after the retest.
+- **Minor swing** = a fractal pivot (§2.1) on the execution TF with strength
+  `minor_pivot_k` (default **1**, a 3-bar fractal). The minor swing must be
+  **confirmed** (needs `minor_pivot_k` right bars closed) before its break counts
+  (no-lookahead, §2.2).
+- **Confirmation count:** `confirm_bars` (default **1**) qualifying closes.
 - If not achieved within the remaining `setup_max_bars` window → setup expires →
   no trade.
+
+**Deferred candidates (NOT in v1):** an engulfing model and a rejection-candle
+(pin/wick) model are documented as later candidates. They must **not** be mixed
+into v1, and may only be introduced by a version bump with their **exact OHLC
+rules frozen**. No natural-language judgment, visual discretion, or LLM
+interpretation may qualify a setup (frozen invariant).
+
+---
+
+## 6. (reserved — see §5 for confirmation; §7 for entry)
+
+*Section intentionally left as a numbering anchor after the v1.2.0 restructure;
+no rules live here.*
 
 ---
 
 ## 7. Entry
 
-- Enter **only after** breakout (§4) **and** valid retest (§5) **and**
-  continuation confirmation (§6), in the direction permitted by bias (§3).
-- **Long and short rules are symmetrical** (mirror of high/low, above/below,
-  close>open / close<open). No asymmetry in this baseline; any future asymmetry
-  is evidence-justified and version-bumped.
+- Enter **only after** breakout (§3.3) **and** valid retest (§4) **and**
+  confirmation (§5), in the direction permitted by trend (§2).
+- **Long/short rules symmetrical** (mirror of high/low, above/below). No asymmetry
+  in v1; any future asymmetry is evidence-justified and version-bumped.
 - **Entry reference price:** the **close of the final confirming candle**
   (`entry_price = confirm_close`). Per §1.2 the position is taken on the **next**
   bar; the backtest fill is that next bar's open adjusted by modeled
@@ -235,277 +289,322 @@ later touch; a fresh breakout is required.
 
 ### 7.1 Engine-contract mapping (NORMATIVE — ORB state machine onto a per-bar weight)
 
-The backtest engine consumes a **per-bar signal weight in `[-1.0, 1.0]`**, not a
-bracket order (audit §E). The multi-step ORB is implemented **inside**
-`generate()` as an explicit per-symbol state machine emitting a weight series:
-
-- States: `FLAT → ARMED (post-breakout) → RETESTED → IN_POSITION → FLAT`.
-- While `FLAT`/`ARMED`/`RETESTED`: weight = `0.0`.
-- On confirmed entry: weight = `+1.0` (long) / `-1.0` (short), held until exit.
-- **Stop/target enforced in-`generate()`**: when a completed bar's low/high
-  crosses `stop_loss` or `take_profit` (or a §12 time/weekend rule fires), the
-  weight returns to `0.0` on the exit bar (shifted per §1.2). The engine models
-  no broker-side SL/TP, so the strategy owns exit detection.
-- **One position per symbol** is structurally guaranteed: weight is only ever
-  `0`, `+1`, or `−1`; the machine never adds to or averages a position (§9).
+The engine consumes a per-bar weight in `[-1.0, 1.0]`, not bracket orders
+(audit §E). The ORB is a per-symbol state machine inside `generate()`:
+`FLAT → ARMED (post-breakout) → RETESTED → IN_POSITION → FLAT`.
+Weight is `0.0` until confirmed entry, then `+1.0` (long) / `−1.0` (short) held
+until exit; **stop/target are enforced in-`generate()`** (weight→0 on the exit
+bar, shifted per §1.2) since the engine models no broker SL/TP. Weight is only
+ever `0`, `+1`, `−1`, so **one position per symbol** and **no averaging** are
+structurally guaranteed (§9).
 
 ---
 
 ## 8. Trade Instruction Contract v1 (versioned schema)
 
-Every qualified setup emits **one** Trade Instruction — a passive, self-describing
-data object (§0.2). The schema is **versioned** (`instruction_schema_version = 1`);
-any field change bumps this version and the spec version. All timestamps are
-**UTC, ISO-8601**. All prices are in the symbol's quote currency.
+Every qualified setup emits **one** passive Trade Instruction (§0.2). Schema is
+versioned (`instruction_schema_version = 1`); any field change bumps it and the
+spec version. Timestamps are **UTC, ISO-8601**; prices in the quote currency.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `instruction_schema_version` | int | yes | Schema version (=`1`). |
-| `signal_id` | string | yes | **Deterministic** id (see below) — no randomness. |
-| `strategy_version` | string | yes | `swing_orb.v1.1.0`. |
-| `symbol` | string | yes | Canonical `EURUSD.FX` (§13). |
+| `instruction_schema_version` | int | yes | `1`. |
+| `signal_id` | string | yes | **Deterministic** content hash (below). |
+| `strategy_version` | string | yes | `swing_orb.v1.2.0`. |
+| `symbol` | string | yes | Canonical `EURUSD.FX` (§15). |
 | `direction` | enum | yes | `LONG` / `SHORT`. |
-| `entry_price` | float | yes | Reference entry (§7) = final confirming close. |
+| `entry_price` | float | yes | Final confirming close (§7). |
 | `stop_loss` | float | yes | Structural stop (§10). |
 | `take_profit` | float | yes | Fixed-2R target (§11). |
 | `generated_timestamp` | string (UTC ISO-8601) | yes | Confirming-bar close time. |
-| `expiration_timestamp` | string (UTC ISO-8601) | yes | Validity horizon (see §8.2). |
+| `expiration_timestamp` | string (UTC ISO-8601) | yes | Validity horizon (§8.2). |
 | `evidence_summary` | object | yes | Structured decision trail (§8.1). |
 | `confidence` | float in [0,1] | optional | See §8.3. |
 
 - **`signal_id` (deterministic):**
-  `signal_id = sha256("{strategy_version}|{symbol}|{direction}|{generated_timestamp}|{entry_price}|{stop_loss}|{take_profit}")[:16]`.
-  It is a pure function of the instruction contents — **no UUIDs, no clock, no
-  randomness** — so identical inputs reproduce identical ids (supports §16
+  `sha256("{strategy_version}|{symbol}|{direction}|{generated_timestamp}|{entry_price}|{stop_loss}|{take_profit}")[:16]`
+  — a pure function of contents, **no UUIDs/clock/randomness** (supports §18
   repeatability).
 
 ### 8.1 `evidence_summary` (required contents)
 
-A structured object (not free text) with at least: `range_high`, `range_low`,
-`or_window_utc` (start/end), `session_date`, `bias_d1`, `bias_h4`,
-`breakout_bar_ts`, `breakout_close`, `buffer`, `atr14`, `retest_bar_ts`,
-`retest_extreme`, `max_retest_deviation`, `confirm_bar_ts` (list),
-`confirm_closes` (list), `stop_basis`, `rr_planned`, `filters_passed`
-(session/news/spread/stale flags).
+Structured object (not free text) with at least: `trend_d1`, `trend_h4`,
+`confirmed_swings_d1`, `confirmed_swings_h4` (the pivots used, with indices/prices),
+`range_source` (`london_or`), `or_window_utc`, `session_date`, `range_high`,
+`range_low`, `breakout_bar_ts`, `breakout_close`, `buffer`, `atr14`,
+`retest_bar_ts`, `retest_extreme`, `max_retest_deviation`, `minor_swing_ref`
+(price/ts of the broken minor swing), `confirm_bar_ts`, `confirm_close`,
+`stop_basis`, `rr_planned`, `news_check` (§12 result), `filters_passed`
+(session/spread/stale flags), and `reason_code` (`OK` for an emitted instruction;
+§13 codes otherwise).
 
 ### 8.2 Expiration
 
-`expiration_timestamp = generated_timestamp + entry_valid_bars * tf_minutes`
-(`entry_valid_bars` default 1 — valid only for the immediately following bar,
-matching the §1.2 next-bar fill). An instruction consumed after
-`expiration_timestamp`, or whose geometry no longer holds, is **stale → no
-trade** (§13).
+`expiration_timestamp = generated_timestamp + entry_valid_bars·tf_minutes`
+(`entry_valid_bars` default 1 — valid only for the immediately following bar).
+An instruction consumed after expiry, or whose geometry no longer holds, is
+**stale → no trade** (§14).
 
 ### 8.3 `confidence`
 
-The v1 baseline is a **deterministic, rule-based** qualifier: a setup either
-passes every gate or is not emitted. There is **no graded/probabilistic score**
-in v1. For forward compatibility the field is emitted as a fixed
-`confidence = 1.0` for any instruction that clears all gates (equivalently it may
-be omitted). A graded confidence model is explicitly **deferred**; introducing
-one is a schema/version change.
+v1 is a deterministic, rule-based qualifier: a setup either passes every gate or
+is not emitted. There is **no graded score** in v1; the field is emitted as fixed
+`confidence = 1.0` for a fully-qualified setup (or omitted). A graded model is
+deferred (schema/version change).
 
 ---
 
 ## 9. Risk — Frozen Version-1 policy
 
-The following are **frozen invariants** for v1 (changing any is a version bump):
+Frozen invariants for v1 (changing any is a version bump):
 
-- **Risk per trade:** **0.25% of account equity** (`risk_pct = 0.0025`).
-- **One open position per symbol** (hard rule; enforced by §7.1).
-- **Fixed reward-to-risk target:** **2.0R** (`rr_target = 2.0`, `min_rr = 2.0`);
-  a setup that cannot meet 2.0R is **not** traded.
-- **No scaling** (no partial entries, no partial exits in v1).
-- **No pyramiding** (never add to a winner).
-- **No averaging down** (never add to a loser).
-- **No martingale / no grid** (size never increases after a loss).
-- **Advanced exits are explicitly deferred:** no trailing stop, no break-even
-  move, no structure/HTF target, no time-based scale-out in v1. Exit is strictly
-  **stop_loss or take_profit** (or a §12 time/weekend/failure force-exit).
-- **Correlated exposure bound:** `max_correlated_risk_pct` (baseline `0.50%`).
-  Not exercised by the single-symbol EURUSD baseline, but the control must exist
-  and be enforced once a second correlated pair is added.
-- **Daily and total loss controls (fail-closed):** `daily_max_loss_pct` (`1.0%`)
-  halts new trades for the rest of the UTC day; `total_max_loss_pct` (`6.0%`)
-  halts new signals until manual reset. If equity/PnL state cannot be read
-  reliably → treat as breached → no trade.
+- **Risk per trade:** **0.25%** of account equity (`risk_pct = 0.0025`).
+- **One open position per symbol** (enforced by §7.1).
+- **Fixed reward-to-risk target: 2.0R** (`rr_target = min_rr = 2.0`); a setup that
+  cannot meet 2.0R is not traded.
+- **No scaling** (no partial entries/exits), **no pyramiding**, **no averaging
+  down**, **no martingale / no grid**.
+- **Advanced exits explicitly deferred:** no trailing stop, no break-even, no
+  structure/HTF target, no time-based scale-out. Exit is strictly `stop_loss` or
+  `take_profit` (or a §12 time/weekend/failure force-exit).
+- **Correlated exposure bound:** `max_correlated_risk_pct` (baseline 0.50%);
+  dormant for the single-symbol EURUSD baseline but must exist.
+- **Daily/total loss controls (fail-closed):** `daily_max_loss_pct` (1.0%) halts
+  new trades for the rest of the UTC day; `total_max_loss_pct` (6.0%) halts new
+  signals until manual reset. Unreadable equity/PnL → treat as breached → no trade.
 
-Position size is fixed-fractional off the structural stop only:
-`units = (equity * risk_pct) / (stop_distance_price * pip_value)`.
+Size: `units = (equity·risk_pct)/(stop_distance_price·pip_value)`.
 
 ---
 
 ## 10. Stop loss
 
-- **Structural stop** beyond the retest invalidation point:
-  - Long: `stop_loss = min(retest_low, range_high) - stop_pad`.
+- Structural stop beyond the retest invalidation point:
+  - Long: `stop_loss = min(retest_low, range_high) − stop_pad`.
   - Short: `stop_loss = max(retest_high, range_low) + stop_pad`.
-  - `stop_pad = max(stop_min_pips_in_price, stop_atr_mult * ATR14)`; defaults
-    `stop_min_pips = 2`, `stop_atr_mult = 0.25`.
-- **Maximum stop-distance protection:** `max_stop_pips` (baseline 60 for EURUSD).
-  If the structural stop distance exceeds it → setup **rejected** (no nearer,
-  non-structural stop is fabricated).
+  - `stop_pad = max(stop_min_pips_in_price, stop_atr_mult·ATR14)` (defaults
+    `stop_min_pips = 2`, `stop_atr_mult = 0.25`).
+- **Max stop-distance protection:** `max_stop_pips` (baseline 60 EURUSD); exceed →
+  setup **rejected** (no fabricated nearer stop).
 - **No valid structural stop ⇒ no trade.**
 
 ---
 
 ## 11. Profit management (frozen: fixed multiple)
 
-- `take_profit = entry_price ± rr_target * stop_distance`, `rr_target` **2.0**.
-  Long adds, short subtracts.
-- **Rationale:** most deterministic, cleanest baseline before optimization.
-  Alternatives **(b) higher-TF structure target** and **(c) partial-profit +
-  structure trail** are documented as intended *later* options and are
-  **explicitly deferred** (see §9 advanced exits).
+`take_profit = entry_price ± rr_target·stop_distance`, `rr_target = 2.0`. Most
+deterministic baseline; higher-TF-structure and partial-profit-trail alternatives
+are **deferred** (§9).
 
 ---
 
-## 12. Time / news / data filters
+## 12. News Engine Contract
 
-- **Session eligibility:** setups armed only during the configured
-  London-anchored window. Outside eligible hours, no new setup is armed.
-- **Friday / weekend holding policy:** **no position held over the weekend.** Any
-  open position is closed before Friday session end (`friday_close_utc`); no new
-  entries after `friday_no_new_entry_utc`. The signal layer must not emit entries
-  that would necessarily straddle the weekend. In backtest, the state machine
-  (§7.1) force-exits at `friday_close_utc`.
-- **High-impact-news lockout:** entries blocked within `news_lockout_min`
-  (baseline ±30 min) of a configured high-impact event for the traded
-  currencies. **Fail-closed:** if the calendar is unavailable/stale, treat the
-  window as locked out. In backtest, absent a supplied event dataset the run
-  must **record the news filter as inactive** (never silently "passed", §14).
-- **Spread rejection:** if current spread `> max_spread_pips` (baseline 2.0),
-  reject entry.
-- **Stale-data rejection:** if the latest completed bar is older than
-  `max_data_age` (a small multiple of the bar interval), reject → no trade.
+News handling has two parts: (A) the **News Engine** component (continuous
+ingestion) and (B) **v1 trade-qualification consumption** (risk filter only).
+Both are specified as design contracts; **for backtest, news is a supplied,
+timestamped event dataset** — building the live continuous ingestion service may
+be a separate component/phase (see the scoping ambiguity in the return).
 
----
+### 12.1 News Engine (component contract)
 
-## 13. Failure semantics (all fail-closed → NO TRADE)
+Runs **continuously, including when the Forex market is closed**. It must:
+- ingest and **timestamp scheduled** economic events;
+- ingest and **timestamp material unscheduled** geopolitical or central-bank news;
+- retain **source/provenance** for every record;
+- identify **affected currencies and pairs**;
+- **reject stale or unverified** records;
+- remain **operational independently of trading-session state**.
 
-Return **no trade** (never a guess) in every one of these:
-missing data; incomplete/forming candles where a completed candle is required;
-ambiguous session/timezone (incl. DST-transition); insufficient history
-(EMA/ATR warmup, `< or_min_bars` in the range, or an incomplete higher-TF bucket
-per §1.1); neutral/conflicting H4/D1 bias; failed/timed-out retest (§5); no valid
-structural stop (§10); RR below 2.0 (§11); any filter failure (§12); invalid or
-stale instruction (expired `expiration_timestamp` or broken geometry).
+### 12.2 v1 trade-qualification consumption (frozen)
 
-> **Platform hazard (audit §F):** the backtest classifier recognizes forex only
-> as `EUR/USD` or `EURUSD.FX`, but artifact CSV writing breaks on the `/` in
-> `EUR/USD`. **Canonical for run configs is `EURUSD.FX`** (verified working). Any
-> unrecognized/misrouted symbol → no trade.
-
----
-
-## 14. Validation plan (design-only; executed in a later phase)
-
-- **In-sample / out-of-sample separation** with a held-out final period that is
-  **never** used for parameter selection.
-- **Walk-forward** testing. *Caveat (audit §D/§F):* the platform's built-in
-  `walk_forward_analysis` is a **consistency-across-windows** check, not true
-  anchored/rolling WFO. Genuine walk-forward is **orchestrated externally**.
-- **Monte Carlo.** *Caveat:* built-in `monte_carlo_test` is a **trade-order
-  permutation** test, not synthetic price paths.
-- **Bootstrap** CIs. *Caveat:* built-in is **IID** (no block bootstrap).
-- **Costs included:** spread (modeled per-pair), swap (incl. Wednesday triple),
-  slippage. **Commission is hard-zero in the FX engine** — state in every result.
-- **Breakdowns required:** regime, pair-by-pair, long-vs-short, session, and
-  day-of-week.
-- **No parameter selection using final holdout data.**
-- **Reproducibility:** fixed seeds; record whether the news filter had an event
-  dataset (else reported inactive, not silently "passed").
+- News acts **only as a risk filter**: it **does not generate direction** and
+  **does not override** any strategy requirement (§§2–11).
+- **High-impact windows block new entries.** Define, per affected currency:
+  - **Pre-event lockout:** `news_pre_lockout_min` (default 30 min) before a
+    high-impact event.
+  - **Post-event lockout:** `news_post_lockout_min` (default 30 min) after.
+- **Existing-position behavior (separate):** an open position is **not force-closed
+  by news** in v1 (advanced exits deferred, §9); news only blocks **new** entries.
+  (A news-driven flat/protect policy is a deferred candidate.)
+- **Fail-closed:** **missing, stale, conflicting, or unavailable** required news
+  data for an affected currency → **no new trade**.
+- **Auditability:** every news-based denial records a structured, auditable reason
+  (`E_NEWS`, §13) including the event(s) and provenance consulted; when no event
+  dataset is supplied in backtest, the run **records the news filter as inactive**
+  (never silently "passed").
 
 ---
 
-## 15. Configurable parameters (summary)
+## 13. Session / weekend / market-data filters
+
+- **Session eligibility:** setups armed only during the configured London-anchored
+  window; outside eligible hours no new setup is armed.
+- **Friday / weekend policy:** **no position held over the weekend.** Open
+  positions closed before `friday_close_utc`; no new entries after
+  `friday_no_new_entry_utc`; the signal layer must not emit entries that would
+  necessarily straddle the weekend. Backtest state machine force-exits at
+  `friday_close_utc`.
+- **Spread rejection:** current spread `> max_spread_pips` (baseline 2.0) → reject.
+- **Stale-data rejection:** latest completed bar older than `max_data_age` (small
+  multiple of the interval) → no trade.
+- (High-impact **news** lockout is specified separately in §12.)
+
+---
+
+## 14. Pipeline order & reason codes (FROZEN)
+
+Qualification runs in this **fixed order**; the **first** failing stage produces
+**no trade** and an **auditable reason code**, and no later stage can override it:
+
+1. **Closed / contiguous data** — complete, gap-free, non-stale bars (else `E_DATA`).
+2. **Session & range validity** — session eligible; London OR well-formed (§3.1)
+   (else `E_SESSION`).
+3. **Higher-timeframe trend** — H4+D1 structure agree and permit a direction (§2)
+   (else `E_TREND`).
+4. **Completed-candle breakout** — close beyond boundary + buffer, trend-aligned,
+   not wick-only (§3.3) (else `E_BREAKOUT`).
+5. **Retest** — valid retest, not failed/timed-out/gapped (§4) (else `E_RETEST`).
+6. **Deterministic price-action confirmation** — minor-swing break (§5)
+   (else `E_CONFIRM`).
+7. **News eligibility** — no active high-impact lockout; news data present & fresh
+   (§12) (else `E_NEWS`).
+8. **Risk eligibility** — valid structural stop, RR ≥ 2.0, within max-stop, within
+   loss/exposure limits, one-position (§§9–11) (else `E_RISK`).
+9. **Versioned trade instruction** — emit (§8) with `reason_code = OK`.
+
+Every stage's outcome (pass/fail + code) is recorded for a fully reconstructable
+audit trail.
+
+---
+
+## 15. Failure semantics (all fail-closed → NO TRADE)
+
+Return **no trade** (never a guess) for: missing/incomplete/forming/non-contiguous
+data; ambiguous session/timezone (incl. DST-transition); insufficient history
+(pivot/ATR warmup, `< or_min_bars`, incomplete higher-TF bucket §1.1, `<`
+required confirmed swings §2.3); neutral/conflicting H4/D1 trend; failed/timed-out
+retest or data gap (§4); confirmation not met (§5); missing/stale/conflicting news
+(§12); no valid structural stop / RR<2.0 / max-stop exceeded / loss-limit breach
+(§§9–11); invalid or stale instruction (§8.2). Each maps to a §14 reason code.
+
+> **Platform hazard (audit §F):** the backtest classifier recognizes forex only as
+> `EUR/USD` or `EURUSD.FX`, but artifact CSV writing breaks on the `/` in
+> `EUR/USD`. **Canonical for run configs is `EURUSD.FX`.** Unrecognized/misrouted
+> symbol → no trade.
+
+---
+
+## 16. Validation plan (design-only; later phase)
+
+In-sample/out-of-sample separation with an untouched final holdout; walk-forward
+(*caveat:* built-in is a consistency check, not true WFO — orchestrate externally,
+audit §D/§F); Monte Carlo (*caveat:* built-in is a trade-order permutation test);
+bootstrap CIs (*caveat:* IID, no block bootstrap). Costs: spread + swap (incl.
+Wednesday triple) + slippage; **commission is hard-zero in the FX engine** — state
+in every result. Breakdowns: regime, pair-by-pair, long-vs-short, session,
+day-of-week. **No parameter selection on the final holdout.** Fixed seeds; record
+whether the news dataset was present (else news reported inactive).
+
+---
+
+## 17. Configurable parameters (summary of frozen defaults)
 
 | Param | Default | Meaning |
 |---|---|---|
 | `execution_tf` | `15m` | OR/breakout/retest/confirm TF (must divide H4) |
-| `bias_tfs` | `H4,D1` | Bias timeframes (both must align) |
-| `bias_ema_fast/slow` | `20 / 50` | Bias EMAs |
-| `session_anchor` / `session_tz` | `London` / `Europe/London` | DST-aware anchor |
-| `or_start_local` / `or_window` | `08:00` / `60m` | Opening-range start & duration |
-| `or_min_bars` | window-derived | Min closed bars to form a range |
+| `bias_tfs` | `H4,D1` | Trend timeframes (both must agree) |
+| `pivot_k` | `2` | HTF fractal pivot strength (§2.1) |
+| `min_confirmed_highs` / `min_confirmed_lows` | `2 / 2` | Required confirmed swings (§2.3) |
+| `swing_eq_tol` | `max(1 pip, 0.1·ATR14)` | Swing equality tolerance (`eq_min_pips=1`, §2.3) |
+| `minor_pivot_k` | `1` | Execution-TF minor-swing strength (§5) |
+| `confirm_bars` | `1` | Confirmation closes required (§5) |
+| `session_anchor`/`session_tz` | `London`/`Europe/London` | DST-aware anchor |
+| `or_start_local`/`or_window` | `08:00`/`60m` | London OR start & duration |
+| `or_min_bars` | window-derived | Min closed bars to form the OR |
+| `min_range_bars`/`max_range_bars` | `6`/`48` | Generic range duration (§3.2, deferred use) |
+| `min_boundary_touches` | `2` | Boundary touches for a valid generic range |
+| `min_width_atr`/`max_width_atr` | `0.5`/`5.0` | Vol-normalized range width (§3.2) |
 | `buffer` | `max(2 pip, 0.25·ATR14)` | Min breakout distance |
 | `setup_max_bars` | `12` | Bars allowed breakout→entry |
 | `retest_tol` | `max(2 pip, 0.15·ATR14)` | Retest touch tolerance |
 | `max_retest_deviation` | `max(retest_tol, 0.5·ATR14)` | Max pullback penetration |
-| `reentry_tol` | `= retest_tol` | Range-reclaim invalidation band |
-| `confirm_bars` | `1` | Continuation confirmation count |
-| `body_min_frac` | `0.5` | Min body fraction of confirming candle |
+| `reentry_tol` | `= retest_tol` | Reclaim invalidation band |
 | `risk_pct` | `0.0025` | Risk per trade (0.25%) |
-| `min_rr` / `rr_target` | `2.0 / 2.0` | Min and target reward-to-risk |
+| `min_rr`/`rr_target` | `2.0/2.0` | Reward-to-risk |
 | `max_correlated_risk_pct` | `0.005` | Correlated exposure cap |
-| `daily_max_loss_pct` / `total_max_loss_pct` | `0.01 / 0.06` | Loss kills |
+| `daily_max_loss_pct`/`total_max_loss_pct` | `0.01/0.06` | Loss kills |
 | `stop_pad` | `max(2 pip, 0.25·ATR14)` | Structural stop padding |
 | `max_stop_pips` | `60` | Max stop distance (else no trade) |
-| `entry_valid_bars` | `1` | Instruction validity horizon (→ expiration) |
-| `news_lockout_min` | `30` | High-impact news lockout (± min) |
+| `entry_valid_bars` | `1` | Instruction validity horizon |
+| `news_pre_lockout_min`/`news_post_lockout_min` | `30/30` | High-impact lockout windows (§12) |
 | `max_spread_pips` | `2.0` | Max spread to allow entry |
 | `max_data_age` | `1.5×` bar | Stale-data cutoff |
-| `friday_no_new_entry_utc` / `friday_close_utc` | configurable | Weekend policy |
+| `friday_no_new_entry_utc`/`friday_close_utc` | configurable | Weekend policy |
 
-`pip` = 0.0001 for non-JPY pairs (0.01 for JPY quote); `*_in_price` denotes the
-pip value converted to price units. All defaults are **provisional baseline
-values**, deterministic and **not** optimized.
-
----
-
-## 16. Phase 1 acceptance criteria (definition of done)
-
-Phase 1 is complete when **all** hold:
-
-1. **Deterministic outputs.** Identical inputs → identical signals, instructions,
-   and trades. No wall-clock, RNG, or environment dependence in strategy logic;
-   `signal_id` is content-derived (§8).
-2. **No look-ahead bias.** A test proves a signal at bar *t* depends only on data
-   ≤ *t* and takes effect at *t+1* (§1.2).
-3. **Repeatable results.** Re-running the same config on the same data (same
-   machine or another) yields byte-identical signals/metrics (fixed seeds; no
-   nondeterministic ordering).
-4. **Fail-closed behavior.** Every §13 failure path returns **no trade**, covered
-   by unit tests.
-5. **Complete audit trail.** Every emitted instruction carries all §8 fields with
-   a valid §8.1 `evidence_summary`; every *rejected* setup records a structured
-   reason (which gate failed) so a run's decisions are fully reconstructable.
-6. **No changes to Vibe-Trading core subsystems.** The `SignalEngine` is added
-   via the file/run-dir extension point (audit §E) with **zero** modifications to
-   Vibe-Trading's engine, loaders, validation, export, swarm, agent, or memory
-   subsystems; **Phantom and Titan untouched**; the §0.2 execution boundary is
-   never crossed. The repo's official validation (safety gates, syntax check,
-   full pytest suite) stays green.
-7. A minimal **EURUSD** backtest runs end-to-end through the existing `ForexEngine`
-   (symbol `EURUSD.FX`) producing metrics + platform validation artifacts, with
-   spread/swap/slippage modeled and commission noted as zero.
-8. Unit tests cover: opening-range determinism, DST/session eligibility, bias
-   truth table (incl. fail-closed neutral/conflict), wick-vs-close breakout,
-   the §5 retest contract (valid / failed / timeout / over-penetration /
-   reclaim), continuation criteria, structural stop & max-stop rejection,
-   RR≥2.0 gating, instruction-schema completeness + deterministic `signal_id`,
-   and the state machine's single-position / no-averaging guarantee.
-
-Full validation *analysis* (walk-forward/MC/bootstrap/breakdowns, §14) is planned
-but its external orchestration may extend into a Phase 1.x task; the minimal
-end-to-end run plus the unit-test suite above are the hard gate.
+`pip` = 0.0001 (0.01 for JPY quote); `*_in_price` = pip converted to price units.
+All defaults are deterministic and **not** optimized.
 
 ---
 
-## 17. Change log
+## 18. Phase 1 acceptance criteria (definition of done)
 
-- **v1.1.0** — Design revision requested pre-Phase-1 approval. Froze the exact
-  London opening-range window (08:00–09:00 `Europe/London`, explicit GMT/BST UTC
-  mapping, §2). Added the versioned **Trade Instruction Contract v1** with
-  `signal_id`/`confidence`/`generated_`+`expiration_timestamp`/`evidence_summary`
-  and a deterministic `signal_id` rule (§8). Expanded the **Retest contract**
-  (valid/failed/timeout/max deviation/invalidation, §5). Consolidated the frozen
-  **Version-1 risk policy** incl. no-scaling/pyramiding/averaging/martingale and
-  deferred advanced exits (§9). Added the explicit **Execution boundary** (§0.2).
-  Strengthened **Phase 1 acceptance criteria** (deterministic, no-lookahead,
-  repeatable, fail-closed, complete audit trail, no core changes, §16).
-- **v1.0.0** — Frozen baseline. Added platform-fit rules: single-interval
-  backtest constraint & multi-TF derivation (§1.1), no-lookahead (§1.2),
-  engine-contract/state-machine mapping (§7.1), evidence schema, expiration rule,
-  Phase 1 acceptance criteria. Canonical symbol set to `EURUSD.FX`. Superseded
-  the pre-freeze `v0.1.0-draft`.
+Global gates (unchanged): **deterministic outputs**; **no look-ahead**;
+**repeatable results** (byte-identical signals/metrics on re-run; content-derived
+`signal_id`); **fail-closed** on every §15 path; **complete audit trail** (every
+emitted instruction carries §8 fields incl. `evidence_summary`; every rejected
+setup records its §14 reason code); **no changes to Vibe-Trading core subsystems**
+(added via the file/run-dir extension point, audit §E; §0.2 boundary never
+crossed; **Phantom and Titan untouched**; official validation stays green); a
+minimal **EURUSD** (`EURUSD.FX`) end-to-end backtest through `ForexEngine`.
+
+**Required tests (v1.2.0 — added/expanded):**
+1. **Deterministic swing detection** — fixtures yield exact confirmed pivots.
+2. **No future-bar/look-ahead dependency** — a pivot/decision at *t* uses only
+   bars ≤ *t* (pivot confirmation latency §2.2 enforced).
+3. **Trend cases** — bullish, bearish, neutral, and **insufficient-history**
+   inputs each classify correctly (incl. H4/D1 disagreement → neutral).
+4. **Completed close vs wick-only breakout** — wick-only does not arm; completed
+   close beyond boundary+buffer does.
+5. **Valid and failed retests** — valid hold; over-penetration; decisive reclaim;
+   **data-gap invalidation**; and **no skip-and-resume**.
+6. **Setup expiration** — timeout with no valid retest/confirmation → no trade.
+7. **Price-action confirmation pass/fail** — minor-swing break confirmed vs not.
+8. **Range validity and invalidity** — well-formed vs each §3.2 invalidation cause.
+9. **Missing or stale news fails closed** — absent/stale/conflicting news → no
+   new trade with `E_NEWS`.
+10. **High-impact news blocks new entries** — active pre/post lockout → `E_NEWS`.
+11. **News does not generate direction** — news alone never produces a signal;
+    direction always derives from §2 trend + §§3–5.
+12. **Identical inputs → identical signal IDs and outputs.**
+13. **No MT5/broker/Titan/Phantom dependency** — import/boundary test.
+14. **No Vibe-Trading core subsystem changes** — repo official validation green.
+
+Full validation *analysis* (§16) may extend into a Phase 1.x task; the minimal
+end-to-end run plus this test suite are the hard gate.
+
+---
+
+## 19. Change log
+
+- **v1.2.0** — Approved pre-Phase-1 requirements. **Replaced EMA bias with a
+  frozen market-structure trend** (fractal pivot `pivot_k`, alternation rule,
+  confirmed HH/HL vs LH/LL with `swing_eq_tol`, H4+D1 agreement, pivot
+  no-lookahead latency, §2). Added the **generic consolidation-range contract**
+  (duration/boundaries/variation/width/vol-normalized/invalidity) alongside the
+  primary London OR, with v1 trade-trigger use deferred (§3.2). Expanded the
+  **retest contract** with data-contiguity, gap/missing-data invalidation, and the
+  **no-skip-and-resume** rule (§4.1). Froze the **v1 price-action confirmation**
+  as the minor-swing break, with engulfing/rejection explicitly deferred (§5).
+  Added the **News Engine Contract** (continuous ingestion; v1 risk-filter-only
+  consumption with pre/post lockout, separate existing-position behavior,
+  fail-closed, auditable, §12). Froze the **pipeline order & reason codes** (§14).
+  Expanded **Phase 1 acceptance tests** (§18).
+- **v1.1.0** — Froze exact London OR window (08:00–09:00 Europe/London, GMT/BST
+  mapping); added versioned Trade Instruction Contract v1 (deterministic
+  `signal_id`); expanded retest contract; froze v1 risk (no scaling/pyramiding/
+  averaging/martingale; advanced exits deferred); added Execution boundary;
+  strengthened acceptance criteria.
+- **v1.0.0** — Frozen baseline: single-interval multi-TF derivation, no-lookahead,
+  engine-contract/state-machine mapping, evidence schema, expiration, acceptance
+  criteria; canonical symbol `EURUSD.FX`.
