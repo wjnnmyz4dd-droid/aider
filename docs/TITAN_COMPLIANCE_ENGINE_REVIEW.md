@@ -53,6 +53,16 @@ The Swing-ORB Execution Boundary (spec §0.2) already forbids the strategy from
 touching MT5/brokers, so the two halves meet only at the **Trade Instruction**
 object. This is the correct seam.
 
+**Transport (added):** that seam is now specified as a **local filesystem
+execution bridge** (`docs/FILESYSTEM_EXECUTION_BRIDGE_SPEC.md`) — the producer
+atomically writes instructions to `outbox/pending/`; Titan atomically claims them
+(`pending→claimed`) and writes exactly one result to `inbox/results/`. The bridge
+is **filesystem-only (no networking)** and design-only (implementation gated on
+Swing-ORB Phase 1 acceptance). It gives Titan's ingestion (F-1), execution gating
+(§4), deduplication (F-8), and auditability (§7) a concrete, deterministic
+substrate; the bridge's §7 validation order and Titan's compliance gate (§3 F-7)
+must be kept consistent.
+
 **Findings:**
 - **F-1 (finding, medium):** the boundary is asserted but not yet *contract-
   enforced*. There is no specified mechanism guaranteeing Titan will **reject any

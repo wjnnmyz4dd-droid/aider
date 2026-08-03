@@ -212,8 +212,9 @@ caveats from §D/§F). All parameters are provisional/unoptimized.
 | Backtest engines (`ForexEngine`/`BaseEngine`) | Run/validate the Swing-ORB `SignalEngine`; costs (spread/swap/slippage) | — | — |
 | `SignalEngine` contract (`skills/strategy-generate`) | **Primary home of Swing-ORB logic** (opening range, bias, breakout, retest, confirmation) | — | Phantom `orb.py` / `strategies/orb_strategy.py` as a *reference* for ORB structuring only (no merge) |
 | Validation (`backtest/validation.py`) | MC (permutation) + IID bootstrap + window-consistency; **external true WFO + IS/OOS orchestration added around it** | — | — |
-| Signal/instruction schema (**new, to define**) | Emit versioned, expiring trade instruction (symbol/dir/entry/stop/target/ts/evidence/expiration) | Consume the instruction verbatim | Phantom score/decision (`scorer.py`,`scanner.py` `APPROVE/WATCHLIST/BLOCK`) as an optional *qualification gate* input — evaluation only |
-| Live gate (`live/sdk_order_gate.py`), mandate (`live/mandate/`), halt (`live/halt.py`) | — | **Reuse** as the fail-closed execution boundary | Phantom `guards.py`/`risk.py` (spread/news/correlation/exposure/RR) as candidate parity checks — evaluation only |
+| Signal/instruction schema (**new, to define**) | Emit versioned, expiring trade instruction (symbol/dir/entry/stop/target/ts/evidence/expiration) then **write it to the filesystem outbox** | **Claim** the instruction file, validate, execute; **write a result** to the inbox | Phantom score/decision (`scorer.py`,`scanner.py` `APPROVE/WATCHLIST/BLOCK`) as an optional *qualification gate* input — evaluation only |
+| **Local filesystem execution bridge** (**new; design-only, `docs/FILESYSTEM_EXECUTION_BRIDGE_SPEC.md`**) | **Producer:** atomic-write instructions to `outbox/pending/`; ingest `inbox/results/` for analytics/audit. **No MT5/network.** | **Consumer:** atomic-claim `pending→claimed`, run the ordered validation gate, execute, write exactly one result; dedup + reconcile | — (Phantom not involved in the transport) |
+| Live gate (`live/sdk_order_gate.py`), mandate (`live/mandate/`), halt (`live/halt.py`) | — | **Reuse** as the fail-closed execution boundary **behind the bridge consumer** | Phantom `guards.py`/`risk.py` (spread/news/correlation/exposure/RR) as candidate parity checks — evaluation only |
 | MT5 connector (`trading/connectors/mt5/`) | — | **Reuse** `place_order`/size-guards; add ticket-pinned flatten + SL/TP surface | — |
 | Swarm presets (`macro_rates_fx_desk`, `risk_committee`, `quant_strategy_desk`) | Optional research/qualification context around the strategy | — | — |
 
@@ -224,6 +225,18 @@ instruction and independently enforces account/symbol/duplicate-position/
 lot-size/stop-distance/spread/stale-signal/kill-switch protections. These map
 directly onto the existing `sdk_order_gate` + mandate + `halt` primitives, which
 the EA either reuses (Python-side) or re-implements broker-side in MQL5.
+
+**Coupling = local filesystem only (no networking).** The SignalEngine and Titan
+are decoupled by a **local filesystem execution bridge** (full contract in
+`docs/FILESYSTEM_EXECUTION_BRIDGE_SPEC.md`): the producer atomically writes a
+versioned instruction to `outbox/pending/`; Titan atomically claims it to
+`outbox/claimed/`, runs an ordered fail-closed validation gate, executes, and
+writes exactly one terminal result to `inbox/results/`, which Vibe-Trading ingests
+for audit/reconciliation. The bridge uses **only** filesystem operations
+(temp-write + `fsync` + atomic rename, content-hashed `signal_id` filenames,
+persistent restart-surviving dedup) — **no HTTP/localhost/sockets/ports/WinINet/
+WebRequest**. It is **design-only** and its implementation begins **only after
+Swing-ORB Phase 1 acceptance** (Phase 1 does not write to the bridge).
 
 ---
 
