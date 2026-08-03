@@ -34,7 +34,7 @@ import pandas as pd
 
 
 STRATEGY_ID = "forex_swing_orb"
-STRATEGY_VERSION = "swing_orb.v1.3.0"
+STRATEGY_VERSION = "swing_orb.v1.4.0"
 INSTRUCTION_SCHEMA_VERSION = 1
 
 DEFAULT_CONFIG = {
@@ -72,7 +72,7 @@ DEFAULT_CONFIG = {
     "stop_atr_mult": 0.25,
     "max_stop_pips": 60.0,
     "entry_valid_bars": 1,
-    "news_required": False,
+    "news_research_bypass": False,
     "news_max_age_min": 1440,
     "news_pre_lockout_min": 30,
     "news_post_lockout_min": 30,
@@ -84,6 +84,9 @@ class ReasonCode:
     """Stable, deterministic per-stage reason codes (frozen spec §14)."""
 
     DATA_INSUFFICIENT = "DATA_INSUFFICIENT"
+    # RESERVED (spec §14.2): live-feed concerns enforced downstream; the backtest
+    # SignalEngine cannot emit these from candle data alone (candle gaps ->
+    # TEMPORAL_GAP instead). Kept for the downstream contract, not emitted here.
     DATA_NOT_CLOSED = "DATA_NOT_CLOSED"
     DATA_STALE = "DATA_STALE"
     TEMPORAL_GAP = "TEMPORAL_GAP"
@@ -110,6 +113,12 @@ class ReasonCode:
     STOP_INVALID = "STOP_INVALID"
     REWARD_RISK_INVALID = "REWARD_RISK_INVALID"
     SIGNAL_GENERATED = "SIGNAL_GENERATED"
+    # Dedicated exit reason codes (spec §14.1)
+    EXIT_STOP_LOSS = "EXIT_STOP_LOSS"
+    EXIT_TAKE_PROFIT = "EXIT_TAKE_PROFIT"
+    EXIT_TIME = "EXIT_TIME"
+    EXIT_INVALIDATED = "EXIT_INVALIDATED"
+    POSITION_HELD = "POSITION_HELD"
 
 
 # --- small deterministic helpers -------------------------------------------
@@ -296,7 +305,13 @@ def htf_bars(df, minutes):
     close_time = agg.index + span
     agg = agg.assign(close_time=close_time)
     complete = agg["close_time"] <= (last_open + pd.Timedelta(minutes=exec_tf))
-    return agg[complete]
+    out = agg[complete].copy()
+    # F1 fix (spec §2.2): index the HTF frame by the bar's CLOSE time, so a pivot
+    # confirmed at HTF bar (i+k) carries confirm_time = that bar's CLOSE and no
+    # HTF state is exposed before the confirming candle has closed.
+    out.index = pd.DatetimeIndex(out["close_time"])
+    out.index.name = "close_time"
+    return out.drop(columns=["close_time"])
 
 
 def htf_trend_events(df_exec, minutes, cfg):
@@ -453,46 +468,81 @@ def compute_signal_id(strategy_version, symbol, direction, generated_ts, entry, 
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def news_eligibility(decision_time_utc, symbol, cfg):
-    """Deterministic news risk-filter (frozen spec §12). Never sets direction.
+def parse_utc_ts(value):
+    """Parse a timestamp to tz-aware UTC; return None on any malformed input."""
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        return None
+    if ts is None or ts is pd.NaT:
+        return None
+    if ts.tz is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts
 
-    Returns (ok, reason, detail). Modes:
-      * news_required False  -> filter inactive (recorded, does not block).
-      * news_required True   -> require fresh, present data; block on high-impact
-                                lockout windows for affected currencies.
+
+def news_eligibility(decision_time_utc, symbol, cfg):
+    """Deterministic, FAIL-CLOSED news risk-filter (frozen spec §12.2).
+
+    Never sets direction. Fail-closed is the default/production posture: a setup
+    can only pass with news that is present, valid, fresh, verified, and outside
+    any high-impact lockout. Returns (ok, reason_code, detail).
+
+    * research bypass (explicit `news_research_bypass=True`) -> eligible,
+      audited as RESEARCH_BYPASS (never the default).
+    * missing / unverifiable freshness / malformed -> NEWS_DATA_UNAVAILABLE.
+    * older than news_max_age_min -> NEWS_DATA_STALE.
+    * inside a high-impact lockout for an affected currency -> NEWS_LOCKOUT.
     """
     base, quote = symbol_currencies(symbol)
     affected = {base, quote}
-    if not cfg.get("news_required", False):
-        return (True, "", {"active": False, "affected": sorted(affected)})
+    aff_sorted = sorted(affected)
+
+    if cfg.get("news_research_bypass", False):
+        return (True, "", {"mode": "RESEARCH_BYPASS", "active": False, "affected": aff_sorted})
+
     events = cfg.get("news_events", None)
-    if events is None:
-        return (False, ReasonCode.NEWS_DATA_UNAVAILABLE, {"active": True, "affected": sorted(affected)})
-    asof = cfg.get("news_asof", None)
-    if asof is not None:
-        asof_ts = pd.Timestamp(asof)
-        if asof_ts.tz is None:
-            asof_ts = asof_ts.tz_localize("UTC")
-        age_min = (decision_time_utc - asof_ts).total_seconds() / 60.0
-        if age_min > cfg["news_max_age_min"]:
-            return (False, ReasonCode.NEWS_DATA_STALE, {"active": True, "asof": format_ts(asof_ts)})
+    if events is None or not isinstance(events, (list, tuple)):
+        return (False, ReasonCode.NEWS_DATA_UNAVAILABLE,
+                {"mode": "FAIL_CLOSED", "reason": "no_news_dataset", "affected": aff_sorted})
+
+    # Freshness must be provable: an explicit, valid news_asof is required.
+    asof_ts = parse_utc_ts(cfg.get("news_asof", None))
+    if asof_ts is None:
+        return (False, ReasonCode.NEWS_DATA_UNAVAILABLE,
+                {"mode": "FAIL_CLOSED", "reason": "no_or_invalid_news_asof", "affected": aff_sorted})
+    age_min = (decision_time_utc - asof_ts).total_seconds() / 60.0
+    if age_min > cfg["news_max_age_min"]:
+        return (False, ReasonCode.NEWS_DATA_STALE,
+                {"mode": "FAIL_CLOSED", "asof": format_ts(asof_ts), "age_min": round(age_min, 2),
+                 "affected": aff_sorted})
+
     pre = cfg["news_pre_lockout_min"]
     post = cfg["news_post_lockout_min"]
     for ev in events:
-        if str(ev.get("impact", "")).lower() != "high":
+        # F3: validate each record; malformed -> fail closed (never raise).
+        if not isinstance(ev, dict):
+            return (False, ReasonCode.NEWS_DATA_UNAVAILABLE,
+                    {"mode": "FAIL_CLOSED", "reason": "malformed_record", "affected": aff_sorted})
+        impact = ev.get("impact")
+        currencies = ev.get("currencies")
+        ev_ts = parse_utc_ts(ev.get("timestamp"))
+        if impact is None or ev_ts is None or not isinstance(currencies, (list, tuple)):
+            return (False, ReasonCode.NEWS_DATA_UNAVAILABLE,
+                    {"mode": "FAIL_CLOSED", "reason": "malformed_record", "affected": aff_sorted})
+        if str(impact).lower() != "high":
             continue
-        ev_ccy = {str(c).upper() for c in ev.get("currencies", [])}
+        ev_ccy = {str(c).upper() for c in currencies}
         if not (ev_ccy & affected):
             continue
-        ev_ts = pd.Timestamp(ev["timestamp"])
-        if ev_ts.tz is None:
-            ev_ts = ev_ts.tz_localize("UTC")
         lo = ev_ts - pd.Timedelta(minutes=pre)
         hi = ev_ts + pd.Timedelta(minutes=post)
         if lo <= decision_time_utc <= hi:
             return (False, ReasonCode.NEWS_LOCKOUT,
-                    {"active": True, "event": format_ts(ev_ts), "currencies": sorted(ev_ccy)})
-    return (True, "", {"active": True, "affected": sorted(affected)})
+                    {"mode": "FAIL_CLOSED", "event": format_ts(ev_ts), "currencies": sorted(ev_ccy)})
+    return (True, "", {"mode": "VERIFIED", "active": True, "affected": aff_sorted})
 
 
 # --- core evaluation --------------------------------------------------------
@@ -639,22 +689,39 @@ def evaluate_symbol(symbol, df_in, cfg):
         # ----- manage an open position first (exits) -----
         if state == "IN_POSITION":
             rec["stage"] = "IN_POSITION"
+            weekday = local_dates[i].weekday()
+            local_hour = local_dates[i].hour
+            friday_exit = (weekday == 4 and local_hour >= cfg["friday_no_new_entry_local_hour"])
             hit_stop = (l[i] <= stop) if direction > 0 else (h[i] >= stop)
             hit_tp = (h[i] >= target) if direction > 0 else (l[i] <= target)
-            local_hour = local_dates[i].hour
-            weekday = local_dates[i].weekday()
-            friday_exit = (weekday == 4 and local_hour >= cfg["friday_no_new_entry_local_hour"])
-            if hit_stop or hit_tp or friday_exit:
+            # Deterministic worst-case exit precedence (spec §14.1):
+            # continuity break -> STOP (stop-first when same bar) -> TARGET -> TIME.
+            if gap_before[i]:
+                exit_code, exit_state = ReasonCode.EXIT_INVALIDATED, "EXIT_INVALIDATED"
+            elif hit_stop:
+                exit_code, exit_state = ReasonCode.EXIT_STOP_LOSS, "EXIT_STOP_LOSS"
+            elif hit_tp:
+                exit_code, exit_state = ReasonCode.EXIT_TAKE_PROFIT, "EXIT_TAKE_PROFIT"
+            elif friday_exit:
+                exit_code, exit_state = ReasonCode.EXIT_TIME, "EXIT_TIME"
+            else:
+                exit_code, exit_state = None, ""
+            if exit_code is not None:
                 decision[i] = 0.0
                 rec["decision"] = "EXIT"
-                rec["reason_code"] = "SIGNAL_GENERATED" if hit_tp else "RISK_INVALID"
-                rec["price_action_state"] = "EXIT_STOP" if hit_stop else ("EXIT_TP" if hit_tp else "EXIT_TIME")
+                rec["price_action_state"] = exit_state
+                rec["reason_code"] = exit_code
+                rec["numeric_evidence"] = {
+                    "stop_loss": stop, "take_profit": target,
+                    "bar_high": float(h[i]), "bar_low": float(l[i]),
+                    "same_bar_stop_and_target": bool(hit_stop and hit_tp),
+                }
                 state = "FLAT"
                 direction = 0
             else:
                 decision[i] = float(direction)
                 rec["decision"] = "HOLD"
-                rec["reason_code"] = "SIGNAL_GENERATED"
+                rec["reason_code"] = ReasonCode.POSITION_HELD
             audit.append(rec)
             continue
 
@@ -791,7 +858,7 @@ def evaluate_symbol(symbol, df_in, cfg):
 
             # ---- news eligibility ----
             neok, nereason, nedetail = news_eligibility(idx[i], symbol, cfg)
-            rec["news_state"] = "OK" if neok else nereason
+            rec["news_state"] = nedetail.get("mode", "OK") if neok else nereason
             if not neok:
                 state = "FLAT"; direction = 0
                 rec["reason_code"] = nereason
@@ -826,7 +893,10 @@ def evaluate_symbol(symbol, df_in, cfg):
 
             # ---- emit signal + instruction ----
             entry_price = entry; stop = stop_lvl; target = tgt
-            expiry_ts = idx[i] + pd.Timedelta(minutes=cfg["entry_valid_bars"] * tf)
+            # F4 (spec §8.2): expiry strictly AFTER the first effective execution
+            # bar (the shifted weight applies at idx[i]+tf); valid across it + N.
+            first_exec_ts = idx[i] + pd.Timedelta(minutes=tf)
+            expiry_ts = first_exec_ts + pd.Timedelta(minutes=cfg["entry_valid_bars"] * tf)
             state = "IN_POSITION"
             # apply position from next bar (no-lookahead handled by final shift)
             decision[i] = float(direction)

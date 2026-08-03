@@ -56,8 +56,9 @@ def test_forex_engine_executes_long():
     df2, _ = synth.inject_bullish_orb(df, "2024-01-25")
     cfg = {"codes": ["EURUSD.FX"], "interval": "15m", "initial_cash": 100000,
            "start_date": "2024-01-01", "end_date": "2024-03-01", "source": "local"}
+    news_ok = {"news_events": [], "news_asof": "2024-01-25T11:15:00Z"}  # fail-closed default -> supply fresh news
     with tempfile.TemporaryDirectory() as tmp:
         eng = ForexEngine(cfg)
-        metrics = eng.run_backtest(cfg, _fake_loader(df2), se.SignalEngine(), Path(tmp), bars_per_year=35040)
+        metrics = eng.run_backtest(cfg, _fake_loader(df2), se.SignalEngine(news_ok), Path(tmp), bars_per_year=35040)
     assert len(eng.trades) == 1
     assert metrics.get("total_turnover", 0) > 0
