@@ -1,0 +1,34 @@
+; TitanProtocolEA.set
+; Default input parameter template for mt5/TitanProtocolEA.mq5.
+;
+; This is a transport + execution bridge only -- it never generates,
+; scores, or sizes trades. Replace ApiKey before attaching to any
+; account; an empty key causes OnInit() to fail deliberately.
+;
+; ADR-034 Amendment 7: the EA's own compiled default for Transport is
+; TRANSPORT_SOCKET (native MQL5 socket, bypasses WinINet/WebRequest()
+; entirely) -- there is deliberately no Transport= line below, since
+; this file's own personalization logic (install_mt5_files.py) cannot
+; safely confirm MQL5's .set serialization format for a custom enum
+; input without risking a silently-wrong value. Omitting it means MT5
+; applies the compiled default (Socket) whenever this file is loaded.
+; To roll back to HTTP, set Transport=Http explicitly in the EA's
+; Inputs tab in MT5. SocketHost/SocketPort below are plain string/int
+; inputs -- safe to personalize directly, and are filled in by
+; install.py to match the live Bridge configuration's host/socket_port.
+
+BackendUrl=http://127.0.0.1:8787
+ApiKey=
+HeartbeatIntervalSeconds=5
+AllowedSymbolsCsv=
+MagicNumber=20260710
+MaxSlippagePoints=20
+FailClosedTimeoutSeconds=30
+EmergencyDisable=false
+MaxRetries=3
+RetryDelayMs=250
+MaxRequoteRetries=2
+RequoteRetryDelayMs=100
+SocketHost=127.0.0.1
+SocketPort=8788
+SocketFailoverAfterAttempts=5

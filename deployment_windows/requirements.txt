@@ -1,0 +1,24 @@
+# Titan Protocol live runtime dependencies.
+#
+# Generated from actual imports, not guessed: every top-level
+# import/from statement in the minimum live package (titan_protocol/bridge,
+# evidence_engine, market_intelligence, strategy_engine, risk_engine,
+# compliance_engine, runtime, reliability) was grepped and verified.
+# The only non-stdlib names found across that entire package were
+# false-positive matches inside comments/docstrings ("import scanning."
+# / "from being corrupted") -- there are zero genuine third-party
+# imports anywhere in the live runtime.
+#
+# This deployment layer's own scripts (run_titan_protocol.py, config_loader.py,
+# health_check.py) are also stdlib-only (json, socket, urllib, http,
+# argparse, configparser, subprocess, os, sys, time, datetime, logging,
+# threading, signal, pathlib) -- nothing here required adding a
+# dependency either.
+#
+# THE LIVE RUNTIME IS STANDARD-LIBRARY-ONLY. This file is intentionally
+# empty of package entries. `pip install -r requirements.txt` against
+# this file is a correct, successful no-op -- it exists so
+# setup_titan_protocol.bat has a real, present file to point pip at, and so a
+# future genuine dependency (e.g. if a live market-data ingestion
+# component is designed and needs one) has an obvious place to be
+# added and reviewed, rather than silently appearing in a script.

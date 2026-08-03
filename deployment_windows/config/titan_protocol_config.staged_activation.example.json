@@ -1,0 +1,205 @@
+{
+  "_comment": [
+    "ADR-037 Production Activation Plan (docs/plans/adr-037-production-activation-plan.md) -- STAGED PRE-ACTIVATION config (Plan sec 6 steps 2-4): Gate B + enabled_windows populated at their production values, cross_pair_selection_enabled DELIBERATELY False, Gate A remains closed (this state is P2 in the Plan -- provably inert, safe to apply to a live instance ahead of any Gate A source deploy).",
+    "This is a DERIVED, documentation/preparation artifact, not the shipped default example config.",
+    "Gate A (OPENING_RANGE_BREAKOUT approved_pairs_by_strategy) is a SOURCE-CODE constant",
+    "(titan_protocol/strategy_engine/config.py::DEFAULT_APPROVED_PAIRS_BY_STRATEGY) and is NOT,",
+    "and cannot be, represented in this JSON file -- it remains CLOSED (absent) regardless of",
+    "anything below, until a separate, explicitly-authorized source deploy (Plan Phase F).",
+    "Titan Protocol deployment configuration template.",
+    "Every key below maps to a REAL field on an already-existing, frozen",
+    "engine config dataclass -- traced from titan_protocol/*/config.py, not",
+    "invented. Copy this file to titan_protocol_config.json (same folder as",
+    "install.py/start.py) and edit before running install.py, or just run",
+    "install.py directly -- it copies this file for you automatically.",
+    "Paths in this file are RELATIVE to this config file's own folder by",
+    "default, so Titan Protocol can be installed anywhere and still find its own",
+    "logs/state/data (no absolute, install-location-specific path required).",
+    "SECRETS: never put a real API key directly in this file if you can",
+    "avoid it. Set bridge.api_key_env_var to the name of an environment",
+    "variable, set that environment variable on the machine (or let",
+    "install.py generate one for you), and Titan Protocol reads the real value",
+    "at startup -- never from this file, never logged."
+  ],
+  "config_schema_version": 1,
+  "bridge": {
+    "_maps_to": "titan_protocol.bridge.config.BridgeConfig",
+    "_transport_note": "ADR-034 (Amendment 10): HTTP (WebRequest()-based) is the only supported transport -- native MQL5 socket transport has been removed entirely. 'port' is the sole listener.",
+    "api_key_env_var": "TITAN_PROTOCOL_BRIDGE_API_KEY",
+    "api_key": "REPLACE_WITH_YOUR_BRIDGE_API_KEY",
+    "host": "127.0.0.1",
+    "port": 8787,
+    "allowed_symbols": [
+      "EURUSD",
+      "GBPUSD",
+      "USDJPY",
+      "USDCHF",
+      "AUDUSD",
+      "USDCAD",
+      "NZDUSD"
+    ],
+    "magic_number": 20260710,
+    "max_lot_size": 5.0,
+    "max_slippage_points": 20,
+    "heartbeat_timeout_seconds": 30.0,
+    "command_ttl_seconds": 15.0
+  },
+  "runtime": {
+    "_maps_to": "titan_protocol.runtime.config.RuntimeConfig",
+    "_note": "magic_number MUST match bridge.magic_number -- both are read by the same MT5 EA instance and must agree, or the EA will reject commands as a magic-number mismatch.",
+    "magic_number": 20260710,
+    "max_slippage_points": 20,
+    "max_cycle_duration_ms": 250.0,
+    "engine_timeout_ms": 100.0,
+    "runtime_timeout_ms": 250.0,
+    "snapshot_timeout_ms": 50.0,
+    "bridge_timeout_ms": 100.0,
+    "position_confirmation_timeout_seconds": 120.0
+  },
+  "trading_profile": {
+    "_maps_to": "titan_protocol.runtime.profiles",
+    "_note": "selected_profile must be exactly one of the 6 factory names below, or \"custom\" (custom requires editing start.py's build_custom_profile() directly -- a config file alone can't express an explicit allowed_pairs/allowed_strategies list). Session windows are governed by the selected profile itself (titan_protocol/runtime/profiles.py). Strategy eligibility/thresholds are governed by titan_protocol/strategy_engine/config.py -- the five legacy strategies' own thresholds are not independently overridable from this file; Opening Range Breakout's own orb_* fields are (ADR-035 Phase 5, see strategy_engine/evidence_engine below) -- ORB itself remains unregistered until a later phase, so these fields currently have no observable effect.",
+    "_valid_profiles": [
+      "london_conservative",
+      "london_aggressive",
+      "new_york_conservative",
+      "new_york_aggressive",
+      "london_and_new_york",
+      "custom"
+    ],
+    "selected_profile": "london_conservative"
+  },
+  "strategy_engine": {
+    "_maps_to": "titan_protocol.strategy_engine.config.StrategyEngineConfig (partial -- only Opening Range Breakout's own orb_* fields, ADR-035 \u00a713; the five legacy strategies' own thresholds keep their engine defaults unless you edit start.py's StrategyEngineConfig(...) call)",
+    "_note": "Every value below equals the field's own Python dataclass default (ADR-035 Phase 5) -- deleting this section entirely, or any key in it, falls back to the identical engine default. ORB remains unregistered until a later phase (ADR-035 \u00a717), so none of these fields have any observable effect yet.",
+    "orb_min_breakout_distance_atr_multiple": 0.15,
+    "orb_min_body_to_range_ratio": 0.5,
+    "orb_min_confirmation_candles": 1,
+    "orb_max_qualifications_per_range": 1,
+    "orb_fvg_max_age_bars": 10,
+    "orb_fvg_min_size_atr_multiple": 0.1,
+    "orb_fvg_score_weight": 0.15,
+    "orb_min_range_atr_ratio": 0.5,
+    "orb_max_spread_pips": 3.0,
+    "orb_min_liquidity_score": 60.0
+  },
+  "evidence_engine": {
+    "_maps_to": "titan_protocol.evidence_engine.config.EvidenceEngineConfig (partial -- only the opening-range fields ADR-035 \u00a713 names, mapped to their real EvidenceEngineConfig owners; every other field, e.g. the Evidence scoring weights, keeps its engine default unless you edit start.py's EvidenceEngineConfig(...) call)",
+    "_note": "Every value below equals the field's own Python dataclass default (ADR-035 Phase 5) -- deleting this section entirely, or any key in it, falls back to the identical engine default. opening_range_anchors defaults to an empty list, meaning Opening Range Breakout's opening-range mechanism is inert (fails closed) until an operator configures at least one anchor -- and, as above, ORB itself remains unregistered until a later phase regardless.",
+    "opening_range_anchors": [
+      {
+        "session": "LONDON",
+        "start_hour_utc": 8,
+        "start_minute_utc": 0
+      },
+      {
+        "session": "LONDON_NEW_YORK_OVERLAP",
+        "start_hour_utc": 13,
+        "start_minute_utc": 0
+      },
+      {
+        "session": "EARLY_NEW_YORK",
+        "start_hour_utc": 13,
+        "start_minute_utc": 30
+      }
+    ],
+    "opening_range_duration_minutes": 30,
+    "opening_range_min_bars": 3,
+    "expected_bar_interval_seconds": 300
+  },
+  "opportunity_selection_engine": {
+    "_maps_to": "titan_protocol.opportunity_selection_engine.config.OpportunitySelectionEngineConfig",
+    "_note": "ADR-037 + Amendment 1 (ORB cross-pair session opportunity selection). Every value below equals the field's own Python dataclass default -- deleting this section entirely, or any key in it, falls back to the identical engine default, so an existing deployment that has never heard of this section is completely unaffected. enabled_windows defaults to an empty list (no barrier participation possible regardless of Gate A's width) and cross_pair_selection_enabled defaults to false -- this deployment remains entirely inert with respect to every ADR-037 structural-readiness invariant until an operator explicitly populates both, per the reviewed Production Activation Plan (docs/plans/adr-037-production-activation-plan.md) -- NOT by editing this shipped example.",
+    "cross_pair_selection_enabled": false,
+    "tie_tolerance": 0.5,
+    "enabled_windows": [
+      {
+        "session": "LONDON",
+        "anchor_hour_utc": 8,
+        "anchor_minute_utc": 0,
+        "enabled": true
+      },
+      {
+        "session": "LONDON_NEW_YORK_OVERLAP",
+        "anchor_hour_utc": 13,
+        "anchor_minute_utc": 0,
+        "enabled": true
+      },
+      {
+        "session": "EARLY_NEW_YORK",
+        "anchor_hour_utc": 13,
+        "anchor_minute_utc": 30,
+        "enabled": true
+      }
+    ]
+  },
+  "risk": {
+    "_maps_to": "titan_protocol.risk_engine.config.RiskEngineConfig (partial -- the fields most operators tune; every other field keeps its engine default unless you edit start.py's RiskEngineConfig(...) call)",
+    "minimum_evidence_score": 65.0,
+    "portfolio_heat_limit_r": 6.0,
+    "max_concurrent_risk_r": 6.0,
+    "daily_risk_limit_r": 3.0,
+    "weekly_risk_limit_r": 6.0,
+    "monthly_risk_limit_r": 10.0,
+    "max_open_positions": 10,
+    "max_positions_per_pair": 2
+  },
+  "compliance": {
+    "_maps_to": "titan_protocol.compliance_engine.config.ComplianceEngineConfig / ComplianceRuleProfile (by name -- must be a name registered in ComplianceEngineConfig.rule_profiles)",
+    "_note": "\"example_generic_profile\" is the shipped illustrative default, not a real prop-firm's actual rules -- replace with your firm's real profile before going live.",
+    "rule_profile_name": "example_generic_profile",
+    "_max_positions_per_pair_note": "Production invariant: Titan must never have more than one open position per pair. Defaults to 1 when absent -- raise only deliberately (e.g. an intentional scaling/pyramiding strategy), never as a workaround for a duplicate-command symptom. Must be an integer >= 1; startup fails closed otherwise.",
+    "max_positions_per_pair": 1,
+    "_max_account_state_age_seconds_note": "Fail-closed freshness bound on the EA-reported account balance daily-loss/drawdown/profit-protection are evaluated against. If the last successful /bridge/account report is older than this, every new entry is rejected with ACCOUNT_STATE_STALE (existing position management is never affected) until a fresh report arrives. Defaults to 30s, matching the EA's own FailClosedTimeoutSeconds. Must be > 0; startup fails closed otherwise.",
+    "max_account_state_age_seconds": 30.0,
+    "_daily_reset_hour_utc_note": "The broker/prop-firm's authoritative trading-day boundary, as an hour-of-day in UTC (0-23). Persisted compliance state (daily starting balance, compliance lock) only resets when this boundary is crossed -- never merely because Runtime/Python/MT5/the VPS restarted. Not DST-aware -- update this value if your broker's own UTC offset changes with DST. See KNOWN_GAPS.md.",
+    "daily_reset_hour_utc": 0,
+    "_day_start_balance_override_note": "KNOWN_GAPS.md #9. Absent (null) by default: on a fresh install, Titan verifies the account is flat (no open positions, balance == equity) before trusting the first reported balance as daily_starting_balance -- rather than trusting whatever balance happens to arrive first, which could already reflect trading activity in progress. Set this to a real, operator-confirmed day-start balance to bypass that verification entirely and use it immediately -- the deterministic escape hatch for the one case wire data can never reveal (a trade opened and closed earlier the same day, before Titan ever received a report). Must be > 0 if set.",
+    "day_start_balance_override": null,
+    "_flat_account_equity_tolerance_note": "KNOWN_GAPS.md #9. Tolerance (account-currency units) for treating balance == equity when verifying the account is flat before a fresh-install bootstrap -- accounts for broker rounding to the smallest currency unit. Defaults to 0.01 (one cent). Must be >= 0.",
+    "flat_account_equity_tolerance": 0.01
+  },
+  "news": {
+    "_maps_to": "titan_protocol.market_intelligence.config.MarketIntelligenceConfig",
+    "_note": "The Market Intelligence Engine's news_feed_trusted parameter is now driven live by titan_protocol/news_ingestion/'s dual-provider failover result each live-cycle tick (Phase 3E, ADR-033 Part 2) -- see news_providers below. news_feed_trusted here is only the static fallback MarketIntelligenceConfig itself defaults to; it is not consulted once the live NewsIngestionEngine is running. What IS still true either way: if the news feed cannot be vouched for, the engine assumes the worst (blackout, score=0) rather than silently treating an untrustworthy feed as safe.",
+    "news_feed_trusted": true,
+    "pre_news_blackout_minutes": 30.0,
+    "post_news_blackout_minutes": 15.0,
+    "high_impact_requires_blackout": true,
+    "central_bank_requires_blackout": true
+  },
+  "news_providers": {
+    "_maps_to": "titan_protocol.news_ingestion.config.NewsIngestionConfig (via config_loader.NewsProviderSettings)",
+    "_note": "Backs the live titan_protocol/news_ingestion/ dual-provider failover (Phase 3E, ADR-033 Part 2): Trading Economics primary, Forex Factory automatic backup. forex_factory_base_url must point at a JSON calendar feed shaped like the widely-mirrored public format (title/country/date/impact/forecast/previous/actual) -- see titan_protocol/news_ingestion/providers/forex_factory.py's own docstring. Leave forex_factory_base_url empty only if you accept running with no backup provider (Trading Economics failures then immediately fail closed).",
+    "trading_economics_api_key_env_var": "TITAN_PROTOCOL_TRADING_ECONOMICS_API_KEY",
+    "trading_economics_base_url": "https://api.tradingeconomics.com",
+    "forex_factory_base_url": "",
+    "forex_factory_api_key_env_var": "",
+    "request_timeout_seconds": 10.0,
+    "max_retries": 2,
+    "retry_backoff_seconds": 1.0,
+    "stale_after_seconds": 900.0,
+    "recovery_health_check_count": 3,
+    "cache_max_entries": 200
+  },
+  "reliability": {
+    "_maps_to": "titan_protocol.reliability.config.ReliabilityConfig",
+    "heartbeat_healthy_interval_seconds": 5.0,
+    "heartbeat_degraded_interval_seconds": 15.0,
+    "heartbeat_grace_period_seconds": 30.0,
+    "snapshot_freshness_threshold_seconds": 5.0,
+    "cpu_degraded_threshold_pct": 70.0,
+    "cpu_critical_threshold_pct": 90.0,
+    "memory_degraded_threshold_pct": 75.0,
+    "memory_critical_threshold_pct": 90.0,
+    "queue_degraded_depth": 100,
+    "queue_critical_depth": 500
+  },
+  "logging": {
+    "_note": "Consumed by start.py itself (not an engine config field -- the engines all log through Python's stdlib logging module and do not know about file paths themselves; start.py attaches the handlers described here before constructing any engine). Relative paths (the default) are resolved against this config file's own folder.",
+    "log_dir": "logs",
+    "log_level": "INFO",
+    "state_dir": "state",
+    "data_dir": "data"
+  }
+}
