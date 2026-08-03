@@ -1,7 +1,7 @@
 # Session Edge Swing-ORB — Phase 1 SignalEngine
 
 Product name **Session Edge Swing-ORB**. Deterministic implementation of the
-frozen strategy spec `docs/FOREX_SWING_ORB_SPEC.md` (`swing_orb.v1.3.0`) as a
+frozen strategy spec `docs/FOREX_SWING_ORB_SPEC.md` (`swing_orb.v1.4.0`) as a
 **Vibe-Trading run-dir SignalEngine**. This directory is the **single source of
 truth** for the strategy — there is no parallel implementation. Phase 1 is
 **signal generation + qualification + tests + audit only**. No filesystem bridge,
@@ -66,6 +66,25 @@ order (first failure → no trade + reason code): closed/contiguous data → ses
 & OR validity → H4+D1 trend → **trend health** → completed-candle breakout →
 retest → price-action confirmation → news eligibility → risk eligibility →
 versioned instruction.
+
+### News (fail-closed by default, spec §12.2)
+
+News is fail-closed: a setup cannot emit an instruction unless news is present,
+valid, fresh (verified from an explicit `news_asof`), and outside a high-impact
+lockout — else `NEWS_DATA_UNAVAILABLE` / `NEWS_DATA_STALE` / `NEWS_LOCKOUT` and no
+trade. Malformed records fail closed (no exception). There is no default eligible-
+on-missing mode; the only bypass is the explicit `news_research_bypass=true`
+(research-only), which is audited as `RESEARCH_BYPASS`. News never sets direction.
+
+### Exits & downstream ownership (spec §14.1/§14.2)
+
+Exits use dedicated reason codes `EXIT_STOP_LOSS` / `EXIT_TAKE_PROFIT` /
+`EXIT_TIME` / `EXIT_INVALIDATED`; a bar touching both stop and target resolves
+**stop-first**. Live spread, broker stop-distance, account equity, daily/total
+loss limits, and the execution kill switch are **downstream** (future
+Titan/execution layer) — the SignalEngine only enforces what is provable from
+candle data (e.g. temporal gaps → `TEMPORAL_GAP`). `DATA_STALE`/`DATA_NOT_CLOSED`
+are reserved for that downstream layer and are not emitted here.
 
 ### Trend Health Gate (spec §2.5)
 
