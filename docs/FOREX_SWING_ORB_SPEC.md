@@ -1,9 +1,12 @@
 # Forex Swing Opening-Range-Breakout (Swing-ORB) — Strategy Specification
 
-**Status:** **FROZEN v1.2.0 — DESIGN ONLY (awaiting approval to begin Phase 1).**
-No implementation, no backtest-engine changes, no EA, and no MT5 connection is
-authorized by this document.
-**Strategy version anchor:** `swing_orb.v1.2.0` (stamped into every emitted
+**Product name:** **Session Edge Swing-ORB** (implementation lives in
+`forex_swing_orb/`, the single source of truth for this strategy — no parallel
+implementation exists or is authorized).
+**Status:** **FROZEN v1.3.0 — Phase 1 authorized (implemented; extended in-place).**
+This document is design-authoritative; Phase 1 implements exactly it. No live
+execution, no MT5, no filesystem bridge, no networking.
+**Strategy version anchor:** `swing_orb.v1.3.0` (stamped into every emitted
 signal's `strategy_version`).
 **Trade-instruction schema version:** `1` (see §8).
 **Audited platform baseline:** Vibe-Trading `v0.1.12` @ commit `e0b236c` (see
@@ -133,6 +136,39 @@ Compute the trend independently on **H4** and **D1**. Combined trend is
 **BULLISH** iff both are bullish, **BEARISH** iff both are bearish, else
 **NEUTRAL → no trade**. **Long setups require BULLISH; short setups require
 BEARISH; ambiguous or ranging structure means no trade.**
+
+### 2.5 Trend Health Gate (FROZEN — new in v1.3.0)
+
+A deterministic gate that runs **after** a directional trend is established
+(§2.4) and **before** breakout evaluation. Its purpose is **to reject weak
+continuation trades — NOT to predict reversals.** There is **no forecasting, no
+probability, no AI/LLM opinion, no reversal model**; every check is a closed-form
+function of the already-confirmed swing structure and ATR available at decision
+time (no look-ahead, §2.2).
+
+The gate is evaluated **independently on H4 and D1** using each timeframe's
+confirmed alternating pivots; **both must pass** (consistent with §2.4). For a
+BULLISH trend (bearish is the exact mirror), with `ATR` the bias-timeframe ATR14
+at the confirmation instant and legs measured on the confirmed alternating pivot
+sequence `P` (…, `P[-3]`, `P[-2]`, `P[-1]`):
+
+1. **Structure integrity** — there are ≥ `health_min_confirmed` (default **3**)
+   confirmed swing highs **and** ≥ `health_min_confirmed` confirmed swing lows in
+   the monotonic HH/HL sequence (stricter than the trend minimum of 2). Fewer →
+   deteriorating/insufficient structure → fail.
+2. **Progress margin** — the most recent higher-high and higher-low each advance
+   by a real margin: `SH_n − SH_{n−1} ≥ health_progress_atr·ATR` **and**
+   `SL_n − SL_{n−1} ≥ health_progress_atr·ATR` (default `health_progress_atr =
+   0.10`). Marginal (barely-higher) swings → fail.
+3. **Continuation quality** — the latest leg has real size:
+   `last_leg = |P[-1] − P[-2]| ≥ health_min_leg_atr·ATR` (default 0.5).
+4. **Not weakening** — the latest leg is not collapsing versus the prior leg:
+   `last_leg ≥ health_leg_ratio · prior_leg` where `prior_leg = |P[-2] − P[-3]|`
+   (default `health_leg_ratio = 0.5`).
+
+If **any** check fails on **either** required timeframe → **NO TRADE** with reason
+`TREND_HEALTH_WEAK`. The gate never changes trade **direction** (that is fixed by
+§2/§2.4); it only permits or blocks continuation.
 
 ---
 
@@ -462,6 +498,8 @@ Qualification runs in this **fixed order**; the **first** failing stage produces
    (else `E_SESSION`).
 3. **Higher-timeframe trend** — H4+D1 structure agree and permit a direction (§2)
    (else `E_TREND`).
+3a. **Trend health** — the §2.5 Trend Health Gate passes on both H4 and D1
+   (else `E_TREND_HEALTH` / `TREND_HEALTH_WEAK`).
 4. **Completed-candle breakout** — close beyond boundary + buffer, trend-aligned,
    not wick-only (§3.3) (else `E_BREAKOUT`).
 5. **Retest** — valid retest, not failed/timed-out/gapped (§4) (else `E_RETEST`).
@@ -483,7 +521,8 @@ audit trail.
 Return **no trade** (never a guess) for: missing/incomplete/forming/non-contiguous
 data; ambiguous session/timezone (incl. DST-transition); insufficient history
 (pivot/ATR warmup, `< or_min_bars`, incomplete higher-TF bucket §1.1, `<`
-required confirmed swings §2.3); neutral/conflicting H4/D1 trend; failed/timed-out
+required confirmed swings §2.3); neutral/conflicting H4/D1 trend; weak trend
+health (§2.5, `TREND_HEALTH_WEAK`); failed/timed-out
 retest or data gap (§4); confirmation not met (§5); missing/stale/conflicting news
 (§12); no valid structural stop / RR<2.0 / max-stop exceeded / loss-limit breach
 (§§9–11); invalid or stale instruction (§8.2). Each maps to a §14 reason code.
@@ -516,6 +555,10 @@ whether the news dataset was present (else news reported inactive).
 | `bias_tfs` | `H4,D1` | Trend timeframes (both must agree) |
 | `pivot_k` | `2` | HTF fractal pivot strength (§2.1) |
 | `min_confirmed_highs` / `min_confirmed_lows` | `2 / 2` | Required confirmed swings (§2.3) |
+| `health_min_confirmed` | `3` | Min confirmed highs & lows for trend health (§2.5) |
+| `health_progress_atr` | `0.10` | Min HH/HL progress margin, in ATR (§2.5) |
+| `health_min_leg_atr` | `0.5` | Min latest-leg size, in ATR (§2.5) |
+| `health_leg_ratio` | `0.5` | Min latest/prior leg ratio (§2.5) |
 | `swing_eq_tol` | `max(1 pip, 0.1·ATR14)` | Swing equality tolerance (`eq_min_pips=1`, §2.3) |
 | `minor_pivot_k` | `1` | Execution-TF minor-swing strength (§5) |
 | `confirm_bars` | `1` | Confirmation closes required (§5) |
@@ -564,6 +607,9 @@ minimal **EURUSD** (`EURUSD.FX`) end-to-end backtest through `ForexEngine`.
    bars ≤ *t* (pivot confirmation latency §2.2 enforced).
 3. **Trend cases** — bullish, bearish, neutral, and **insufficient-history**
    inputs each classify correctly (incl. H4/D1 disagreement → neutral).
+3b. **Trend health** — a healthy continuation passes; weak structure (too few
+   confirmed swings, marginal progress, undersized or shrinking latest leg) is
+   rejected with `TREND_HEALTH_WEAK` and produces no trade (§2.5).
 4. **Completed close vs wick-only breakout** — wick-only does not arm; completed
    close beyond boundary+buffer does.
 5. **Valid and failed retests** — valid hold; over-penetration; decisive reclaim;
@@ -587,6 +633,15 @@ end-to-end run plus this test suite are the hard gate.
 
 ## 19. Change log
 
+- **v1.3.0** — Added the **Trend Health Gate** (§2.5): a deterministic
+  continuation-quality gate (structure integrity, progress margin, leg size,
+  non-weakening) evaluated on H4 and D1 after the trend gate and before breakout;
+  fails closed to `TREND_HEALTH_WEAK`; no forecasting/probability/reversal logic.
+  Inserted into the pipeline order (§14 step 3a), failure semantics (§15),
+  parameters (§17), and acceptance tests (§18). Recorded the product name
+  **Session Edge Swing-ORB** and the single-source-of-truth rule (the strategy is
+  implemented once, in `forex_swing_orb/`; no parallel implementation). No change
+  to trade direction, risk, or the instruction schema.
 - **v1.2.0** — Approved pre-Phase-1 requirements. **Replaced EMA bias with a
   frozen market-structure trend** (fractal pivot `pivot_k`, alternation rule,
   confirmed HH/HL vs LH/LL with `swing_eq_tol`, H4+D1 agreement, pivot
