@@ -3,10 +3,10 @@
 **Product name:** **Session Edge Swing-ORB** (implementation lives in
 `forex_swing_orb/`, the single source of truth for this strategy — no parallel
 implementation exists or is authorized).
-**Status:** **FROZEN v1.3.0 — Phase 1 authorized (implemented; extended in-place).**
-This document is design-authoritative; Phase 1 implements exactly it. No live
-execution, no MT5, no filesystem bridge, no networking.
-**Strategy version anchor:** `swing_orb.v1.3.0` (stamped into every emitted
+**Status:** **FROZEN v1.4.0 — Phase 1 (implemented; corrected in-place after
+acceptance review).** This document is design-authoritative; Phase 1 implements
+exactly it. No live execution, no MT5, no filesystem bridge, no networking.
+**Strategy version anchor:** `swing_orb.v1.4.0` (stamped into every emitted
 signal's `strategy_version`).
 **Trade-instruction schema version:** `1` (see §8).
 **Audited platform baseline:** Vibe-Trading `v0.1.12` @ commit `e0b236c` (see
@@ -107,6 +107,16 @@ A pivot at index *i* needs `pivot_k` bars to its right to be confirmed, so it is
 **confirmed only once bar `i+pivot_k` has closed**. At decision time *t* (latest
 closed bar) only pivots with `i ≤ t - pivot_k` are usable. No pivot is ever
 inferred from bars unavailable at decision time.
+
+**Higher-timeframe causal timestamp (clarified v1.4.0):** an H4/D1 pivot's
+confirmation timestamp is the **close of the confirming higher-timeframe bar**
+(`confirming_bar_open + htf_span`), never its open. Higher-timeframe trend and
+Trend Health states therefore become visible to an execution-timeframe decision
+**only at or after the confirming HTF candle has closed** — H4 state not before
+the confirming H4 close, D1 state not before the confirming D1 close. Any
+as-of mapping onto execution bars must use this close-based timestamp so no HTF
+information is exposed before it was knowable. Execution-timeframe (minor) pivots
+remain causally correct under §2.2 at their own granularity.
 
 ### 2.3 Frozen trend definition (required swing count)
 
@@ -374,12 +384,27 @@ Structured object (not free text) with at least: `trend_d1`, `trend_h4`,
 (session/spread/stale flags), and `reason_code` (`OK` for an emitted instruction;
 §13 codes otherwise).
 
-### 8.2 Expiration
+### 8.2 Expiration horizon (clarified v1.4.0)
 
-`expiration_timestamp = generated_timestamp + entry_valid_bars·tf_minutes`
-(`entry_valid_bars` default 1 — valid only for the immediately following bar).
-An instruction consumed after expiry, or whose geometry no longer holds, is
-**stale → no trade** (§14).
+An instruction must remain valid **strictly beyond the first effective execution
+bar**. Per §1.2 the decision is taken from the bar closing at *t*
+(`generated_timestamp`) and the executable weight first applies on the next bar,
+whose open is `first_exec_open = generated_timestamp + tf_minutes` (also the
+expected fill point). The expiration is therefore set **one or more full bars
+after** that bar:
+
+`expiration_timestamp = first_exec_open + entry_valid_bars·tf_minutes`
+`                     = generated_timestamp + (entry_valid_bars + 1)·tf_minutes`
+
+with `entry_valid_bars` default **1** (so the instruction is valid across the
+execution bar and one further bar). **Expiration comparison is defined
+explicitly:** an instruction is expired **iff `evaluation_time >=
+expiration_timestamp`**. Consequently `expiration_timestamp > first_exec_open`
+always holds — an instruction can never expire at or before the bar where the
+shifted executable weight first appears. An instruction consumed at/after
+`expiration_timestamp`, or whose geometry no longer holds, is **stale → no
+trade** (§14). `generated_timestamp` (hence `signal_id`) is unchanged by this
+clarification.
 
 ### 8.3 `confidence`
 
@@ -452,23 +477,37 @@ Runs **continuously, including when the Forex market is closed**. It must:
 - **reject stale or unverified** records;
 - remain **operational independently of trading-session state**.
 
-### 12.2 v1 trade-qualification consumption (frozen)
+### 12.2 v1 trade-qualification consumption (frozen; fail-closed default — clarified v1.4.0)
 
 - News acts **only as a risk filter**: it **does not generate direction** and
   **does not override** any strategy requirement (§§2–11).
-- **High-impact windows block new entries.** Define, per affected currency:
-  - **Pre-event lockout:** `news_pre_lockout_min` (default 30 min) before a
-    high-impact event.
-  - **Post-event lockout:** `news_post_lockout_min` (default 30 min) after.
-- **Existing-position behavior (separate):** an open position is **not force-closed
-  by news** in v1 (advanced exits deferred, §9); news only blocks **new** entries.
-  (A news-driven flat/protect policy is a deferred candidate.)
-- **Fail-closed:** **missing, stale, conflicting, or unavailable** required news
-  data for an affected currency → **no new trade**.
-- **Auditability:** every news-based denial records a structured, auditable reason
-  (`E_NEWS`, §13) including the event(s) and provenance consulted; when no event
-  dataset is supplied in backtest, the run **records the news filter as inactive**
-  (never silently "passed").
+- **Fail-closed is the default and production posture.** A qualified setup may
+  **not** emit a trade instruction unless the required news data is **present,
+  valid, fresh, and verified** per the configured contract **and** the decision
+  time is **outside** the configured high-impact lockout window. Concretely, at
+  the confirmation bar:
+  - required news **absent / unverifiable freshness** → `NEWS_DATA_UNAVAILABLE`;
+  - news **older than `news_max_age_min`** (freshness proven from the supplied
+    `news_asof`) → `NEWS_DATA_STALE`;
+  - decision within a high-impact **lockout** window (`news_pre_lockout_min` /
+    `news_post_lockout_min`, defaults 30/30) for an affected currency →
+    `NEWS_LOCKOUT`;
+  - a **malformed** news record (missing/invalid `timestamp`, `impact`, or
+    `currencies`) → **fail closed** to `NEWS_DATA_UNAVAILABLE`, never an
+    exception.
+  In all of the above → **no trade**.
+- **There is no default mode in which missing news silently becomes eligible.**
+- **Research-only disable is explicit and audited.** News filtering may be
+  bypassed **only** by explicitly setting `news_research_bypass = true`
+  (default `false`). When bypassed, the audit records the news state as
+  `RESEARCH_BYPASS` for every affected decision. This is a research-only posture,
+  never the production/default.
+- **Affected-currency mapping is deterministic:** `EURUSD.FX → {EUR, USD}`.
+- **Existing-position behavior (separate):** an open position is **not
+  force-closed by news** in v1 (advanced exits deferred, §9); news only blocks
+  **new** entries.
+- **Auditability:** every news decision (allow, each denial reason, or explicit
+  bypass) is recorded in the per-bar audit trail.
 
 ---
 
@@ -509,10 +548,38 @@ Qualification runs in this **fixed order**; the **first** failing stage produces
    (§12) (else `E_NEWS`).
 8. **Risk eligibility** — valid structural stop, RR ≥ 2.0, within max-stop, within
    loss/exposure limits, one-position (§§9–11) (else `E_RISK`).
-9. **Versioned trade instruction** — emit (§8) with `reason_code = OK`.
+9. **Versioned trade instruction** — emit (§8) with `reason_code = SIGNAL_GENERATED`.
 
 Every stage's outcome (pass/fail + code) is recorded for a fully reconstructable
 audit trail.
+
+### 14.1 Exit reason codes (clarified v1.4.0)
+
+Position exits are audited with **dedicated** reason codes — never by reusing a
+setup-qualification code:
+- `EXIT_STOP_LOSS` — stop touched on a completed bar.
+- `EXIT_TAKE_PROFIT` — target touched on a completed bar.
+- `EXIT_TIME` — Friday/weekend time close (§13).
+- `EXIT_INVALIDATED` — continuity broken while in position (e.g. a data gap).
+
+**Same-bar stop and target (frozen worst-case):** if a single completed bar
+touches **both** `stop_loss` and `take_profit`, resolve **stop first**
+(`EXIT_STOP_LOSS`); never assume the target filled first. `RISK_INVALID` and
+`SIGNAL_GENERATED` are **not** used for exits.
+
+### 14.2 Ownership of downstream (execution-layer) checks (clarified v1.4.0)
+
+The SignalEngine performs only what is provable from candle data. The following
+frozen requirements are **explicitly downstream** (future Titan/execution layer)
+and are **not** implemented in, nor falsely reported by, the SignalEngine:
+live **spread** checks (§13), broker **stop-distance** checks, **account
+equity**, **daily loss limits** and **total drawdown limits** (§9), and the
+execution **kill switch**. Reason codes that the SignalEngine cannot emit from
+candle data alone are **reserved/annotated** (e.g. `DATA_STALE`,
+`DATA_NOT_CLOSED` — live-feed concerns) rather than presented as implemented.
+**Data-freshness that is provable from candle timestamps remains the
+SignalEngine's responsibility and fails closed** (temporal-gap detection →
+`TEMPORAL_GAP`; incomplete higher-TF buckets excluded, §1.1).
 
 ---
 
@@ -579,10 +646,12 @@ whether the news dataset was present (else news reported inactive).
 | `daily_max_loss_pct`/`total_max_loss_pct` | `0.01/0.06` | Loss kills |
 | `stop_pad` | `max(2 pip, 0.25·ATR14)` | Structural stop padding |
 | `max_stop_pips` | `60` | Max stop distance (else no trade) |
-| `entry_valid_bars` | `1` | Instruction validity horizon |
+| `entry_valid_bars` | `1` | Extra bars of validity **beyond** the execution bar (§8.2) |
 | `news_pre_lockout_min`/`news_post_lockout_min` | `30/30` | High-impact lockout windows (§12) |
-| `max_spread_pips` | `2.0` | Max spread to allow entry |
-| `max_data_age` | `1.5×` bar | Stale-data cutoff |
+| `news_max_age_min` | `1440` | Max news age before `NEWS_DATA_STALE` (§12) |
+| `news_research_bypass` | `false` | Explicit research-only news bypass; audited `RESEARCH_BYPASS` (§12) |
+| `max_spread_pips` | `2.0` | Max spread — **downstream** (§14.2), not enforced in the SignalEngine |
+| `max_data_age` | `1.5×` bar | Stale-feed cutoff — **downstream** (§14.2); candle gaps handled via `TEMPORAL_GAP` |
 | `friday_no_new_entry_utc`/`friday_close_utc` | configurable | Weekend policy |
 
 `pip` = 0.0001 (0.01 for JPY quote); `*_in_price` = pip converted to price units.
@@ -633,6 +702,22 @@ end-to-end run plus this test suite are the hard gate.
 
 ## 19. Change log
 
+- **v1.4.0** — Acceptance-review corrections (design-level clarifications only; no
+  change to trade direction, structure/breakout/retest/confirmation rules, risk,
+  or the instruction schema). (1) **News fail-closed by default** (§12.2): no
+  default mode where missing news becomes eligible; missing/unverifiable →
+  `NEWS_DATA_UNAVAILABLE`, stale → `NEWS_DATA_STALE`, lockout → `NEWS_LOCKOUT`,
+  malformed → fail-closed `NEWS_DATA_UNAVAILABLE`; research-only bypass requires
+  explicit `news_research_bypass` and is audited `RESEARCH_BYPASS`. (2)
+  **Expiration horizon** (§8.2): `expiration_timestamp = generated + (entry_valid_bars+1)·tf`,
+  strictly after the first execution bar; expired iff `evaluation_time >=
+  expiration_timestamp`. (3) **HTF causal timestamp** (§2.2): H4/D1 pivot/trend/
+  health confirmation uses the confirming HTF bar's **close**, never its open.
+  (4) **Exit reason codes** (§14.1): `EXIT_STOP_LOSS`/`EXIT_TAKE_PROFIT`/
+  `EXIT_TIME`/`EXIT_INVALIDATED`; same-bar stop+target resolves **stop-first**.
+  (5) **Downstream ownership** (§14.2): live spread, broker stop-distance, equity,
+  daily/total loss limits, kill switch are downstream; `DATA_STALE`/
+  `DATA_NOT_CLOSED` reserved (live-feed), not falsely implemented.
 - **v1.3.0** — Added the **Trend Health Gate** (§2.5): a deterministic
   continuation-quality gate (structure integrity, progress margin, leg size,
   non-weakening) evaluated on H4 and D1 after the trend gate and before breakout;
