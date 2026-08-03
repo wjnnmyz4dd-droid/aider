@@ -1115,6 +1115,7 @@ _DRY_RUN_PAIR_PATTERN = re.compile(r"^[A-Z]{6}$")
 
 def run_foreground(
     config_path: Path, dry_run: bool = False, dry_run_orb_pairs: Optional[Tuple[str, ...]] = None,
+    bridge_host_override: Optional[str] = None,
 ) -> int:
     """The actual long-running process -- what `python start.py
     --foreground` (and, internally, `python start.py`) runs.
@@ -1143,6 +1144,13 @@ def run_foreground(
     except ConfigError as exc:
         print(f"FAILED: configuration error: {exc}", file=sys.stderr)
         return 2
+
+    if bridge_host_override is not None:
+        # Diagnostic-only override -- never the default, never persisted to
+        # config on disk. Lets an operator test binding the Bridge to a
+        # different address (e.g. to isolate a loopback-specific transport
+        # failure) without hand-editing titan_protocol_config.json.
+        settings = dataclasses.replace(settings, bridge_host=bridge_host_override)
 
     _setup_logging(settings.log_dir, settings.log_level)
     logger = logging.getLogger("titan_protocol.deploy")
@@ -1443,6 +1451,7 @@ def _existing_pid(state_dir: Path) -> "int | None":
 
 def launch_and_report(
     config_path: Path, dry_run: bool = False, dry_run_orb_pairs: Optional[Tuple[str, ...]] = None,
+    bridge_host_override: Optional[str] = None,
 ) -> int:
     """Default mode: spawn `--foreground` as a detached child process,
     wait, health-check it, print HEALTHY/DEGRADED/FAILED, return."""
@@ -1484,6 +1493,8 @@ def launch_and_report(
         child_argv.append("--dry-run")
     if dry_run_orb_pairs is not None:
         child_argv.append(f"--dry-run-orb-pairs={','.join(dry_run_orb_pairs)}")
+    if bridge_host_override is not None:
+        child_argv.append(f"--bridge-host={bridge_host_override}")
     try:
         subprocess.Popen(
             child_argv,
@@ -1535,6 +1546,14 @@ def main() -> int:
              "so the intended production ORB universe can be exercised end-to-end without ever "
              "broadening DEFAULT_APPROVED_PAIRS_BY_STRATEGY. Requires --dry-run; refused otherwise.",
     )
+    parser.add_argument(
+        "--bridge-host", default=None,
+        help="Diagnostic-only override for the Bridge's bind address, in place of the "
+             "titan_protocol_config.json 'bridge.host' value for this run only -- nothing on "
+             "disk is changed. Intended for isolating transport failures (e.g. testing a "
+             "non-loopback address); never use this to expose the Bridge outside a controlled "
+             "test.",
+    )
     args = parser.parse_args()
 
     dry_run_orb_pairs: Optional[Tuple[str, ...]] = None
@@ -1552,8 +1571,14 @@ def main() -> int:
 
     config_path = Path(args.config)
     if args.foreground:
-        return run_foreground(config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs)
-    return launch_and_report(config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs)
+        return run_foreground(
+            config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs,
+            bridge_host_override=args.bridge_host,
+        )
+    return launch_and_report(
+        config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs,
+        bridge_host_override=args.bridge_host,
+    )
 
 
 if __name__ == "__main__":
