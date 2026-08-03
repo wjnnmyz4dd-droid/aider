@@ -1,0 +1,10 @@
+{
+  "codes": ["EURUSD.FX"],
+  "source": "auto",
+  "interval": "15m",
+  "start_date": "2024-01-01",
+  "end_date": "2024-03-01",
+  "initial_cash": 100000,
+  "engine": "daily",
+  "_comment": "Vibe-Trading run-dir config for the Forex Swing-ORB SignalEngine. The forex engine (ForexEngine) is auto-selected from the EURUSD.FX symbol. execution_tf is 15m per the frozen spec; H4/D1 trend is derived by resampling inside the SignalEngine. Phase 1 is signal generation + validation only: no filesystem bridge, no MT5, no broker."
+}

@@ -335,6 +335,29 @@ The boundary is the filesystem: Vibe-Trading writes instructions and reads
 results; Titan reads instructions and writes results. Neither imports the other's
 code across the bridge; neither opens a network connection to the other.
 
+### 13.1 Full-lifecycle reconciliation (FUTURE REQUIREMENT — bridge/execution phase)
+
+**Not implemented in Swing-ORB Phase 1** (Phase 1 is signal generation only; it
+never writes to the bridge). This is a forward requirement for the future
+bridge/execution phase, recorded here in the downstream execution document:
+
+Every signal that is ever acted on must eventually carry a **complete, auditable
+lifecycle**, reconciled end-to-end and keyed by `signal_id`:
+
+1. **signal generated** (SignalEngine → instruction, spec §8)
+2. **compliance accepted or rejected** (Titan gate, §7 / Titan review)
+3. **order submitted** (to the broker/MT5)
+4. **broker accepted or rejected**
+5. **order filled, partially filled, cancelled, or expired**
+6. **position closed**
+7. **final P&L**
+8. **exit reason**
+
+The result contract (§9) captures stages 2–5; stages 6–8 require the execution
+phase to correlate fills/closes back to the originating `signal_id` and emit a
+terminal lifecycle record that Vibe-Trading ingests for analytics/audit. This
+belongs to the future bridge/execution phase — **not** to the SignalEngine.
+
 ---
 
 ## 14. Configuration (bridge phase)
