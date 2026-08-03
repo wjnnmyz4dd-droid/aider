@@ -220,6 +220,65 @@ def test_trend_conflict_h4_d1(se):
     assert se.combined_trend("BEARISH", "BEARISH") == "BEARISH"
 
 
+# --- Trend Health Gate (spec §2.5) ------------------------------------------
+
+def _zigzag_pivots(n_each, up_leg, down_leg, start=1.0):
+    """Build an alternating L,H,L,H... confirmed-pivot list rising uniformly."""
+    piv, price, direction, t = [], start, 1, 0
+    piv.append({"kind": "L", "price": price, "pivot_time": t, "confirm_time": t})
+    for _ in range(2 * n_each - 1):
+        t += 1
+        price = price + up_leg if direction > 0 else price - down_leg
+        piv.append({"kind": "H" if direction > 0 else "L", "price": price,
+                    "pivot_time": t, "confirm_time": t})
+        direction *= -1
+    return piv
+
+
+def test_trend_health_pass(se):
+    cfg = se.merged_config(None)
+    piv = _zigzag_pivots(4, up_leg=0.020, down_leg=0.013)
+    assert se.trend_health(piv, 1, cfg, 0.001) is True
+
+
+def test_trend_health_weak_insufficient_swings(se):
+    cfg = se.merged_config(None)
+    piv = _zigzag_pivots(2, up_leg=0.020, down_leg=0.013)  # only 2 highs & lows
+    assert se.trend_health(piv, 1, cfg, 0.001) is False
+
+
+def test_trend_health_weak_marginal_progress(se):
+    cfg = se.merged_config(None)
+    # HH/HL advance by only ~0.00002, below health_progress_atr*ATR (0.10*0.001)
+    piv = _zigzag_pivots(4, up_leg=0.01002, down_leg=0.01000)
+    assert se.trend_health(piv, 1, cfg, 0.001) is False
+
+
+def test_trend_health_weak_shrinking_leg(se):
+    cfg = se.merged_config(None)
+    piv = _zigzag_pivots(4, up_leg=0.020, down_leg=0.013)
+    # collapse the final leg to well below health_leg_ratio * prior_leg
+    piv[-1]["price"] = piv[-2]["price"] + 0.001
+    assert se.trend_health(piv, 1, cfg, 0.001) is False
+
+
+def test_trend_health_gate_blocks_weak_setup(se, bullish_setup):
+    df, _ = bullish_setup
+    # require an impossibly large latest leg -> health fails on both TFs
+    eng, _ = run(se, df, {"health_min_leg_atr": 100.0})
+    codes = {a["reason_code"] for a in eng.audit["EURUSD.FX"]}
+    assert se.ReasonCode.TREND_HEALTH_WEAK in codes
+    assert len(eng.instructions["EURUSD.FX"]) == 0
+
+
+def test_trend_health_gate_allows_healthy_setup(se, bullish_setup):
+    df, _ = bullish_setup
+    eng, _ = run(se, df)
+    assert len(eng.instructions["EURUSD.FX"]) == 1
+    states = {a["trend_health_state"] for a in eng.audit["EURUSD.FX"]}
+    assert "OK" in states
+
+
 # --- 19,20,21,22: breakout --------------------------------------------------
 
 def test_wick_only_breakout_rejected(se, bullish_setup):

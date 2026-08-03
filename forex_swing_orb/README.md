@@ -1,10 +1,12 @@
-# Forex Swing-ORB — Phase 1 SignalEngine
+# Session Edge Swing-ORB — Phase 1 SignalEngine
 
-Deterministic implementation of the frozen strategy spec
-`docs/FOREX_SWING_ORB_SPEC.md` (`swing_orb.v1.2.0`) as a **Vibe-Trading run-dir
-SignalEngine**. Phase 1 is **signal generation + qualification + tests + audit
-only**. No filesystem bridge, no MT5, no broker, no networking, no Vibe-Trading
-core edits. Phantom and Titan are untouched.
+Product name **Session Edge Swing-ORB**. Deterministic implementation of the
+frozen strategy spec `docs/FOREX_SWING_ORB_SPEC.md` (`swing_orb.v1.3.0`) as a
+**Vibe-Trading run-dir SignalEngine**. This directory is the **single source of
+truth** for the strategy — there is no parallel implementation. Phase 1 is
+**signal generation + qualification + tests + audit only**. No filesystem bridge,
+no MT5, no broker, no networking, no Vibe-Trading core edits. Phantom and Titan
+are untouched.
 
 ## Layout
 
@@ -61,8 +63,20 @@ network/file-write/exec in reachable code).
 
 Identical inputs → identical signals, instructions, and `signal_id`s. Evaluation
 order (first failure → no trade + reason code): closed/contiguous data → session
-& OR validity → H4+D1 trend → completed-candle breakout → retest → price-action
-confirmation → news eligibility → risk eligibility → versioned instruction.
+& OR validity → H4+D1 trend → **trend health** → completed-candle breakout →
+retest → price-action confirmation → news eligibility → risk eligibility →
+versioned instruction.
+
+### Trend Health Gate (spec §2.5)
+
+A deterministic continuation-quality gate that runs after the trend gate and
+before breakout, on both H4 and D1. It **rejects weak continuation trades** — it
+does **not** predict reversals (no forecasting, probability, AI opinion, or
+reversal model). Purely closed-form from the confirmed swing structure + ATR at
+decision time: structure integrity (≥ `health_min_confirmed` clean HH/HL),
+progress margin (`health_progress_atr`), latest-leg size (`health_min_leg_atr`),
+non-weakening (`health_leg_ratio`). Failure → `TREND_HEALTH_WEAK`, no trade;
+never changes trade direction.
 
 ## Performance
 

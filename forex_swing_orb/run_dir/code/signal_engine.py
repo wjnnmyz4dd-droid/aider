@@ -34,7 +34,7 @@ import pandas as pd
 
 
 STRATEGY_ID = "forex_swing_orb"
-STRATEGY_VERSION = "swing_orb.v1.2.0"
+STRATEGY_VERSION = "swing_orb.v1.3.0"
 INSTRUCTION_SCHEMA_VERSION = 1
 
 DEFAULT_CONFIG = {
@@ -44,6 +44,10 @@ DEFAULT_CONFIG = {
     "pivot_k": 2,
     "min_confirmed_highs": 2,
     "min_confirmed_lows": 2,
+    "health_min_confirmed": 3,
+    "health_progress_atr": 0.10,
+    "health_min_leg_atr": 0.5,
+    "health_leg_ratio": 0.5,
     "eq_min_pips": 1.0,
     "eq_atr_mult": 0.1,
     "minor_pivot_k": 1,
@@ -91,6 +95,7 @@ class ReasonCode:
     TREND_BEARISH = "TREND_BEARISH"
     TREND_NEUTRAL = "TREND_NEUTRAL"
     TREND_CONFLICT = "TREND_CONFLICT"
+    TREND_HEALTH_WEAK = "TREND_HEALTH_WEAK"
     BREAKOUT_NOT_CONFIRMED = "BREAKOUT_NOT_CONFIRMED"
     WICK_ONLY_BREAKOUT = "WICK_ONLY_BREAKOUT"
     BREAKOUT_BUFFER_NOT_MET = "BREAKOUT_BUFFER_NOT_MET"
@@ -315,18 +320,81 @@ def htf_trend_events(df_exec, minutes, cfg):
     return events
 
 
-def map_trend_to_exec(exec_index, events):
-    """Map higher-TF trend change-events onto exec bars (backward as-of)."""
+def map_label_to_exec(exec_index, events, default):
+    """Map higher-TF (confirm_time, label) change-events onto exec bars (as-of)."""
     if not events:
-        return pd.Series(["NEUTRAL"] * len(exec_index), index=exec_index)
-    ev = pd.DataFrame(events, columns=["confirm_time", "trend"]).sort_values("confirm_time")
+        return pd.Series([default] * len(exec_index), index=exec_index)
+    ev = pd.DataFrame(events, columns=["confirm_time", "label"]).sort_values("confirm_time")
     ev = ev.drop_duplicates(subset=["confirm_time"], keep="last")
     base = pd.DataFrame({"t": exec_index})
     merged = pd.merge_asof(
         base, ev, left_on="t", right_on="confirm_time", direction="backward"
     )
-    trend = merged["trend"].fillna("NEUTRAL").to_numpy()
-    return pd.Series(trend, index=exec_index)
+    return pd.Series(merged["label"].fillna(default).to_numpy(), index=exec_index)
+
+
+def map_trend_to_exec(exec_index, events):
+    """Map higher-TF trend change-events onto exec bars (default NEUTRAL)."""
+    return map_label_to_exec(exec_index, events, "NEUTRAL")
+
+
+def trend_health(pivots, direction, cfg, atr_val):
+    """Deterministic Trend Health Gate (frozen spec §2.5). No prediction.
+
+    Rejects weak continuation from the already-confirmed swing structure only:
+      (a) structure integrity  — >= health_min_confirmed highs AND lows
+      (b) progress margin       — latest HH/HL advance >= health_progress_atr*ATR
+      (c) continuation quality  — latest leg >= health_min_leg_atr*ATR
+      (d) not weakening         — latest leg >= health_leg_ratio * prior leg
+    Returns True only if all pass for the given (non-zero) trend direction.
+    """
+    if direction == 0 or not (atr_val == atr_val) or atr_val <= 0:
+        return False
+    highs = [p["price"] for p in pivots if p["kind"] == "H"]
+    lows = [p["price"] for p in pivots if p["kind"] == "L"]
+    need = cfg["health_min_confirmed"]
+    if len(highs) < need or len(lows) < need:
+        return False
+    prog = cfg["health_progress_atr"] * atr_val
+    if direction > 0:
+        if (highs[-1] - highs[-2]) < prog or (lows[-1] - lows[-2]) < prog:
+            return False
+    else:
+        if (highs[-2] - highs[-1]) < prog or (lows[-2] - lows[-1]) < prog:
+            return False
+    if len(pivots) < 3:
+        return False
+    last_leg = abs(pivots[-1]["price"] - pivots[-2]["price"])
+    prior_leg = abs(pivots[-2]["price"] - pivots[-3]["price"])
+    if last_leg < cfg["health_min_leg_atr"] * atr_val:
+        return False
+    if prior_leg > 0 and last_leg < cfg["health_leg_ratio"] * prior_leg:
+        return False
+    return True
+
+
+def htf_health_events(df, minutes, cfg):
+    """Compute (confirm_time, "OK"/"WEAK") trend-health events for one HTF."""
+    bars = htf_bars(df, minutes)
+    if len(bars) < (2 * cfg["pivot_k"] + 1):
+        return []
+    piv = confirmed_pivots(bars, cfg["pivot_k"])
+    if not piv:
+        return []
+    hatr = atr(bars, cfg["atr_period"])
+    pip = pip_size("EURUSD.FX")
+    events = []
+    for i in range(len(piv)):
+        upto = piv[: i + 1]
+        ct = piv[i]["confirm_time"]
+        atr_at = hatr.reindex([ct], method="ffill").iloc[0]
+        atr_val = float(atr_at) if atr_at == atr_at else 0.0
+        eq_tol = max(cfg["eq_min_pips"] * pip, cfg["eq_atr_mult"] * atr_val)
+        tr = trend_from_pivots(upto, cfg, eq_tol)
+        direction = 1 if tr == "BULLISH" else (-1 if tr == "BEARISH" else 0)
+        ok = trend_health(upto, direction, cfg, atr_val)
+        events.append((ct, "OK" if ok else "WEAK"))
+    return events
 
 
 def combined_trend(bull_h4, bull_d1):
@@ -471,6 +539,8 @@ def evaluate_symbol(symbol, df_in, cfg):
     atr_series = atr(df, cfg["atr_period"])
     trend_h4 = map_trend_to_exec(idx, htf_trend_events(df, 240, cfg))
     trend_d1 = map_trend_to_exec(idx, htf_trend_events(df, 1440, cfg))
+    health_h4 = map_label_to_exec(idx, htf_health_events(df, 240, cfg), "WEAK")
+    health_d1 = map_label_to_exec(idx, htf_health_events(df, 1440, cfg), "WEAK")
     minor = confirmed_pivots(df, cfg["minor_pivot_k"])
     minor_events = [(m["confirm_time"], m["price"], m["kind"]) for m in minor]
     minor_pos = [m["pivot_time"] for m in minor]
@@ -487,6 +557,8 @@ def evaluate_symbol(symbol, df_in, cfg):
         gap_before[1:] = np.diff(ts_ns) > gap_ns
     th4 = trend_h4.to_numpy()
     td1 = trend_d1.to_numpy()
+    hh4 = health_h4.to_numpy()
+    hd1 = health_d1.to_numpy()
 
     # Per-day London opening range table (deterministic).
     tz = ZoneInfo(cfg["session_tz"])
@@ -632,6 +704,13 @@ def evaluate_symbol(symbol, df_in, cfg):
                 rec["reason_code"] = ReasonCode.TREND_NEUTRAL
                 audit.append(rec)
                 continue
+            # Trend Health Gate (frozen spec §2.5): both H4 and D1 must be healthy
+            if not (hh4[i] == "OK" and hd1[i] == "OK"):
+                rec["trend_health_state"] = "WEAK"
+                rec["reason_code"] = ReasonCode.TREND_HEALTH_WEAK
+                audit.append(rec)
+                continue
+            rec["trend_health_state"] = "OK"
             if trend == "BULLISH":
                 if c[i] > rh + buffer:
                     state = "ARMED"; direction = 1; boundary = rh
@@ -789,6 +868,7 @@ def new_audit(symbol, ts, cfg, reason):
         "session_state": "",
         "range_state": "",
         "trend_state": "",
+        "trend_health_state": "",
         "breakout_state": "",
         "retest_state": "",
         "price_action_state": "",

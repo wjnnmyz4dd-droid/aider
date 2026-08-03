@@ -20,21 +20,26 @@ def _index(start, n):
     return pd.date_range(start=start, periods=n, freq=f"{TF}min", tz="UTC")
 
 
-def uptrend_frame(start="2024-01-01 00:00", days=39, drift=0.0012, slow_amp=0.010,
-                  slow_period=8.0, fast_amp=0.0035, fast_period=1.0, base=1.10):
-    """A rising two-sine series with ascending swing highs/lows on H4 AND D1.
+def uptrend_frame(start="2024-01-01 00:00", days=60, half_period_days=3,
+                  up_leg=0.020, down_leg=0.013, base=1.10):
+    """A clean rising zig-zag with UNIFORM legs and steady HH/HL progression.
 
-    mid = base + drift*day + slow_amp*sin(2pi*day/slow_P) + fast_amp*sin(2pi*day/fast_P).
-    The slow component gives D1 swings; the fast (intraday) component gives H4
-    swings; the net drift makes each successive swing high/low higher -> BULLISH.
-    Returns an OHLC(+volume) DataFrame with a UTC DatetimeIndex.
+    Swing anchors alternate up (+up_leg) and down (-down_leg) every
+    `half_period_days`, linearly interpolated to 15m bars. Because the interior
+    of each leg is monotonic, fractal swings form only at the turns, so H4 and D1
+    see the same uniform, ascending swings -> BULLISH and trend-healthy on both.
     """
     n = days * BARS_PER_DAY
     idx = _index(start, n)
-    d = np.arange(n) / BARS_PER_DAY
-    mid = (base + drift * d
-           + slow_amp * np.sin(2.0 * math.pi * d / slow_period)
-           + fast_amp * np.sin(2.0 * math.pi * d / fast_period))
+    hp = half_period_days * BARS_PER_DAY
+    xs, ys = [0], [base]
+    price, direction, b = base, 1, 0
+    while b < n + hp:
+        b += hp
+        price = price + up_leg if direction > 0 else price - down_leg
+        xs.append(b); ys.append(price)
+        direction *= -1
+    mid = np.interp(np.arange(n), xs, ys)
     wig = 0.0003
     close = mid
     open_ = np.concatenate([[mid[0]], mid[:-1]])
