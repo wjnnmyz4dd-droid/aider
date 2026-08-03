@@ -1115,7 +1115,7 @@ _DRY_RUN_PAIR_PATTERN = re.compile(r"^[A-Z]{6}$")
 
 def run_foreground(
     config_path: Path, dry_run: bool = False, dry_run_orb_pairs: Optional[Tuple[str, ...]] = None,
-    bridge_host_override: Optional[str] = None,
+    bridge_host_override: Optional[str] = None, bridge_port_override: Optional[int] = None,
 ) -> int:
     """The actual long-running process -- what `python start.py
     --foreground` (and, internally, `python start.py`) runs.
@@ -1145,12 +1145,18 @@ def run_foreground(
         print(f"FAILED: configuration error: {exc}", file=sys.stderr)
         return 2
 
-    if bridge_host_override is not None:
+    if bridge_host_override is not None or bridge_port_override is not None:
         # Diagnostic-only override -- never the default, never persisted to
         # config on disk. Lets an operator test binding the Bridge to a
-        # different address (e.g. to isolate a loopback-specific transport
-        # failure) without hand-editing titan_protocol_config.json.
-        settings = dataclasses.replace(settings, bridge_host=bridge_host_override)
+        # different address/port (e.g. to isolate a loopback-specific or
+        # port-specific transport failure) without hand-editing
+        # titan_protocol_config.json.
+        replacements = {}
+        if bridge_host_override is not None:
+            replacements["bridge_host"] = bridge_host_override
+        if bridge_port_override is not None:
+            replacements["bridge_port"] = bridge_port_override
+        settings = dataclasses.replace(settings, **replacements)
 
     _setup_logging(settings.log_dir, settings.log_level)
     logger = logging.getLogger("titan_protocol.deploy")
@@ -1451,7 +1457,7 @@ def _existing_pid(state_dir: Path) -> "int | None":
 
 def launch_and_report(
     config_path: Path, dry_run: bool = False, dry_run_orb_pairs: Optional[Tuple[str, ...]] = None,
-    bridge_host_override: Optional[str] = None,
+    bridge_host_override: Optional[str] = None, bridge_port_override: Optional[int] = None,
 ) -> int:
     """Default mode: spawn `--foreground` as a detached child process,
     wait, health-check it, print HEALTHY/DEGRADED/FAILED, return."""
@@ -1495,6 +1501,8 @@ def launch_and_report(
         child_argv.append(f"--dry-run-orb-pairs={','.join(dry_run_orb_pairs)}")
     if bridge_host_override is not None:
         child_argv.append(f"--bridge-host={bridge_host_override}")
+    if bridge_port_override is not None:
+        child_argv.append(f"--bridge-port={bridge_port_override}")
     try:
         subprocess.Popen(
             child_argv,
@@ -1554,6 +1562,13 @@ def main() -> int:
              "non-loopback address); never use this to expose the Bridge outside a controlled "
              "test.",
     )
+    parser.add_argument(
+        "--bridge-port", type=int, default=None,
+        help="Diagnostic-only override for the Bridge's bind port, in place of the "
+             "titan_protocol_config.json 'bridge.port' value for this run only -- nothing on "
+             "disk is changed. Intended for isolating a port-specific transport failure (e.g. "
+             "testing whether a different port succeeds where 8787 fails).",
+    )
     args = parser.parse_args()
 
     dry_run_orb_pairs: Optional[Tuple[str, ...]] = None
@@ -1573,11 +1588,11 @@ def main() -> int:
     if args.foreground:
         return run_foreground(
             config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs,
-            bridge_host_override=args.bridge_host,
+            bridge_host_override=args.bridge_host, bridge_port_override=args.bridge_port,
         )
     return launch_and_report(
         config_path, dry_run=args.dry_run, dry_run_orb_pairs=dry_run_orb_pairs,
-        bridge_host_override=args.bridge_host,
+        bridge_host_override=args.bridge_host, bridge_port_override=args.bridge_port,
     )
 
 
