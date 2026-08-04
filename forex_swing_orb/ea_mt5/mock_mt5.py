@@ -125,6 +125,8 @@ class MockMT5:
     _next_ticket: int = 5_000_000
     positions: dict = field(default_factory=dict)     # ticket -> Position
     order_log: list = field(default_factory=list)     # every order_send request seen
+    modify_outcomes: list = field(default_factory=list)  # scripted stop-modify results
+    modify_log: list = field(default_factory=list)    # every modify_stop attempt seen
 
     # -- setup helpers ------------------------------------------------------
     def add_symbol(self, name, **kw):
@@ -189,6 +191,42 @@ class MockMT5:
             if p.comment == comment and not p.closed:
                 return p
         return None
+
+    def position_by_ticket(self, ticket):
+        """Return the open position for a ticket (None if absent/closed)."""
+        p = self.positions.get(ticket)
+        return p if (p is not None and not p.closed) else None
+
+    def script_modify(self, *outcomes):
+        """Queue stop-modification outcomes for the next modify_stop call(s):
+        'done' | 'reject' | 'invalid_stops' | 'requote' | 'off_quotes' |
+        'disconnect' (raises, no change) | 'applied_but_unacked' (applies the SL
+        then raises — simulates a crash after the broker modified but before the
+        ack/audit)."""
+        self.modify_outcomes.extend(outcomes)
+
+    def modify_stop(self, ticket, new_sl):
+        """Modify a position's stop-loss (MT5 TRADE_ACTION_SLTP analog).
+        Returns an :class:`OrderResult`; raises MT5Disconnected on a link loss."""
+        self.modify_log.append((ticket, new_sl))
+        if not self.connected:
+            raise MT5Disconnected("terminal not connected to trade server")
+        p = self.positions.get(ticket)
+        if p is None or p.closed:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="no position")
+        outcome = self.modify_outcomes.pop(0) if self.modify_outcomes else "done"
+        if outcome == "done":
+            p.sl = new_sl
+            return OrderResult(retcode=TRADE_RETCODE_DONE, position=ticket)
+        if outcome == "applied_but_unacked":
+            p.sl = new_sl                      # broker applied it...
+            raise MT5Disconnected("ack lost after broker modified the stop")
+        codes = {"reject": TRADE_RETCODE_REJECT, "invalid_stops": TRADE_RETCODE_INVALID_STOPS,
+                 "requote": TRADE_RETCODE_REQUOTE, "off_quotes": TRADE_RETCODE_PRICE_OFF}
+        if outcome == "disconnect":
+            raise MT5Disconnected("link lost during modify (no change applied)")
+        return OrderResult(retcode=codes.get(outcome, TRADE_RETCODE_INVALID),
+                           position=ticket, comment=outcome)
 
     def position_close(self, ticket, price=None):
         p = self.positions.get(ticket)

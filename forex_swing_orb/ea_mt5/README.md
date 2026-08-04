@@ -187,3 +187,48 @@ ack + result writing, audit generation, and static boundary enforcement
 (no networking, no external-process execution, no indicator/price-series APIs).
 
 Run: `pytest forex_swing_orb/ea_mt5/tests`
+
+## Deterministic Position Manager (Phase 4D)
+
+`position_manager.PositionManager` is the **single** stop-management subsystem.
+It executes the frozen Phase 4C-R design (`forex_swing_orb/position/contract.py`
++ `spec.py`) against the MT5 terminal — all arithmetic and invariants come from
+those modules; nothing is recomputed here. It is deterministic, contains no AI
+authority, no networking, and never opens/directs a trade (it only modifies or
+protectively closes an existing position).
+
+- **Lifecycle:** `INITIAL → BREAKEVEN → LOCKED → TRAILING → CLOSED`, forward-only
+  (a stop already at/beyond a phase target fast-forwards the phase without a
+  redundant modification); every transition is audited.
+- **Precedence (per cycle, one action):** broker reconciliation → manual
+  intervention → kill switch → position closed → weekend → max duration →
+  protective-stop integrity → break-even → profit-lock → structure trail →
+  no-action. No lower-priority rule weakens a higher-priority protective action.
+- **Immutable R** is derived every cycle from the immutable entry/initial_stop
+  (never stored/recomputed differently); zero/negative/non-finite/wrong-sided R
+  fails closed at `register`.
+- **Break-even / profit-lock / trailing** use the frozen `spec` math (`>=`
+  triggers, buffer+commission BE stop, `retain_r` lock, swing-offset trail);
+  every candidate must strictly improve, satisfy broker min-stop distance, and be
+  never-widen/never-loosen legal; broker success is verified before phase advance.
+- **Structure trailing** consumes confirmed strategy swings (no pivot recompute,
+  no future bars); stale → `PM_DATA_STALE`, missing → `PM_TRAIL_PENDING`,
+  duplicate structure reference → `PM_TRAIL_NO_IMPROVEMENT`.
+- **Manual intervention:** tightening adopted (`PM_MANUAL_CHANGE_ADOPTED`),
+  loosening/SL-removal rejected and the protective stop restored
+  (`PM_MANUAL_CHANGE_REJECTED` / `PM_STOP_LOOSEN_REJECTED`), manual close →
+  `PM_POSITION_CLOSED`, partial close reconciled (`PM_PARTIAL_CLOSED`),
+  ticket/symbol mismatch → fail closed.
+- **Reconciliation & restart:** state is rebuilt from MT5 truth + the append-only
+  PM audit log (`pm_audit.jsonl`), never RAM only; phase never regresses; an
+  uncertain modification is **never blindly retried** — broker truth is verified
+  and adopted first.
+- **Audit:** one canonical `AUDIT_RECORD_FIELDS` record per evaluation/attempt,
+  deterministic, append-only, non-finite values sanitized to null.
+
+`mock_mt5` is extended (test harness only) with `position_by_ticket`,
+`modify_stop` (+ scriptable `done`/`reject`/`invalid_stops`/`requote`/`disconnect`/
+`applied_but_unacked`). Tests: `tests/test_position_manager.py` (62 tests across
+break-even, profit-lock, trailing, never-widen/loosen, manual, reconciliation,
+restart, precedence, audit, boundaries). The shippable MQL5 EA mirrors this
+Python reference and is not compiled here (same platform limitation as above).
