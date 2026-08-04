@@ -30,6 +30,26 @@ class ResultState:
     ERROR = "ERROR"
 
 
+class HookPosture:
+    """Declared capability of the injected decision hook (F-S). Governs whether
+    reconciliation may safely re-run the hook for a non-terminal claimed item."""
+
+    VALIDATION_ONLY = "VALIDATION_ONLY"          # no side effects (Phase-2 default)
+    IDEMPOTENT = "IDEMPOTENT"                     # side effects, safe to repeat
+    NON_IDEMPOTENT_EXECUTION = "NON_IDEMPOTENT_EXECUTION"  # e.g. real order placement
+
+    RERUNNABLE = frozenset({VALIDATION_ONLY, IDEMPOTENT})
+
+
+# Terminal states archived to archive/accepted vs archive/rejected.
+ACCEPTED_FAMILY = frozenset({ResultState.ACCEPTED})
+
+
+def terminal_family(state):
+    """Map any terminal state to its archive family ('ACCEPTED' | 'REJECTED')."""
+    return "ACCEPTED" if state == ResultState.ACCEPTED else "REJECTED"
+
+
 class ReasonCode:
     """Deterministic bridge reason codes (spec §7 transport subset + §2.1)."""
 
@@ -49,6 +69,10 @@ class ReasonCode:
     E_STRUCT = "E_STRUCT"         # bad direction / prices / stop-target geometry
     E_HOOK = "E_HOOK"             # decision hook raised (FAILED)
     E_INTERNAL = "E_INTERNAL"     # bridge-internal error (ERROR)
+    E_CONFLICT = "E_CONFLICT"     # conflicting persistent evidence for one signal_id
+    E_MOVE = "E_MOVE"             # a filesystem move failed (F-2)
+    ADOPTED = "ADOPTED"           # existing terminal result adopted on recovery
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"  # non-idempotent, needs broker state (F-S)
 
 
 # reason_code -> result state for a denied instruction

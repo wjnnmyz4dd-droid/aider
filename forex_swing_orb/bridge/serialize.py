@@ -77,8 +77,11 @@ def parse_iso(value):
     return dt.astimezone(timezone.utc)
 
 
-def result_id(signal_id, processed_iso, status):
-    """Deterministic result id: sha256(signal_id|processed_ts|status)[:16].
-    No randomness (spec §9)."""
-    payload = f"{signal_id}|{processed_iso}|{status}"
+def result_id(signal_id, status):
+    """Deterministic result id: sha256(signal_id|status)[:16] (F-C).
+
+    Keyed on (signal_id, terminal outcome) ONLY — not the wall clock — so a
+    re-run for the same terminal outcome maps to the SAME artifact name and can
+    never mint a second terminal result for one signal_id."""
+    payload = f"{signal_id}|{status}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

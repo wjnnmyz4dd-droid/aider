@@ -21,8 +21,12 @@ def _finite_positive(x):
         and math.isfinite(x) and x > 0
 
 
-def validate_record(record, cfg, now, ledger, expected_signal_id=None):
-    """Return (ok, reason_code, detail). ``now`` is a tz-aware UTC datetime."""
+def validate_record(record, cfg, now, expected_signal_id=None):
+    """Structural/content validation (spec §7 transport subset, minus dedup).
+
+    Dedup is handled once by the shared SeenResolver in the consumer, not here,
+    so there is a single dedup path. ``now`` is a tz-aware UTC datetime.
+    Returns (ok, reason_code, detail)."""
     # 2. supported schema version
     if record.get("schema_version") not in cfg.schema_version_allowlist:
         return False, ReasonCode.E_SCHEMA, {"schema_version": record.get("schema_version")}
@@ -46,9 +50,7 @@ def validate_record(record, cfg, now, ledger, expected_signal_id=None):
         return False, ReasonCode.E_ID, {"signal_id": signal_id}
     if expected_signal_id is not None and signal_id != expected_signal_id:
         return False, ReasonCode.E_ID, {"signal_id": signal_id, "filename": expected_signal_id}
-    # 5. dedup
-    if ledger is not None and ledger.is_seen(signal_id):
-        return False, ReasonCode.E_DUP, {"signal_id": signal_id}
+    # (dedup is resolved once by the shared SeenResolver in the consumer)
     # 6. expiry (expired iff now >= expiration_timestamp — strategy spec §8.2)
     exp = serialize.parse_iso(record["expiration_timestamp"])
     gen = serialize.parse_iso(record["generated_timestamp"])

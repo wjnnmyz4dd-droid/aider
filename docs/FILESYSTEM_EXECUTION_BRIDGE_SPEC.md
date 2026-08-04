@@ -94,6 +94,32 @@ contract (written pre-implementation) with what the bridge actually does now:
   wall-clock or RNG in bridge logic. There are **no polling loops**: a scan+claim
   is a single pass the caller invokes; the bridge never waits/sleeps.
 
+## 2.2 Phase-2 correction addendum (NORMATIVE — acceptance-review fixes)
+
+Implemented after the Phase-2 acceptance review, closing invariants already
+stated in §8/§9/§10:
+
+- **Exactly one terminal result (§9, F-C).** `result_id` is deterministic on
+  `(signal_id, terminal_state)` only. Recovery **adopts** an existing terminal
+  result (rebuilding the ledger from it) instead of minting a second, and does
+  not re-invoke the hook. Terminal writes order result → ledger → archive so any
+  crash window is recoverable to a single result.
+- **Dedup survives ledger loss (§8, F-D).** One shared seen-resolver treats a
+  `signal_id` as seen from the ledger **or** on-disk evidence (`inbox/results/`,
+  `archive/accepted|rejected/`, `outbox/claimed/`) and repairs the ledger from
+  disk. Conflicting accepted/rejected evidence for one id **fails closed**
+  (quarantine).
+- **No blind resubmit (§10, F-S).** The decision hook declares a posture
+  (`VALIDATION_ONLY` / `IDEMPOTENT` / `NON_IDEMPOTENT_EXECUTION`). Reconciliation
+  re-processes a non-terminal claimed item only for a re-runnable posture; under
+  the execution posture it marks the item `RECONCILIATION_REQUIRED` and never
+  re-invokes the hook. (No real execution hook is attached in Phase 2.)
+- **Exclusive claim (F-A):** claim uses `link`+`unlink` and refuses (never
+  overwrites) an existing `claimed/<signal_id>`. **Durability (F-1):** first
+  ledger/audit create fsyncs file + directory. **Move auditability (F-2):** a
+  failed move emits `E_MOVE` and fails closed. **Safe read (F-3):** `O_NOFOLLOW`
+  + descriptor `fstat` reduce the TOCTOU window.
+
 ## 3. Trade Instruction (on-disk record)
 
 The on-disk instruction is the **frozen versioned Trade Instruction Contract**

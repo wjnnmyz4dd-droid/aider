@@ -73,13 +73,40 @@ a losing racer gets no file and skips.
 Execution-only result fields (broker_order_id, filled_*, slippage, …) are always
 `null` here.
 
+## Crash-safety, dedup & posture (review corrections F-C/F-D/F-S/F-A)
+
+- **Exactly one terminal result (F-C).** `result_id = sha256(signal_id|status)`
+  is keyed on the terminal outcome only — no wall clock — so a re-run for the same
+  outcome maps to the same artifact. On recovery the bridge first **adopts** any
+  existing terminal result (repairing the ledger from it) instead of minting a
+  second; the hook is not re-invoked. A crash between result-write and
+  ledger-record therefore still yields **one** result.
+- **Dedup survives ledger loss (F-D).** A single shared `SeenResolver` treats a
+  `signal_id` as seen from **any** persistent evidence — ledger, `inbox/results/`,
+  `archive/accepted|rejected/`, or `outbox/claimed/` — and rebuilds the ledger
+  from disk. Losing `dedup.jsonl` cannot cause reprocessing. **Conflicting**
+  evidence (accepted *and* rejected family for one id) **fails closed** →
+  quarantine.
+- **Hook posture (F-S).** The consumer carries a posture:
+  `VALIDATION_ONLY` / `IDEMPOTENT` (re-runnable) or `NON_IDEMPOTENT_EXECUTION`.
+  Reconciliation re-processes a non-terminal claimed item only under a re-runnable
+  posture; under execution posture it **never re-invokes the hook** — it marks the
+  item `RECONCILIATION_REQUIRED` (needs broker/execution state) and takes no
+  action. No real execution hook is attached in this phase.
+- **Exclusive claim (F-A).** Claiming uses `link`+`unlink`, so it **refuses** (never
+  overwrites) a pre-existing `claimed/<signal_id>`, consistently across platforms.
+- **Durability/audit (F-1/F-2/F-3).** First ledger/audit creation fsyncs the file
+  and its directory; every failed move emits an `E_MOVE` audit event and fails
+  closed; reads use `O_NOFOLLOW` + descriptor `fstat` to shrink the TOCTOU window.
+
 ## Reconciliation (restart recovery)
 
 Single pass, no polling: delete stray `.tmp`; quarantine bad-named/unsafe files;
-for each stranded `claimed/` file — if terminal in the ledger, finish the
-interrupted archive move (never re-run); else safely re-process (transport is
-idempotent). Dedup ledger is durable and authoritative, so no double-processing
-across restarts. Fails closed throughout.
+then per stranded `claimed/` file the shared resolver decides — **terminal
+evidence → adopt** (archive + repair ledger, no hook, no 2nd result); **conflict
+→ quarantine**; **non-terminal + re-runnable posture → re-process**; **non-terminal
++ execution posture → reconciliation-required** (never blindly resubmit). Fails
+closed throughout.
 
 ## Determinism
 

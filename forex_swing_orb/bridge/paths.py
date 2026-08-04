@@ -76,3 +76,44 @@ def is_safe_regular_file(path, root):
         return real.is_file()
     except (OSError, ValueError):
         return False
+
+
+def safe_read_text(path, root, max_bytes):
+    """Read a file's text with the TOCTOU window reduced (F-3): open without
+    following symlinks where supported, then validate the OPEN descriptor (not
+    just the path) is a regular file under the root and within the size cap.
+
+    Returns (ok, text, reason) where reason in {"", "unsafe", "too_large", "io"}.
+    """
+    p = Path(path)
+    try:
+        real_root = Path(root).resolve()
+    except OSError:
+        return False, None, "unsafe"
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_NOFOLLOW", 0)    # refuse a symlink at the final component
+    flags |= getattr(os, "O_BINARY", 0)      # Windows: no newline translation
+    try:
+        fd = os.open(str(p), flags)
+    except OSError:
+        return False, None, "unsafe"
+    try:
+        st = os.fstat(fd)                     # stat the DESCRIPTOR, not the path
+        import stat as _stat
+        if not _stat.S_ISREG(st.st_mode):
+            return False, None, "unsafe"
+        # containment check on the opened path
+        try:
+            Path(os.path.realpath(str(p))).relative_to(real_root)
+        except ValueError:
+            return False, None, "unsafe"
+        if st.st_size > max_bytes:
+            return False, None, "too_large"
+        data = os.read(fd, max_bytes + 1)
+        if len(data) > max_bytes:
+            return False, None, "too_large"
+        return True, data.decode("utf-8"), ""
+    except (OSError, UnicodeDecodeError):
+        return False, None, "io"
+    finally:
+        os.close(fd)

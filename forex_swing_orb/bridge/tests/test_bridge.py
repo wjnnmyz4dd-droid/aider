@@ -32,9 +32,11 @@ def test_deterministic_serialization_and_digest(bridge):
 
 
 def test_result_id_is_deterministic_no_randomness(bridge):
-    a = bridge.serialize.result_id("a1b2c3d4e5f60718", "2024-01-25T12:00:00Z", "ACCEPTED")
-    b = bridge.serialize.result_id("a1b2c3d4e5f60718", "2024-01-25T12:00:00Z", "ACCEPTED")
+    # keyed on (signal_id, status) ONLY (F-C) -> stable across time
+    a = bridge.serialize.result_id("a1b2c3d4e5f60718", "ACCEPTED")
+    b = bridge.serialize.result_id("a1b2c3d4e5f60718", "ACCEPTED")
     assert a == b and len(a) == 16 and all(c in "0123456789abcdef" for c in a)
+    assert bridge.serialize.result_id("a1b2c3d4e5f60718", "REJECTED") != a
 
 
 # --- atomic write / partial-write resistance --------------------------------
@@ -113,7 +115,10 @@ def test_duplicate_detection_and_idempotency(bridge, wired, now):
     sid = consumer.claim_next(now)
     r2 = consumer.process(sid, now)
     assert r2["status"] == bridge.ResultState.DUPLICATE
-    assert (paths.archive_rejected / f"{sid}.json").exists()
+    # re-presentation adopts the original terminal family (ACCEPTED) — no new/
+    # conflicting artifact, and exactly one terminal result remains
+    assert (paths.archive_accepted / f"{sid}.json").exists()
+    assert len([p for p in paths.results.iterdir() if p.name.startswith(sid)]) == 1
 
 
 # --- validation failures (fail closed) --------------------------------------
@@ -263,7 +268,7 @@ def test_restart_archives_terminal_without_reprocess(bridge, wired, now):
                   bridge.serialize.iso_utc(now))   # terminal, but file still in claimed
     n_results_before = len(list(paths.results.iterdir()))
     summary = bridge.recover(consumer, now)
-    assert summary["claimed_archived"] == 1 and summary["claimed_reprocessed"] == 0
+    assert summary["claimed_adopted"] == 1 and summary["claimed_reprocessed"] == 0
     assert (paths.archive_accepted / f"{ins['signal_id']}.json").exists()
     assert len(list(paths.results.iterdir())) == n_results_before   # NOT reprocessed
 
@@ -360,5 +365,146 @@ def test_bridge_is_stdlib_only(bridge):
     # bridge depends only on the stdlib (+ its own package) — no third-party
     roots = _bridge_import_roots(bridge)
     stdlib = {"os", "re", "json", "hashlib", "math", "datetime", "pathlib",
-              "dataclasses", "", "__future__", "typing", "sys", "shutil"}
+              "dataclasses", "", "__future__", "typing", "sys", "shutil", "stat"}
     assert roots <= stdlib, f"unexpected imports: {roots - stdlib}"
+
+
+# --- F-C: crash-safe exactly-one terminal result ----------------------------
+
+def test_crash_between_result_and_ledger_then_adopt(bridge, wired, now):
+    from forex_swing_orb.bridge.contract import build_result
+    paths, ledger, audit, consumer = wired
+    ins = make_instruction()
+    bridge.write_instruction(paths, ins, now, audit=audit)
+    sid = consumer.claim_next(now)
+    # simulate _finish partial: result WRITTEN, then CRASH (no ledger, no archive)
+    rid = bridge.serialize.result_id(sid, bridge.ResultState.ACCEPTED)
+    res = build_result(sid, rid, bridge.ResultState.ACCEPTED, bridge.ReasonCode.OK,
+                       bridge.serialize.iso_utc(now), bridge.serialize.iso_utc(now), instruction=ins)
+    consumer._write_result(res)
+    # recovery with a counting hook and a FRESH ledger (as after a restart)
+    calls = []
+    def hook(record, n):
+        calls.append(record["signal_id"]); return bridge.ResultState.ACCEPTED, bridge.ReasonCode.OK, {}
+    ledger2 = bridge.DedupLedger(paths.dedup_ledger)
+    c2 = bridge.Consumer(paths, bridge.DEFAULT_CONFIG, ledger2, audit, hook=hook)
+    summary = bridge.recover(c2, now)
+    results = [p for p in paths.results.iterdir() if p.name.startswith(sid)]
+    assert len(results) == 1                 # exactly one terminal result
+    assert summary["claimed_adopted"] == 1
+    assert calls == []                       # hook NOT invoked again
+    assert ledger2.is_seen(sid)              # ledger repaired deterministically
+    assert (paths.archive_accepted / f"{sid}.json").exists()   # archive consistent
+
+
+# --- F-D: dedup survives ledger loss ----------------------------------------
+
+def test_ledger_loss_with_archive_evidence_rejects_duplicate(bridge, wired, now):
+    import os
+    paths, ledger, audit, consumer = wired
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)
+    consumer.process(consumer.claim_next(now), now)     # ACCEPTED, archived, ledger
+    os.remove(paths.dedup_ledger)                       # lose the ledger entirely
+    calls = []
+    def hook(r, n):
+        calls.append(1); return bridge.ResultState.ACCEPTED, bridge.ReasonCode.OK, {}
+    ledger2 = bridge.DedupLedger(paths.dedup_ledger)
+    c2 = bridge.Consumer(paths, bridge.DEFAULT_CONFIG, ledger2, audit, hook=hook)
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)   # re-present
+    r = c2.process(c2.claim_next(now), now)
+    assert r["status"] == bridge.ResultState.DUPLICATE  # on-disk archive evidence caught it
+    assert calls == []                                  # hook not re-invoked
+    assert ledger2.is_seen("a1b2c3d4e5f60718")          # ledger rebuilt from disk
+
+
+def test_ledger_loss_with_inbox_result_only(bridge, wired, now):
+    import os
+    paths, ledger, audit, consumer = wired
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)
+    consumer.process(consumer.claim_next(now), now)
+    os.remove(paths.dedup_ledger)
+    (paths.archive_accepted / "a1b2c3d4e5f60718.json").unlink()   # keep ONLY inbox result
+    ledger2 = bridge.DedupLedger(paths.dedup_ledger)
+    c2 = bridge.Consumer(paths, bridge.DEFAULT_CONFIG, ledger2, audit)
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)
+    r = c2.process(c2.claim_next(now), now)
+    assert r["status"] == bridge.ResultState.DUPLICATE
+
+
+def test_conflicting_persistent_evidence_fails_closed(bridge, wired, now):
+    from forex_swing_orb.bridge.contract import build_result
+    paths, ledger, audit, consumer = wired
+    sid = "a1b2c3d4e5f60718"
+    (paths.archive_accepted / f"{sid}.json").write_text("{}", encoding="utf-8")   # ACCEPTED family
+    rej = build_result(sid, bridge.serialize.result_id(sid, bridge.ResultState.REJECTED),
+                       bridge.ResultState.REJECTED, bridge.ReasonCode.E_STRUCT,
+                       bridge.serialize.iso_utc(now), bridge.serialize.iso_utc(now))
+    (paths.results / f"{sid}.{rej['result_id']}.json").write_text(
+        bridge.serialize.dumps(rej), encoding="utf-8")                             # REJECTED family
+    (paths.claimed / f"{sid}.json").write_text(
+        bridge.serialize.dumps(bridge.serialize.with_integrity_digest(make_instruction())), encoding="utf-8")
+    r = consumer.process(sid, now)
+    assert r is None
+    assert (paths.quarantine / f"{sid}.json").exists()
+    assert any(a["reason_code"] == bridge.ReasonCode.E_CONFLICT for a in audit.read_all())
+
+
+# --- F-S: hook posture governs reconcile re-invocation ----------------------
+
+def test_non_idempotent_hook_not_reinvoked_by_reconcile(bridge, tmp_path, now):
+    calls = []
+    def exec_hook(record, n):
+        calls.append(record["signal_id"]); return bridge.ResultState.ACCEPTED, bridge.ReasonCode.OK, {}
+    paths, ledger, audit, consumer = bridge.open_bridge(
+        tmp_path, hook=exec_hook, hook_posture=bridge.HookPosture.NON_IDEMPOTENT_EXECUTION)
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)
+    consumer.claim_next(now)                     # CRASH before process (non-terminal)
+    summary = bridge.recover(consumer, now)
+    assert calls == []                                          # never blindly re-invoked
+    assert summary["claimed_reconciliation_required"] == 1
+    assert not list(paths.results.iterdir())                    # no duplicate terminal result
+    assert (paths.claimed / "a1b2c3d4e5f60718.json").exists()   # left for external reconciliation
+    assert bridge.ReasonCode.RECONCILIATION_REQUIRED in {a["reason_code"] for a in audit.read_all()}
+
+
+def test_validation_only_hook_reruns_on_reconcile(bridge, tmp_path, now):
+    calls = []
+    def vo_hook(record, n):
+        calls.append(1); return bridge.ResultState.ACCEPTED, bridge.ReasonCode.OK, {}
+    paths, ledger, audit, consumer = bridge.open_bridge(
+        tmp_path, hook=vo_hook, hook_posture=bridge.HookPosture.VALIDATION_ONLY)
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)
+    consumer.claim_next(now)
+    bridge.recover(consumer, now)
+    assert calls == [1]                          # re-run permitted only for re-runnable posture
+    assert (paths.archive_accepted / "a1b2c3d4e5f60718.json").exists()
+
+
+# --- F-A / F-1 / F-2 hardening ----------------------------------------------
+
+def test_claim_refuses_existing_claimed_destination(bridge, wired, now):
+    paths, ledger, audit, consumer = wired
+    sid = "a1b2c3d4e5f60718"
+    (paths.claimed / f"{sid}.json").write_text('{"stranded":true}', encoding="utf-8")
+    bridge.write_instruction(paths, make_instruction(), now, audit=audit)   # pending/<sid>
+    assert consumer.claim(sid, now) is False                 # refused (no overwrite)
+    assert '"stranded"' in (paths.claimed / f"{sid}.json").read_text(encoding="utf-8")
+    assert (paths.pending / f"{sid}.json").exists()          # pending left intact
+
+
+def test_initial_ledger_creation_persists(bridge, tmp_path, now):
+    paths, ledger, audit, consumer = bridge.open_bridge(tmp_path)
+    assert not paths.dedup_ledger.exists()
+    ledger.record("a1b2c3d4e5f60718", bridge.ResultState.ACCEPTED, "0" * 16,
+                  bridge.serialize.iso_utc(now))
+    assert paths.dedup_ledger.exists()
+    assert bridge.DedupLedger(paths.dedup_ledger).is_seen("a1b2c3d4e5f60718")
+
+
+def test_failed_move_is_audited(bridge, wired, now):
+    paths, ledger, audit, consumer = wired
+    missing = paths.claimed / "deadbeefdeadbeef.json"        # source does not exist
+    ok = consumer._move_or_audit(missing, paths.archive_accepted / missing.name,
+                                 now, "archive", "deadbeefdeadbeef")
+    assert ok is False
+    assert any(a["reason_code"] == bridge.ReasonCode.E_MOVE for a in audit.read_all())

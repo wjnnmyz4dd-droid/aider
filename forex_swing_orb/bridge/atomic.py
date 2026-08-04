@@ -41,14 +41,21 @@ def atomic_write_text(path, text):
 
 
 def atomic_claim(src, dst):
-    """Atomically move ``src`` -> ``dst`` via rename; the successful rename IS the
-    claim. Returns True if this caller won the claim, False if it was already
-    taken/absent (no lock files, no overwrite of a live claim)."""
+    """Exclusively claim ``src`` -> ``dst`` (F-A). Uses hardlink + unlink so the
+    claim FAILS (never overwrites) if ``dst`` already exists, consistently across
+    platforms. Returns True iff this caller won the claim; False if the
+    destination already exists or the source is gone (no lock files)."""
     src, dst = Path(src), Path(dst)
     try:
-        os.rename(src, dst)   # atomic; fails if src is gone (another claimer won)
+        os.link(src, dst)     # atomic; raises FileExistsError if dst exists
+    except FileExistsError:
+        return False          # destination already claimed — never overwrite
     except (FileNotFoundError, OSError):
-        return False
+        return False          # source gone (another claimer won) or unsupported
+    try:
+        os.unlink(src)        # drop the pending link; dst now owns the inode
+    except OSError:
+        pass                  # dst is claimed regardless; a stray src is harmless
     _fsync_dir(dst.parent)
     return True
 
@@ -66,10 +73,14 @@ def atomic_move(src, dst):
 
 
 def append_line_fsync(path, line):
-    """Append one line to a JSONL file durably (create if needed)."""
+    """Append one line to a JSONL file durably (create if needed). On first
+    creation the containing directory is fsync'd too (F-1)."""
     path = Path(path)
+    created = not path.exists()
     with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
         f.flush()
         os.fsync(f.fileno())
+    if created:
+        _fsync_dir(path.parent)
     return path

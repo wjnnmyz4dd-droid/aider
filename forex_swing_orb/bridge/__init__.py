@@ -18,23 +18,27 @@ from .config import BridgeConfig, DEFAULT_CONFIG
 from .paths import BridgePaths
 from .ledger import DedupLedger
 from .audit import AuditLog
-from .contract import ResultState, ReasonCode
+from .contract import ResultState, ReasonCode, HookPosture
+from .dedup import SeenResolver
 from .producer import write_instruction, write_instructions, ProducerError
 from .consumer import Consumer, validation_only_hook
 from .reconcile import recover
 
 __all__ = [
     "BridgeConfig", "DEFAULT_CONFIG", "BridgePaths", "DedupLedger", "AuditLog",
-    "ResultState", "ReasonCode", "write_instruction", "write_instructions",
-    "ProducerError", "Consumer", "validation_only_hook", "recover", "open_bridge",
-    "serialize",
+    "ResultState", "ReasonCode", "HookPosture", "SeenResolver",
+    "write_instruction", "write_instructions", "ProducerError", "Consumer",
+    "validation_only_hook", "recover", "open_bridge", "serialize",
 ]
 
 
-def open_bridge(root, cfg=DEFAULT_CONFIG, hook=None):
+def open_bridge(root, cfg=DEFAULT_CONFIG, hook=None,
+                hook_posture=HookPosture.VALIDATION_ONLY):
     """Create/ensure a bridge tree at ``root`` and return its wired components."""
     paths = BridgePaths(root).ensure()
     ledger = DedupLedger(paths.dedup_ledger)
     audit = AuditLog(paths.audit_log)
-    consumer = Consumer(paths, cfg, ledger, audit, hook=hook)
+    resolver = SeenResolver(paths, ledger, cfg)
+    consumer = Consumer(paths, cfg, ledger, audit, hook=hook,
+                        hook_posture=hook_posture, resolver=resolver)
     return paths, ledger, audit, consumer
