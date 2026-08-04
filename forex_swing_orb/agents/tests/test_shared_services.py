@@ -36,7 +36,7 @@ def test_model_and_prompt_version_captured(orchestrator):
     out = orchestrator.run(make_request(), good_bundle(),
                            StrategyCandidate.QUALIFIED, NOW)
     mi = out["agent_results"]["market_intelligence"]
-    assert mi["model_id"] is not None and mi["prompt_version"] == "market_intelligence.v1"
+    assert mi["model_id"] is not None and mi["prompt_version"] == "market_intelligence.v2"
     # deterministic agents never carry model provenance
     assert out["agent_results"]["risk"]["model_id"] is None
     assert out["agent_results"]["news_compliance"]["model_id"] is None

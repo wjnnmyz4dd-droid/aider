@@ -25,6 +25,8 @@ class ExplainabilityService:
     def explain(self, request, agent_results, decision, data_quality):
         conflicts = self._conflicts(agent_results)
         missing = self._missing(agent_results, data_quality)
+        any_block = (decision.get("advisory_decision") == Advisory.NO_TRADE) or \
+            any(r.get("assessment") == Assessment.BLOCK for r in agent_results.values())
         return {
             "schema_version": SCHEMA_VERSION,
             "service_id": self.service_id,
@@ -32,7 +34,9 @@ class ExplainabilityService:
             "request_id": request.get("request_id"),
             "correlation_id": request.get("correlation_id"),
             "symbol": request.get("symbol"),
+            "strategy_candidate": decision.get("strategy_candidate"),
             "final_assessment": decision.get("advisory_decision"),
+            "any_block": any_block,
             "confidence": decision.get("confidence"),
             "confidence_band": decision.get("confidence_band"),
             "reason_codes": decision.get("reason_codes"),
