@@ -91,8 +91,8 @@ def test_unknown_direction_is_illegal():
 
 def test_trail_methods_and_reasons_defined():
     assert TrailMethod.STRUCTURE and TrailMethod.ATR and TrailMethod.NONE
-    for r in (PMReason.TRAIL_ADVANCED, PMReason.TRAIL_HELD,
-              PMReason.STOP_REJECTED_WIDEN, PMReason.PROFIT_LOCKED):
+    for r in (PMReason.TRAIL_ADVANCED, PMReason.TRAIL_NO_IMPROVEMENT,
+              PMReason.STOP_WIDEN_REJECTED, PMReason.PROFIT_LOCK_SET):
         assert isinstance(r, str) and r.startswith("PM_")
 
 
@@ -109,7 +109,7 @@ def test_phase_transitions_forward_only():
 # -- weekend / manual / duration architecture --------------------------------
 def test_weekend_and_manual_policies_defined():
     assert WeekendPolicy.FLATTEN and WeekendPolicy.HOLD
-    assert ManualPolicy.ADOPT_AND_AUDIT and ManualPolicy.RECONCILE_REQUIRED
+    assert ManualPolicy.ADOPT_AND_AUDIT and ManualPolicy.REJECT_OR_ESCALATE
     assert DEFAULT_PM_CONFIG.weekend_policy in (WeekendPolicy.FLATTEN, WeekendPolicy.HOLD)
     assert isinstance(DEFAULT_PM_CONFIG.max_duration_bars, int)
 
@@ -121,7 +121,7 @@ def test_recovery_sources_of_truth_order():
     assert "filesystem_bridge" in RECOVERY_SOURCES_OF_TRUTH
     assert "pm_audit_log" in RECOVERY_SOURCES_OF_TRUTH
     for r in (PMReason.RECOVERED_FROM_BROKER, PMReason.RECONCILIATION_REQUIRED,
-              PMReason.BROKER_DESYNC, PMReason.MANUAL_DETECTED):
+              PMReason.BROKER_CONSTRAINT, PMReason.MANUAL_DETECTED):
         assert r.startswith("PM_")
 
 
@@ -136,9 +136,13 @@ def test_position_package_has_no_execution_or_networking():
             assert tok not in text, f"{src.name}:{tok}"
 
 
-def test_no_stop_computation_function_present():
-    # design freeze: the trailing/BE ALGORITHM is documented, not implemented
-    calc = (Path(__file__).resolve().parents[1] / "contract.py").read_text()
-    for banned in ("def compute_next_stop", "def next_stop", "def trail_stop",
-                   "def move_to_breakeven"):
-        assert banned not in calc
+def test_no_execution_or_apply_functions():
+    # 4C-R freezes the deterministic MATH (spec.py, pure) but NO execution: no
+    # function that applies/sends/modifies a stop or calls a broker/bridge.
+    pkg = Path(__file__).resolve().parents[1]
+    for src in pkg.glob("*.py"):
+        text = src.read_text()
+        for banned in ("def apply_stop", "def send_stop", "def modify_stop",
+                       "def execute", "def place_", "def order_send",
+                       ".order_send(", "def submit"):
+            assert banned not in text, f"{src.name}:{banned}"

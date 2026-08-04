@@ -175,4 +175,124 @@ test.
 
 None. No new third-party dependency. No production (strategy/bridge/EA) change.
 
+---
+
+# Phase 4C-R — Frozen Deterministic Specifications
+
+Phase 4C-R closes the acceptance-review gaps. All of the following are frozen in
+`forex_swing_orb/position/contract.py` (+ pure math in `position/spec.py`) and
+validated by `position/tests/`. Design-only: no execution, no broker/bridge call,
+no AI stop authority.
+
+## F1 — Stop-update precedence (frozen)
+
+`STOP_UPDATE_PRECEDENCE` (highest first):
+1. broker_reconciliation 2. manual_intervention 3. emergency_kill_switch
+4. position_closed 5. weekend_policy 6. max_duration
+7. protective_stop_integrity 8. break_even 9. profit_lock 10. structure_trail
+11. no_action.
+
+Invariant (`PRECEDENCE_INVARIANT`): *"No lower-priority rule may weaken a
+higher-priority protective action; on any evaluation the highest-priority
+applicable rule decides, and a stop may only move in a protective (never-widen,
+never-loosen) direction."* Helpers: `precedence_rank`, `precedence_dominates`.
+
+## F2 — Break-even (frozen math, `spec.py`)
+
+- Immutable risk `R = |entry - initial_stop|`; `initial_risk()` returns `None`
+  (fail closed) on zero, negative, non-finite, or wrong-sided risk.
+- Trigger operator is **`>=`** toward profit (equality triggers).
+  Long trigger = `entry + trigger_r*R`; short = `entry - trigger_r*R`.
+- Break-even stop = `entry ± (breakeven_buffer_pips + commission_pips)*pip`
+  (buffer nets past spread/commission). Always toward profit vs the initial stop
+  (never widens).
+- Invalid entry/stop or `R=None` → `None` (fail closed). R is fixed at entry and
+  never redefined by later stop moves (state keeps `initial_stop`).
+
+## F2 — Profit lock (frozen)
+
+- Trigger `>=` at `entry ± profit_lock_r*R` (default +1.5R).
+- Locked stop = `entry ± profit_lock_retain_r*R` (default +0.5R), symmetric L/S.
+- Anti-oscillation: forward-only phase + a move requires strict improvement
+  (`is_stop_improvement`, ≥ `min_trail_improvement_pips`); equality → hold. Uses
+  the immutable R only.
+
+## F2 — Structure trailing (frozen)
+
+- Eligible structure = a **confirmed strategy swing** (higher-low for long,
+  lower-high for short); confirmation is **inherited from the strategy pivot_k**
+  (`reuse_strategy_swings=True`) — pivots are **never recomputed** here.
+- Candidate = `swing ∓ trail_offset_pips*pip`; `None` when no valid structure
+  (executor holds → `PM_TRAIL_PENDING`/`PM_TRAIL_NO_IMPROVEMENT`).
+- Minimum improvement `min_trail_improvement_pips`; equal/worse → hold.
+- Stale structure (`> stale_structure_max_bars`) → `PM_DATA_STALE`, hold.
+- Broker minimum stop distance enforced (`respects_broker_min_stop`).
+- No future bars (no bar access; consumes confirmed swings only).
+- Evaluation cadence: **once per closed bar** (`ON_CLOSED_BAR`).
+- Restart: rebuilt from broker + bridge (never in-memory only).
+- Direction rule: long `new_stop > current`, short `new_stop < current`; equal =
+  no modification (`stop_move_is_legal`).
+
+## F3 — Reason-code registry (complete, normalized)
+
+`PMReason.REQUIRED` = the 20: PM_INITIAL, PM_BREAKEVEN_PENDING,
+PM_BREAKEVEN_TRIGGERED, PM_BREAKEVEN_SET, PM_PROFIT_LOCK_TRIGGERED,
+PM_PROFIT_LOCK_SET, PM_TRAIL_PENDING, PM_TRAIL_ADVANCED, PM_TRAIL_NO_IMPROVEMENT,
+PM_STOP_WIDEN_REJECTED, PM_STOP_LOOSEN_REJECTED, PM_BROKER_CONSTRAINT,
+PM_RECONCILIATION_REQUIRED, PM_MANUAL_CHANGE_ADOPTED, PM_MANUAL_CHANGE_REJECTED,
+PM_POSITION_CLOSED, PM_DATA_STALE, PM_DATA_INSUFFICIENT, PM_WEEKEND_EXIT,
+PM_MAX_DURATION_EXIT. Supporting extras: PM_KILL_SWITCH, PM_PARTIAL_CLOSED,
+PM_RECOVERED_FROM_BROKER, PM_MANUAL_DETECTED, PM_NO_ACTION.
+
+## F4 — Audit schema (frozen)
+
+`AUDIT_RECORD_FIELDS` (one record per stop evaluation/movement): signal_id,
+ticket, symbol, direction, phase, entry_price, initial_stop,
+immutable_initial_R, previous_stop, proposed_stop, applied_stop, trigger_price,
+market_reference, structure_reference, reason_code, broker_result,
+evaluation_timestamp, reconciliation_status, manual_status, restart_source.
+`build_audit_record` (deterministic; unspecified fields → null) +
+`validate_audit_record`.
+
+## F5 — Manual intervention (frozen)
+
+`classify_manual_change(direction, expected_stop, observed_stop,
+position_present)` → deterministic `(ManualAction, PMReason)`:
+- no broker position → CLOSE / `PM_POSITION_CLOSED`
+- SL removed (`observed=None`) → ESCALATE / `PM_STOP_LOOSEN_REJECTED`
+- tighter (toward profit) → ADOPT / `PM_MANUAL_CHANGE_ADOPTED`
+- looser (widens risk) → REJECT / `PM_MANUAL_CHANGE_REJECTED`
+- no change → NONE. Symmetric long/short; never violates never-widen/never-loosen.
+Manual partial close → reconcile volume (`PM_PARTIAL_CLOSED`); TP modification is
+outside PM stop scope (audit only); ticket/symbol mismatch → fail closed
+(`PM_RECONCILIATION_REQUIRED`).
+
+## F6 — Reconciliation matrix (frozen)
+
+`RECONCILIATION_MATRIX` rows `(case, source_of_truth, result, reason_code, audit,
+retry_allowed)` for: broker_stop_differs, bridge_missing, audit_missing,
+conflicting_audit, no_broker_position, terminal_disconnected, duplicate_ticket,
+crash_during_stop_modification, unknown_broker_outcome, stale_local_state.
+Every row: `audit=True`, `retry_allowed=False` — **the executor never blindly
+resends a stop modification**; uncertain outcomes (crash / unknown) verify broker
+truth first (`..._never_blind_resend`, `PM_RECONCILIATION_REQUIRED`).
+`reconciliation_rule(case)` looks up the frozen row.
+
+## Weekend / max-duration (frozen)
+
+Cutoff is a **fixed UTC** instant (`weekend_cutoff_dow=Fri`,
+`weekend_cutoff_hour_utc=20`) — DST-immune by construction; FLATTEN/HOLD
+deterministic; `max_duration_bars` (0=disabled) uses the monotonic
+`opened_timestamp`/`bars_open` reference. Weekend and max-duration both sit above
+break-even/lock/trail in the precedence order, so a protective exit is never
+weakened by a management rule.
+
+## 4C-R tests
+
+`position/tests/test_position_spec_4cr.py` (45 assertions across precedence,
+break-even/profit-lock/trailing math incl. exact `>=` boundaries and zero/
+negative/non-finite risk fail-closed, long/short symmetry, reason-code registry
+completeness, audit schema, manual policy, reconciliation matrix) plus the
+updated `test_position_architecture.py`. No execution tests.
+
 **Disposition:** READY FOR POSITION MANAGEMENT IMPLEMENTATION.
