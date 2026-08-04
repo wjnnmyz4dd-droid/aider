@@ -29,7 +29,7 @@ RECORD_KINDS = frozenset({
     "market_context", "agent_assessment", "strategy_decision", "rejected_setup",
     "generated_signal", "execution_outcome", "pnl", "news_condition",
     "liquidity_observation", "risk_decision", "critic_objection",
-    "lesson", "model_prompt_version",
+    "lesson", "model_prompt_version", "shadow_report",
 })
 
 RAW_SCHEMA_VERSION = 1

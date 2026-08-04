@@ -150,7 +150,7 @@ class LiquidityAgent(Agent):
             "prior_session_high": ps_high, "prior_session_low": ps_low,
             "stop_cluster_inference": "evidence-based inference; unobservable stops not asserted",
             "closed_bars_only": True, "creates_direction": False,
-        }, freshness={"market": (context or {}).get("market", {}).get("age_sec")})
+        }, freshness={"market": ((context or {}).get("market") or {}).get("age_sec")})
 
     def _retest_quality(self, liq, price, entry, tol, pool_behind_entry):
         # explicit strategy-provided retest quality is authoritative context

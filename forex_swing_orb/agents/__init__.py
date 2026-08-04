@@ -26,6 +26,7 @@ from .memory import MemoryStore
 from .explain import ExplainabilityService
 from .coordinator import DecisionCoordinator
 from .orchestrator import Orchestrator, ORCHESTRATION_ORDER
+from .shadow import ShadowRunner, ShadowAnalytics, shadow_metrics
 
 __all__ = [
     "SCHEMA_VERSION", "Assessment", "Advisory", "StrategyCandidate", "ReasonCode",
@@ -33,4 +34,5 @@ __all__ = [
     "validate_request", "validate_result", "confidence_band", "Agent",
     "LLMProvider", "MockLLMProvider", "MemoryStore", "ExplainabilityService",
     "DecisionCoordinator", "Orchestrator", "ORCHESTRATION_ORDER",
+    "ShadowRunner", "ShadowAnalytics", "shadow_metrics",
 ]

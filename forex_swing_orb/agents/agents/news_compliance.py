@@ -77,6 +77,7 @@ class NewsComplianceAgent(Agent):
         worst = NewsRating.CLEAR
         hits = []
         notes = []
+        event_reasons = []              # accurate, deterministic per-event codes
         for ev in events:
             if not isinstance(ev, dict):
                 return self._block([ReasonCode.NEWS_DATA_MALFORMED, ReasonCode.DQ_MALFORMED],
@@ -99,36 +100,42 @@ class NewsComplianceAgent(Agent):
             if et is None:
                 return self._block([ReasonCode.NEWS_DATA_MALFORMED, ReasonCode.DQ_MALFORMED],
                                    ["event.event_timestamp"])
-            if norm["verification_state"] not in ("VERIFIED", None):
-                # a relevant but unverified/rumor event cannot be relied upon
-                worst = NewsRating.BLOCK
-                hits.append({"event": norm["event_name"], "currency": cur,
-                             "issue": "unverified"})
-                notes.append(ReasonCode.NEWS_SOURCE_UNVERIFIED)
-                continue
+            # Finding A: only events INSIDE the lockout window can affect the
+            # decision. An out-of-window event (e.g. days away) is ignored here,
+            # including its verification state — it can never block now.
             delta_min = (et - now).total_seconds() / 60.0
             in_window = (-post) <= delta_min <= pre
             if not in_window:
                 continue
+            # verification is enforced ONLY for in-window relevant events
+            if norm["verification_state"] not in ("VERIFIED", None):
+                worst = NewsRating.BLOCK
+                event_reasons.append(ReasonCode.NEWS_SOURCE_UNVERIFIED)
+                hits.append({"event": norm["event_name"], "currency": cur,
+                             "delta_min": round(delta_min, 1), "issue": "unverified"})
+                continue
             impact = norm["impact"]
             if impact in _HIGH:
                 worst = NewsRating.BLOCK
+                event_reasons.append(ReasonCode.NEWS_HIGH_IMPACT_BLOCK)
                 hits.append({"event": norm["event_name"], "currency": cur,
                              "delta_min": round(delta_min, 1), "impact": "HIGH"})
             elif impact in _MED:
                 if worst != NewsRating.BLOCK:
                     worst = NewsRating.CAUTION
+                event_reasons.append(ReasonCode.NEWS_CAUTION_WINDOW)
                 hits.append({"event": norm["event_name"], "currency": cur,
                              "delta_min": round(delta_min, 1), "impact": "MEDIUM"})
 
-        reasons = self._reasons_for(worst)
-        if notes and worst == NewsRating.CLEAR:
-            # currency-not-mapped hygiene note; advisory caution, never blocks alone
+        if worst == NewsRating.CLEAR:
             if ReasonCode.NEWS_CURRENCY_NOT_MAPPED in notes:
+                # unmappable-currency hygiene note: advisory caution, never a block
                 worst = NewsRating.CAUTION
                 reasons = [ReasonCode.NEWS_CAUTION_WINDOW, ReasonCode.NEWS_CURRENCY_NOT_MAPPED]
+            else:
+                reasons = [ReasonCode.NEWS_CLEAR]
         else:
-            reasons = _dedup(reasons + notes)
+            reasons = _dedup(event_reasons + notes)
 
         conf = 0.9 if worst != NewsRating.CLEAR else 0.85
         return {
