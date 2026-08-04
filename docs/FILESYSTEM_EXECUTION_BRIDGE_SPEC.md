@@ -1,11 +1,12 @@
-# Local Filesystem Execution Bridge — Contract (Design-Only)
+# Local Filesystem Execution Bridge — Contract
 
-**Status:** **DESIGN ONLY — documentation of the contract. NOT implemented.**
-No code, no networking, no MT5 connection, no changes to Titan/MT5/SignalEngine or
-any production implementation are authorized by this document.
-**Phase placement:** implementation begins **only after Swing-ORB Phase 1
-acceptance** (see §2). Phase 1 remains limited to deterministic signal generation,
-qualification, tests, and audit output.
+**Status:** **PHASE 2 — IMPLEMENTED (transport only).** The deterministic
+filesystem transport is implemented in `forex_swing_orb/bridge/` (single source of
+truth). **No execution, no MT5, no broker, no networking, no background service.**
+The consumer side is provided as an **interface + validation-only processor**; the
+actual execution decision is an injected hook that is out of scope for Phase 2.
+**Phase placement:** Phase 1 (strategy engine) is complete and accepted; Phase 2
+implements only the bridge; MT5/broker execution is a later phase.
 **Related docs:** `docs/FOREX_SWING_ORB_SPEC.md` (frozen strategy spec — Execution
 Boundary §0.2, Trade Instruction Contract §8, pipeline reason codes §14);
 `docs/TITAN_COMPLIANCE_ENGINE_REVIEW.md`; `docs/VIBE_TRADING_PHASE0_AUDIT.md` (§H
@@ -62,6 +63,36 @@ and that coupling is a directory of files.
   (owned per §13). Until then this document is a target contract, not live code.
 
 ---
+
+## 2.1 Phase 2 implementation scope & reconciliation (NORMATIVE)
+
+Phase 2 implements the **transport** only. The following reconcile the design
+contract (written pre-implementation) with what the bridge actually does now:
+
+- **Validation subset (of §7).** The bridge performs the transport-level checks it
+  can prove from the file + ledger: (1) readable/valid JSON, (2) supported
+  `schema_version`, (3) `integrity_digest`, (4) required fields present/typed,
+  (4b) known `strategy_version`, (5) `signal_id` not previously processed (dedup),
+  (6) not expired, (6b) `generated_timestamp` not implausibly in the future,
+  (7) `symbol` in canonical `[A-Z]{6}.FX` form (format only — no broker mapping),
+  (8) structural direction/prices (LONG/SHORT; finite/positive; stop/target on the
+  correct sides; RR sane). **Steps 9–15 of §7 (market/account freshness, news
+  re-validation, Titan compliance, exposure/spread/kill-switch, execution) are
+  DOWNSTREAM** (future execution layer) and are **not** implemented or simulated
+  by the bridge. After the bridge's checks pass, control is handed to an injected
+  **decision hook**; the Phase-2 default hook is *validation-only* and returns
+  `ACCEPTED` **without any execution**.
+- **Result states (reconciles §9).** The bridge itself emits
+  `ACCEPTED` · `REJECTED` · `EXPIRED` · `DUPLICATE` · `FAILED` · `ERROR`.
+  `EXECUTED` / `EXECUTION_FAILED` are **reserved for the downstream execution
+  layer** and are never emitted by the transport. Corrupt/unreadable/oversized
+  files are a **file disposition** (moved to `quarantine/`) recorded in the audit
+  log with an `ERROR` outcome; because an unparseable file has no `signal_id`, no
+  keyed result file is written for it.
+- **Determinism.** All timestamps are **inputs** (an explicit `now` is passed in),
+  so `result_id`, audit lines, and outcomes are pure functions of inputs — no
+  wall-clock or RNG in bridge logic. There are **no polling loops**: a scan+claim
+  is a single pass the caller invokes; the bridge never waits/sleeps.
 
 ## 3. Trade Instruction (on-disk record)
 
@@ -375,11 +406,12 @@ belongs to the future bridge/execution phase — **not** to the SignalEngine.
 
 ## 15. Unresolved decisions (flagged; none block this documentation step)
 
-- **D1 — Instruction schema evolution:** promote `strategy_id`, `risk_fraction`,
-  `news_eligibility` to first-class fields and add `integrity_digest` via an
-  instruction **schema v2** at bridge-phase start, **or** wrap the frozen v1
-  instruction in a bridge **envelope** carrying the transport/integrity fields.
-  (This doc specifies the v2 field set; the wrap-vs-bump choice is deferred.)
+- **D1 — RESOLVED (Phase 2): extend, don't bump.** The strategy engine already
+  emits `strategy_id`, `risk_fraction`, and `news_eligibility` as first-class
+  instruction fields at `schema_version = 1` (spec §8), so no v2 strategy bump is
+  needed. `integrity_digest` is a **bridge transport field** added at write time
+  and excluded from the digest computation itself (§3.1). The bridge's
+  `schema_version_allowlist` default is `{1}`.
 - **D2 — Result retention/rotation:** retention policy for `inbox/results/` and
   `archive/*` (size/age-based rotation) is unspecified pending operational input.
 - **D3 — Multi-consumer topology:** the claim protocol supports competing
