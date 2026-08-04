@@ -541,3 +541,131 @@ def test_audit_append_only_and_deterministic():
     pm.evaluate("sig", market_price=1.1025, now=NOW)
     lines2 = Path(path).read_text().count("\n")
     assert lines2 > lines1                                # append-only grows
+
+
+# ============================ Phase 4D-R (F1/F2/F3) =======================
+def _betrig(direction="LONG"):
+    return be_trigger(direction)
+
+
+def _off_grid_mock():
+    """A mock whose broker NORMALIZES stops to the 5-digit tick grid (simulating
+    a real terminal): any modify_stop snaps sl to 5 digits."""
+    m = mock_mt5.MockMT5(); m.add_symbol("EURUSD")
+    real = m.modify_stop
+    def snap(ticket, sl):
+        res = real(ticket, round(sl, 5))          # broker stores tick-grid value
+        return res
+    m.modify_stop = snap
+    return m
+
+
+def test_f2_broker_normalization_no_false_reconcile():
+    # candidate is quantized before sending; broker stores the same tick -> verify
+    # ok and no phantom manual-change on the next cycle
+    pm, m, tk, _ = rig("LONG")
+    r = pm.evaluate("sig", market_price=_betrig(), now=NOW)
+    assert r["reason_code"] == PMReason.BREAKEVEN_SET
+    assert r["applied_stop"] == round(r["applied_stop"], 5)       # on the tick grid
+    r2 = pm.evaluate("sig", market_price=_betrig() + 0.0001, now=NOW)
+    assert r2["reason_code"] not in (PMReason.MANUAL_CHANGE_ADOPTED, PMReason.MANUAL_CHANGE_REJECTED)
+
+
+def test_f2_broker_normalized_weaker_is_uncertain():
+    pm, m, tk, _ = rig("LONG")
+    real = m.modify_stop
+    def weaker(ticket, sl):
+        res = real(ticket, sl); p = m.positions.get(ticket)
+        if p:
+            p.sl = sl - 0.0005                     # broker normalized WEAKER
+        return res
+    m.modify_stop = weaker
+    r = pm.evaluate("sig", market_price=_betrig(), now=NOW)
+    assert r["reason_code"] == PMReason.RECONCILIATION_REQUIRED   # never treated as success
+    assert pm.states["sig"]["phase"] == StopPhase.INITIAL
+
+
+def test_f2_tolerant_equality_ticks():
+    pm, m, tk, _ = rig("LONG")
+    # values within the same tick compare equal; a full tick apart do not
+    assert pm._eq_stop(1.10000, 1.100004, "EURUSD") is True
+    assert pm._eq_stop(1.10000, 1.10001, "EURUSD") is False
+
+
+def test_f3_exact_one_pip_improvement_advances():
+    pm, m, tk, _ = rig("LONG")
+    pm.evaluate("sig", market_price=_betrig(), now=NOW)
+    R = spec.initial_risk("LONG", 1.1000, 1.0980)
+    pm.evaluate("sig", market_price=spec.profit_lock_trigger_price("LONG", 1.1000, R, CFG), now=NOW)
+    cur = pm.states["sig"]["current_stop"]
+    swing = cur + CFG.trail_offset_pips * CFG.pip_size + CFG.min_trail_improvement_pips * CFG.pip_size
+    r = pm.evaluate("sig", market_price=1.1060, confirmed_swing=swing,
+                    structure_reference="p1", bars_since_swing=1, now=NOW)
+    assert r["reason_code"] == PMReason.TRAIL_ADVANCED
+
+
+def test_f2_normalizing_broker_full_lifecycle():
+    m = _off_grid_mock()
+    res = m.order_send({"symbol": "EURUSD", "volume": 0.1, "type": BUY, "price": 1.1000,
+                        "sl": 1.0980, "tp": 1.11, "comment": "sig"})
+    pm = PositionManager(m, Path(tempfile.mkdtemp()) / "pm.jsonl")
+    pm.register("sig", res.order, "EURUSD", "LONG", 1.1000, 1.0980, 1.11, NOW)
+    r = pm.evaluate("sig", market_price=_betrig(), now=NOW)
+    assert r["reason_code"] == PMReason.BREAKEVEN_SET and r["broker_result"] == "DONE"
+
+
+def test_f1_intent_audit_failure_fails_closed():
+    pm, m, tk, _ = rig("LONG")
+    orig = pm.audit.emit
+    def boom(rec):
+        raise OSError("disk full")
+    pm.audit.emit = boom
+    n = len(m.modify_log)
+    r = pm.evaluate("sig", market_price=_betrig(), now=NOW)     # must NOT raise
+    pm.audit.emit = orig
+    assert r["reason_code"] == PMReason.RECONCILIATION_REQUIRED
+    assert r["reconciliation_status"] == "audit_intent_failed"
+    assert len(m.modify_log) == n                                # no modification attempted
+    assert pm.states["sig"]["phase"] == StopPhase.INITIAL
+
+
+def test_f1_completion_audit_failure_no_throw_and_recovers():
+    pm, m, tk, path = rig("LONG")
+    orig = pm.audit.emit
+    seq = {"n": 0}
+    def flaky(rec):
+        seq["n"] += 1
+        if seq["n"] == 2:                                        # 1=intent ok, 2=completion fails
+            raise OSError("disk on completion")
+        return orig(rec)
+    pm.audit.emit = flaky
+    r = pm.evaluate("sig", market_price=_betrig(), now=NOW)      # must NOT raise
+    pm.audit.emit = orig
+    # broker applied and in-memory state reflects broker truth
+    assert pm.states["sig"]["current_stop"] == m.position_by_ticket(tk).sl
+    # restart recovery rebuilds from broker truth, no blind retry
+    n = len(m.modify_log)
+    pm2 = PositionManager(m, path)
+    st = pm2.recover("sig", NOW)
+    assert len(m.modify_log) == n
+    assert st["current_stop"] == m.position_by_ticket(tk).sl
+
+
+def test_f1_no_duplicate_modification_across_intent_and_completion():
+    pm, m, tk, _ = rig("LONG")
+    n = len(m.modify_log)
+    pm.evaluate("sig", market_price=_betrig(), now=NOW)
+    assert len(m.modify_log) - n == 1                            # exactly one broker modify
+
+
+def test_f2_be_profitlock_trailing_with_normalized_prices():
+    m = _off_grid_mock()
+    res = m.order_send({"symbol": "EURUSD", "volume": 0.1, "type": BUY, "price": 1.10003,
+                        "sl": 1.09803, "tp": 1.11, "comment": "sig"})   # off-grid inputs
+    pm = PositionManager(m, Path(tempfile.mkdtemp()) / "pm.jsonl")
+    st = pm.register("sig", res.order, "EURUSD", "LONG", 1.10003, 1.09803, 1.11, NOW)
+    assert st is not None                                        # R valid (0.002)
+    R = spec.initial_risk("LONG", 1.10003, 1.09803)
+    r = pm.evaluate("sig", market_price=spec.breakeven_trigger_price("LONG", 1.10003, R, CFG), now=NOW)
+    assert r["reason_code"] == PMReason.BREAKEVEN_SET
+    assert r["applied_stop"] == round(r["applied_stop"], 5)      # quantized to grid

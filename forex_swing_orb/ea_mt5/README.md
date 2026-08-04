@@ -228,7 +228,46 @@ protectively closes an existing position).
 
 `mock_mt5` is extended (test harness only) with `position_by_ticket`,
 `modify_stop` (+ scriptable `done`/`reject`/`invalid_stops`/`requote`/`disconnect`/
-`applied_but_unacked`). Tests: `tests/test_position_manager.py` (62 tests across
+`applied_but_unacked`). Tests: `tests/test_position_manager.py` (71 tests across
 break-even, profit-lock, trailing, never-widen/loosen, manual, reconciliation,
-restart, precedence, audit, boundaries). The shippable MQL5 EA mirrors this
-Python reference and is not compiled here (same platform limitation as above).
+restart, precedence, audit, boundaries, and the Phase 4D-R fixes). The shippable
+MQL5 EA mirrors this Python reference and is not compiled here (same platform
+limitation as above).
+
+### Phase 4D-R — live-transition safety (F1/F2)
+
+- **Broker-tick quantization (F2).** Every candidate/current/broker/verification
+  stop is compared on the symbol's tick grid (from `symbol_info().point`, fallback
+  5-digit). Candidates are `NormalizeDouble`-quantized **before** they are sent, so
+  a broker that normalizes to its tick verifies as success and never triggers a
+  phantom manual-change/reconciliation. Break-even, profit-lock, trailing,
+  trigger, and minimum-improvement comparisons all run in integer tick space
+  (also removing exact-boundary double-rounding). A broker value that normalizes
+  *weaker* than requested is still caught as `RECONCILIATION_REQUIRED` (never a
+  false success). The frozen `position/contract.py` and `spec.py` are unchanged —
+  quantization is an application-layer normalization in the Position Manager only.
+- **Crash-safe audit (F1).** A stop modification records its **intent before**
+  the broker call; if the intent audit cannot be written, the manager **fails
+  closed and does not modify the stop** (`RECONCILIATION_REQUIRED` /
+  `audit_intent_failed`). If the broker modification succeeds but the completion
+  audit fails, the manager **never throws** — it flags reconciliation
+  (`completion_audit_failed`); broker truth is intact (state + broker hold the
+  applied stop) and is rebuilt cleanly on the next cycle / on restart with no
+  blind retry. All audit writes go through a non-throwing sink.
+
+### Position Manager authority (explicit)
+
+The deterministic Position Manager is authorized to **protectively close** an
+existing position — for the weekend-flatten, kill-switch, and maximum-duration
+policies (`PM_WEEKEND_EXIT` / `PM_KILL_SWITCH` / `PM_MAX_DURATION_EXIT`), via the
+broker close operation. This is a **protective, risk-reducing** action on an
+already-open position; it is **not** new-trade authority: the manager never opens
+a position, never creates or changes trade direction, and never sizes a trade.
+
+### Trailing structure freshness (mandatory)
+
+A trailing stop moves only on a **confirmed, closed, fresh** strategy swing. The
+caller must supply `bars_since_swing`; if it is missing or exceeds
+`stale_structure_max_bars`, the manager emits `PM_DATA_STALE` and does not move
+the stop. Swings are consumed from the strategy — pivots are never recomputed and
+no future-bar information is used.
