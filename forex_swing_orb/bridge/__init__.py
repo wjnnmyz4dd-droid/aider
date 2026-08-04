@@ -18,7 +18,8 @@ from .config import BridgeConfig, DEFAULT_CONFIG
 from .paths import BridgePaths
 from .ledger import DedupLedger
 from .audit import AuditLog
-from .contract import ResultState, ReasonCode, HookPosture
+from .contract import (ResultState, ReasonCode, HookPosture, build_result,
+                       build_ack, terminal_family)
 from .dedup import SeenResolver
 from .producer import write_instruction, write_instructions, ProducerError
 from .consumer import Consumer, validation_only_hook
@@ -27,6 +28,7 @@ from .reconcile import recover
 __all__ = [
     "BridgeConfig", "DEFAULT_CONFIG", "BridgePaths", "DedupLedger", "AuditLog",
     "ResultState", "ReasonCode", "HookPosture", "SeenResolver",
+    "build_result", "build_ack", "terminal_family",
     "write_instruction", "write_instructions", "ProducerError", "Consumer",
     "validation_only_hook", "recover", "open_bridge", "serialize",
 ]

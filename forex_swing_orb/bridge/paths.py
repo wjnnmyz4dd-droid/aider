@@ -15,12 +15,14 @@ from pathlib import Path
 # therefore exactly this and nothing else is accepted from pending/claimed.
 INSTRUCTION_NAME_RE = re.compile(r"^[0-9a-f]{16}\.json$")
 RESULT_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[0-9a-f]{16}\.json$")
+ACK_NAME_RE = re.compile(r"^[0-9a-f]{16}\.[0-9a-f]{16}\.ack\.json$")
 SIGNAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 _SUBDIRS = (
     "outbox/pending",
     "outbox/claimed",
     "inbox/results",
+    "inbox/acks",
     "archive/accepted",
     "archive/rejected",
     "quarantine",
@@ -36,6 +38,7 @@ class BridgePaths:
         self.pending = self.root / "outbox" / "pending"
         self.claimed = self.root / "outbox" / "claimed"
         self.results = self.root / "inbox" / "results"
+        self.acks = self.root / "inbox" / "acks"
         self.archive_accepted = self.root / "archive" / "accepted"
         self.archive_rejected = self.root / "archive" / "rejected"
         self.quarantine = self.root / "quarantine"
@@ -57,6 +60,10 @@ def instruction_name(signal_id):
 
 def result_name(signal_id, result_id):
     return f"{signal_id}.{result_id}.json"
+
+
+def ack_name(signal_id, ack_id):
+    return f"{signal_id}.{ack_id}.ack.json"
 
 
 def signal_id_from_instruction_name(name):

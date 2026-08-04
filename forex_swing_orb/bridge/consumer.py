@@ -105,8 +105,12 @@ class Consumer:
     def _finish(self, signal_id, now, received_iso, state, reason, record, detail):
         processed_iso = serialize.iso_utc(now)
         rid = serialize.result_id(signal_id, state)     # deterministic on (sid, state)
+        # An execution hook may return broker fill fields under detail["execution"];
+        # the bridge stays broker-agnostic and simply forwards them to the writer.
+        execution = detail.get("execution") if isinstance(detail, dict) else None
         result = build_result(signal_id, rid, state, reason, received_iso,
-                              processed_iso, instruction=record, detail=detail)
+                              processed_iso, instruction=record, detail=detail,
+                              execution=execution)
         self._write_result(result)                       # (1) terminal artifact
         self.ledger.record(signal_id, state, rid, processed_iso)   # (2) ledger
         self._archive(signal_id, terminal_family(state), now)      # (3) archive

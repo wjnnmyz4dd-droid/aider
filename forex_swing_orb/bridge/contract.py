@@ -28,6 +28,10 @@ class ResultState:
     DUPLICATE = "DUPLICATE"
     FAILED = "FAILED"
     ERROR = "ERROR"
+    # Execution-layer terminal states (Phase 3 EA). Reserved by the bridge until
+    # an execution consumer exists; now populated by the MT5 Execution Adapter.
+    EXECUTED = "EXECUTED"
+    EXECUTION_FAILED = "EXECUTION_FAILED"
 
 
 class HookPosture:
@@ -41,13 +45,16 @@ class HookPosture:
     RERUNNABLE = frozenset({VALIDATION_ONLY, IDEMPOTENT})
 
 
-# Terminal states archived to archive/accepted vs archive/rejected.
-ACCEPTED_FAMILY = frozenset({ResultState.ACCEPTED})
+# Terminal states archived to archive/accepted vs archive/rejected. EXECUTED joins
+# the accepted family so a completed execution is treated as accepted terminal
+# evidence by the shared resolver (dedup / no-double-order); EXECUTION_FAILED is a
+# terminal failure and archives with the rejected family.
+ACCEPTED_FAMILY = frozenset({ResultState.ACCEPTED, ResultState.EXECUTED})
 
 
 def terminal_family(state):
     """Map any terminal state to its archive family ('ACCEPTED' | 'REJECTED')."""
-    return "ACCEPTED" if state == ResultState.ACCEPTED else "REJECTED"
+    return "ACCEPTED" if state in ACCEPTED_FAMILY else "REJECTED"
 
 
 class ReasonCode:
@@ -90,19 +97,29 @@ DENY_STATE = {
 }
 
 
-def build_result(signal_id, result_id_value, status, reason_code, received_iso,
-                 processed_iso, instruction=None, detail=None):
-    """Construct a result record (spec §9), transport-only.
+# Execution-only result fields. Null for every bridge/transport terminal state; an
+# execution consumer may populate them by passing an ``execution`` mapping — the
+# bridge itself never fills them (it has no broker).
+EXECUTION_RESULT_FIELDS = (
+    "broker_order_id", "requested_price", "filled_price", "requested_volume",
+    "filled_volume", "slippage", "compliance_decision", "execution_error",
+)
 
-    Execution-only fields (broker_order_id, filled_*, slippage, execution_error,
-    compliance_decision) are set to null here — they are populated by the future
-    execution layer, never by the bridge.
+
+def build_result(signal_id, result_id_value, status, reason_code, received_iso,
+                 processed_iso, instruction=None, detail=None, execution=None):
+    """Construct a result record (spec §9).
+
+    Transport-only by default: execution fields (broker_order_id, filled_*,
+    slippage, execution_error, …) are null. They are populated ONLY when an
+    execution consumer passes an ``execution`` mapping — the bridge never fills
+    them, having no broker of its own (interface compatibility for Phase 3).
     """
     stop_loss = take_profit = None
     if isinstance(instruction, dict):
         stop_loss = instruction.get("stop_loss")
         take_profit = instruction.get("take_profit")
-    return {
+    result = {
         "result_schema_version": 1,
         "signal_id": signal_id,
         "result_id": result_id_value,
@@ -113,13 +130,36 @@ def build_result(signal_id, result_id_value, status, reason_code, received_iso,
         "processed_timestamp": processed_iso,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
-        # downstream/execution-only (never set by the bridge):
-        "broker_order_id": None,
-        "requested_price": None,
-        "filled_price": None,
-        "requested_volume": None,
-        "filled_volume": None,
-        "slippage": None,
-        "compliance_decision": None,
-        "execution_error": None,
+    }
+    # execution-only fields: null unless an execution consumer supplied them
+    for field in EXECUTION_RESULT_FIELDS:
+        result[field] = None
+    if isinstance(execution, dict):
+        for field in EXECUTION_RESULT_FIELDS:
+            if field in execution:
+                result[field] = execution[field]
+    return result
+
+
+def build_ack(signal_id, ack_id, received_iso, instruction=None, detail=None):
+    """Construct a non-terminal acknowledgement record (Phase 3 execution layer).
+
+    An ack records that a validated instruction was received and execution is
+    about to be attempted. It is NOT a terminal result — it never decides an
+    outcome and never carries broker fills. It exists so a restart can tell that
+    an execution attempt was in flight for this ``signal_id``.
+    """
+    symbol = direction = None
+    if isinstance(instruction, dict):
+        symbol = instruction.get("symbol")
+        direction = instruction.get("direction")
+    return {
+        "ack_schema_version": 1,
+        "signal_id": signal_id,
+        "ack_id": ack_id,
+        "status": "ACK",
+        "received_timestamp": received_iso,
+        "symbol": symbol,
+        "direction": direction,
+        "detail": detail or {},
     }
