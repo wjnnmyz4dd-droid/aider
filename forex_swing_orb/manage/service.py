@@ -22,15 +22,17 @@ class ManagerService:
         self._kill = kill_switch or (lambda now: False)
         self._last_error = None
         self._recovery_reconcile = set()   # sids whose restart recovery is unresolved
+        self._context_provider = None      # G2: injected ManagerMarketContextProvider
 
     def register(self, signal_id, ticket, symbol, direction, entry, initial_stop,
                  take_profit, now):
         return self.pm.register(signal_id, ticket, symbol, direction, entry,
                                 initial_stop, take_profit, now)
 
-    def run_cycle(self, now, *, market=None, structures=None, bars_since=None,
-                  bars_open=None, kill_switch=None):
+    def run_cycle(self, now, *, market=None, swings=None, structures=None,
+                  bars_since=None, bars_open=None, kill_switch=None):
         market = market or {}
+        swings = swings or {}
         structures = structures or {}
         bars_since = bars_since or {}
         bars_open = bars_open or {}
@@ -48,8 +50,12 @@ class ManagerService:
                 if self.ledger.get_inflight(ticket) is not None:
                     results.append(self.pm.recover(sid, now))
                     continue
+            # one action per ticket per cycle: the PM makes the single decision from
+            # the injected context (confirmed_swing + structure_reference enable
+            # structure trailing; bars_open enables the max-duration decision).
             rec = self.pm.evaluate(
                 sid, market_price=market.get(ticket), now=now, kill_switch=ks,
+                confirmed_swing=swings.get(ticket),
                 structure_reference=structures.get(ticket),
                 bars_since_swing=bars_since.get(ticket), bars_open=bars_open.get(ticket))
             results.append(rec)
@@ -184,16 +190,46 @@ class ManagerService:
         return {"signal_id": sid, "mode": "reconciliation_required", "why": why}
 
     def run_once(self, now):
-        """One autonomous demo cycle: adopt new positions, then evaluate all tracked
-        tickets against current broker prices (read via the truth source). Structure/
-        bar context is not fed here (the manager never fabricates it), so structure-
-        based trailing simply does not trigger; price/kill/weekend/duration logic and
-        reconciliation run normally."""
+        """One autonomous demo cycle: adopt/recover positions, read broker truth,
+        obtain deterministic market context (confirmed structure + bars_open) from
+        the injected context provider, and evaluate each tracked ticket. Structure
+        trailing and max-duration are now operational; the PM still makes the single
+        decision per ticket. One-in-flight and restart rules are preserved."""
         from ..runtime import adoption
         self.discover_and_register(now)
         truth = getattr(self, "_truth", None)
-        market = adoption.market_from_truth(truth) if truth is not None else {}
-        return self.run_cycle(now, market=market)
+        if truth is None:
+            return self.run_cycle(now)
+        market = adoption.market_from_truth(truth)
+        opens = adoption.open_times_from_truth(truth)
+        swings, structures, bars_since, bars_open = self._market_context(now, opens)
+        return self.run_cycle(now, market=market, swings=swings, structures=structures,
+                              bars_since=bars_since, bars_open=bars_open)
+
+    def _market_context(self, now, opens):
+        """Assemble per-ticket structure + bars_open from the injected context
+        provider (read-only). Fail-closed contexts contribute nothing (the PM then
+        holds trailing / max-duration). No structure or pivot logic lives here."""
+        swings, structures, bars_since, bars_open = {}, {}, {}, {}
+        ctxp = self._context_provider
+        if ctxp is None:
+            return swings, structures, bars_since, bars_open
+        for sid, st in self.pm.states.items():
+            ticket = st["ticket"]
+            try:
+                ctx = ctxp.context(st["symbol"], st["direction"], now, opens.get(ticket))
+            except Exception as exc:                       # never crash the loop
+                self._last_error = repr(exc)
+                continue
+            if not isinstance(ctx, dict):
+                continue
+            if ctx.get("confirmed_swing") is not None and ctx.get("structure_reference"):
+                swings[ticket] = ctx["confirmed_swing"]
+                structures[ticket] = ctx["structure_reference"]
+                bars_since[ticket] = ctx["bars_since_swing"]
+            if ctx.get("bars_open") is not None:
+                bars_open[ticket] = ctx["bars_open"]
+        return swings, structures, bars_since, bars_open
 
     @classmethod
     def build_from_env(cls, env=None, config_path=None, client=None, now_fn=None):
@@ -230,4 +266,5 @@ class ManagerService:
         service._truth = truth
         service._enter_paths = BridgePaths(cfg.bridge_root).ensure()
         service._cadence_sec = cfg.cadence_sec
+        service._context_provider = wiring.build_context_provider(client, cfg)
         return service

@@ -101,3 +101,19 @@ def build_strategy(cfg):
 
 def build_truth_source(client):
     return Mt5TruthSource(client)
+
+
+def build_context_provider(client, cfg):
+    """Manager market-context provider over the real MT5 market provider + the
+    frozen engine's own structure extractor. Reuses the engine's DEFAULT_CONFIG
+    constants (minor_pivot_k / execution_tf_minutes) — no duplicated pivot logic."""
+    from ..producer.strategy_adapter import load_engine_module
+    from .context import ManagerMarketContextProvider
+    module = load_engine_module()
+    defaults = getattr(module, "DEFAULT_CONFIG", {})
+    minor_k = int(defaults.get("minor_pivot_k", 1))       # trailing structure strength
+    tf_min = int(defaults.get("execution_tf_minutes", 15))
+    exec_tf = {15: "M15", 60: "H1", 240: "H4", 1440: "D1"}.get(tf_min, "M15")
+    return ManagerMarketContextProvider(
+        build_market_provider(client, cfg), module, symbol_map=symbol_map(cfg),
+        exec_timeframe=exec_tf, pivot_k=minor_k)

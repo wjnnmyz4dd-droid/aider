@@ -23,9 +23,10 @@ _ENGINE_PATH = (Path(__file__).resolve().parents[1] / "run_dir" / "code"
                 / "signal_engine.py")
 
 
-def load_engine(config=None, validate_scrubber=True):
-    """Load and instantiate the frozen SignalEngine (reusing the production load
-    path). Best-effort AST-scrubber validation when ``backtest.runner`` is importable."""
+def load_engine_module(validate_scrubber=True):
+    """Load the frozen SignalEngine MODULE (not just the class) via the production
+    load path, so callers may reuse the engine's OWN canonical structure extractor
+    (``confirmed_pivots``) and default constants. Read-only; never mutated."""
     if validate_scrubber:
         try:                                   # reuse the accepted security scrubber
             from backtest.runner import _validate_signal_engine_source
@@ -35,7 +36,49 @@ def load_engine(config=None, validate_scrubber=True):
     spec = importlib.util.spec_from_file_location("session_edge_signal_engine", _ENGINE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.SignalEngine(config or {})
+    return module
+
+
+def load_engine(config=None, validate_scrubber=True):
+    """Load and instantiate the frozen SignalEngine (reusing the production load
+    path). Best-effort AST-scrubber validation when ``backtest.runner`` is importable."""
+    return load_engine_module(validate_scrubber).SignalEngine(config or {})
+
+
+def _is_long(direction):
+    return str(direction).upper() in ("LONG", "BULLISH")
+
+
+def confirmed_structure(module, bars, direction, k):
+    """Latest CONFIRMED trailing structure for ``direction`` using the engine's OWN
+    ``confirmed_pivots`` (no pivot recomputation; identical confirmation latency).
+
+    Per the frozen PM/spec definition (``spec.trailing_stop_candidate``): a LONG
+    trails a confirmed higher-LOW (pivot kind ``"L"``), a SHORT a confirmed
+    lower-HIGH (kind ``"H"``). ``bars`` must be CLOSED bars only (the live market
+    provider drops the forming bar). Returns a dict {price, structure_reference,
+    confirm_time, pivot_time, bars_since_swing, latest_closed_bar} or None when no
+    confirmed structure of the relevant kind exists (caller then holds — the PM
+    emits PM_TRAIL_PENDING). Deterministic: identical bars -> identical result."""
+    if bars is None or not getattr(bars, "rows", None):
+        return None
+    df = _to_dataframe(bars)
+    pivots = module.confirmed_pivots(df, int(k))          # engine's canonical extractor
+    kind = "L" if _is_long(direction) else "H"
+    relevant = [p for p in pivots if p["kind"] == kind]
+    if not relevant:
+        return None
+    piv = relevant[-1]                                     # most recent confirmed swing
+    pivot_time = piv["pivot_time"]
+    bars_since = int((df.index > pivot_time).sum())        # closed bars since the swing bar
+    return {
+        "price": float(piv["price"]),
+        "structure_reference": _iso(piv["confirm_time"].to_pydatetime()),
+        "confirm_time": _iso(piv["confirm_time"].to_pydatetime()),
+        "pivot_time": _iso(pivot_time.to_pydatetime()),
+        "bars_since_swing": bars_since,
+        "latest_closed_bar": _iso(df.index[-1].to_pydatetime()),
+    }
 
 
 def _to_dataframe(bars):

@@ -12,9 +12,11 @@ from __future__ import annotations
 from .config import ConfigError, RuntimeConfig, load_config, password_from_env
 from .slippage import BridgeSlippageSource
 from .truth import Mt5TruthSource
+from .context import ManagerMarketContextProvider
 from . import adoption, status, wiring
 
 __all__ = [
     "ConfigError", "RuntimeConfig", "load_config", "password_from_env",
-    "BridgeSlippageSource", "Mt5TruthSource", "adoption", "status", "wiring",
+    "BridgeSlippageSource", "Mt5TruthSource", "ManagerMarketContextProvider",
+    "adoption", "status", "wiring",
 ]

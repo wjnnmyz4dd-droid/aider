@@ -102,6 +102,19 @@ def market_from_truth(truth):
     return m
 
 
+def open_times_from_truth(truth):
+    """Broker position OPEN times per ticket (epoch seconds), read-only. The single
+    source of verified position-open evidence for deterministic bars_open. A
+    position missing an open time is simply absent (bars_open then fails closed)."""
+    out = {}
+    for pos in truth.positions():
+        ticket = getattr(pos, "ticket", None)
+        t = getattr(pos, "time", None)
+        if ticket is not None and isinstance(t, (int, float)) and not isinstance(t, bool):
+            out[ticket] = int(t)
+    return out
+
+
 def _recover_instruction(paths, signal_id):
     name = signal_id + ".json"
     for d in (paths.archive_accepted, paths.claimed, paths.pending):
