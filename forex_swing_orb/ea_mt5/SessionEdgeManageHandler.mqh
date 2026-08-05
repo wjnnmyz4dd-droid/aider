@@ -90,11 +90,11 @@ void MgProcessClaimed(const string mid)
    // 2/3 schema + digest
    bool ok;
    if(JsonGetLong(json, "schema_version", ok) != MG_SCHEMA_VERSION || !ok)
-   { MgWriteResult(mid,"","0","","","REJECTED_INVALID","schema",0,0,0,0,0,0,MG_ARC_REJ); return; }
+   { MgWriteResult(mid,"",0,"","","REJECTED_INVALID","schema",0,0,0,0,0,0,MG_ARC_REJ); return; }
    uchar raw[]; int n=0;
    if(BridgeReadBytes(MgPath(MG_CLAIMED, mid+".json"), UseCommonFolder, raw)) n=ArraySize(raw);
    if(!VerifyIntegrityDigest(raw, n))
-   { MgWriteResult(mid,"","0","","","REJECTED_INVALID","digest",0,0,0,0,0,0,MG_ARC_REJ); return; }
+   { MgWriteResult(mid,"",0,"","","REJECTED_INVALID","digest",0,0,0,0,0,0,MG_ARC_REJ); return; }
 
    string sid    = JsonGet(json, "signal_id");
    long   ticket = JsonGetLong(json, "ticket", ok);
