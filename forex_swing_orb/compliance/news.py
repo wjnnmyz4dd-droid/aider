@@ -68,7 +68,7 @@ def gate_news(candidate, news_bundle, cfg, now):
                            {"malformed_event_id": eid})
         sig = (ts, str(imp).upper())
         if eid in seen and seen[eid] != sig:
-            return _reject([ReasonCode.NEWS_CONFLICTING_RECORDS], {"event_id": eid})
+            return _reject([ReasonCode.NEWS_DATA_CONFLICT], {"event_id": eid})
         seen[eid] = sig
 
         et = serialize.parse_iso(ts)
@@ -104,7 +104,7 @@ def gate_news(candidate, news_bundle, cfg, now):
         # deterministic latest resume time drives auto-resume + dashboard
         resume_times = sorted(h["resume_at"] for h in hits)
         return _reject(
-            [ReasonCode.NEWS_LOCKOUT, ReasonCode.PAIR_BLOCKED],
+            [ReasonCode.INTERNAL_NEWS_LOCKOUT, ReasonCode.PAIR_BLOCKED],
             {"hits": hits, "lockout_expires_at": resume_times[-1],
              "pre_lockout_min": pre, "post_lockout_min": post},
         )

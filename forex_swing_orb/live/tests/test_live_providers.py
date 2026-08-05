@@ -71,7 +71,8 @@ def test_account_snapshot_valid(client, tmp_path):
     assert ok, reason
     assert snap["is_demo"] is True and snap["account_type"] == "DEMO"
     assert snap["account_currency"] == "USD" and snap["leverage"] == 100
-    assert snap["daily_anchor_equity"] == 100000.0
+    assert snap["day_start_balance"] == 100000.0        # M3: balance anchor
+    assert snap["trading_day"] is not None
 
 
 def test_account_none_when_unavailable(client, tmp_path):
@@ -85,16 +86,17 @@ def test_account_disconnect_reflected(client, tmp_path):
     assert snap["terminal_connected"] is False
 
 
-def test_account_daily_loss_and_anchor_persist(client, tmp_path):
+def test_account_balance_anchor_persists_and_ignores_equity(client, tmp_path):
     prov = _account(client, tmp_path)
-    prov.snapshot(NOW)                                    # anchor captured @ 100000
-    client.account.equity = 96000.0                      # equity dropped intraday
+    prov.snapshot(NOW)                                    # day-start BALANCE captured @ 100000
+    client.account.equity = 96000.0                      # equity (floating) dropped intraday
+    client.account.balance = 100000.0                    # balance unchanged (no closed trades)
     snap = prov.snapshot(NOW)
-    assert snap["daily_anchor_equity"] == 100000.0        # anchor unchanged same day
-    assert snap["current_daily_loss"] == pytest.approx(4000.0)
-    # "restart": new tracker over same file -> anchor survives
+    assert snap["day_start_balance"] == 100000.0          # anchor is balance, unchanged by equity
+    assert snap["equity"] == 96000.0                      # equity tracked separately for breach
+    # "restart": new tracker over same file -> balance anchor survives
     prov2 = _account(client, tmp_path)
-    assert prov2.snapshot(NOW)["daily_anchor_equity"] == 100000.0
+    assert prov2.snapshot(NOW)["day_start_balance"] == 100000.0
 
 
 def test_account_open_risk_and_symbols(client, tmp_path):

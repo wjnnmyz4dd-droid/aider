@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from . import mapping
 from .contract import (GateVerdict, ReasonCode, Stage, candidate_risk_amount,
-                       finite, ftmo_limits)
+                       finite, ftmo_levels, prague_trading_day)
 
 _DIRECTIONS = ("LONG", "SHORT")
 _MTF_KEYS = ("daily_bias", "h4_structure", "h1_setup", "m15_timing", "aligned")
@@ -81,65 +81,85 @@ def _is_weekend(now, cfg):
     return now.isoweekday() in tuple(cfg.weekend_isoweekdays)
 
 
-def gate_ftmo(candidate, account_state, cfg, session_cfg, now):
+def gate_ftmo(candidate, account_state, profile, cfg, session_cfg, now):
     if now is None:
         return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "now"})
     if not isinstance(account_state, dict):
         return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "account_state"})
 
-    limits = ftmo_limits(account_state, cfg)
-    if limits is None:
-        return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "anchor/initial"})
+    # profile must be a verified FTMO_TWO_STEP / FTMO_SWING profile (defense in
+    # depth; the producer preflight also enforces this before startup).
+    perr = profile.verification_error()
+    if perr is not None:
+        return _no(Stage.FTMO, [perr], {"profile": profile.program,
+                                        "account_type": profile.account_type})
 
-    # weekend-flat for NEW entries (protective)
-    if cfg.weekend_flat_required and _is_weekend(now, session_cfg):
-        return _no(Stage.FTMO, [ReasonCode.WEEKEND_BLOCK],
+    # M2: FTMO trading day is the Prague (00:00 CE(S)T) calendar date.
+    tday = prague_trading_day(now, profile.reset_timezone)
+    if tday is None:
+        return _no(Stage.FTMO, [ReasonCode.PRAGUE_ROLLOVER_FAILED],
+                   {"reset_timezone": profile.reset_timezone})
+    if account_state.get("daily_anchor_conflict"):
+        return _no(Stage.FTMO, [ReasonCode.FTMO_DAILY_ANCHOR_CONFLICT], {})
+    anchor_day = account_state.get("trading_day")
+    if anchor_day is not None and anchor_day != tday:
+        return _no(Stage.FTMO, [ReasonCode.FTMO_DAILY_ANCHOR_STALE],
+                   {"anchor_day": anchor_day, "trading_day": tday})
+
+    # M1/M3: levels from INITIAL capital, anchored to DAY-START BALANCE.
+    levels = ftmo_levels(account_state, profile, cfg)
+    if levels is None:
+        if finite(profile.initial_balance) is None or profile.initial_balance <= 0:
+            return _no(Stage.FTMO, [ReasonCode.FTMO_INITIAL_BALANCE_INVALID], {})
+        return _no(Stage.FTMO, [ReasonCode.FTMO_DAILY_ANCHOR_MISSING], {})
+
+    # M5: weekend flattening is an INTERNAL overlay only (FTMO Swing allows holding).
+    if cfg.internal_weekend_flat and _is_weekend(now, session_cfg):
+        return _no(Stage.FTMO, [ReasonCode.INTERNAL_WEEKEND_POLICY],
                    {"isoweekday": now.isoweekday()})
 
+    # internal position overlays (NOT FTMO Swing rules)
     open_count = account_state.get("open_position_count")
     open_symbols = account_state.get("open_symbols") or ()
     if open_count is None:
         return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "open_position_count"})
-
     if cfg.one_position_per_symbol and candidate.get("symbol") in tuple(open_symbols):
-        return _no(Stage.FTMO, [ReasonCode.ONE_PER_SYMBOL],
-                   {"symbol": candidate.get("symbol")})
+        return _no(Stage.FTMO, [ReasonCode.ONE_PER_SYMBOL], {"symbol": candidate.get("symbol")})
     if int(open_count) >= cfg.max_open_positions:
         return _no(Stage.FTMO, [ReasonCode.MAX_POSITIONS],
                    {"open": int(open_count), "max": cfg.max_open_positions})
 
-    daily_loss = finite(account_state.get("current_daily_loss"))
-    open_risk = finite(account_state.get("open_risk_at_stop"))
     equity = finite(account_state.get("equity"))
-    initial = finite(account_state.get("initial_balance"))
-    risk_amt = candidate_risk_amount(candidate, account_state)
-    if None in (daily_loss, open_risk, equity, initial, risk_amt):
-        return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "account numerics"})
+    risk_amt = candidate_risk_amount(candidate, profile)
+    if equity is None or risk_amt is None:
+        return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "equity/risk"})
+    projected = equity - risk_amt        # worst-case post-trade equity (breach iff < level)
 
-    projected_daily = daily_loss + open_risk + risk_amt
-    if projected_daily >= limits["internal_daily_limit"]:
-        codes = [ReasonCode.DAILY_LOSS_LIMIT]
-        if projected_daily < limits["ftmo_daily_limit"]:
-            codes.append(ReasonCode.INTERNAL_BUFFER_TRIP)   # tripped internal, before FTMO
-        return _no(Stage.FTMO, codes, {
-            "projected_daily_loss": projected_daily,
-            "internal_daily_limit": limits["internal_daily_limit"],
-            "ftmo_daily_limit": limits["ftmo_daily_limit"]})
+    odl, idl = levels["official_daily_level"], levels["internal_daily_level"]
+    oml, iml = levels["official_max_level"], levels["internal_max_level"]
+    ev = {"equity": equity, "projected_post_trade_equity": projected, **levels}
 
-    projected_total = (initial - equity) + risk_amt
-    if projected_total >= limits["internal_max_loss"]:
-        codes = [ReasonCode.MAX_ACCOUNT_LOSS]
-        if projected_total < limits["ftmo_max_loss"]:
-            codes.append(ReasonCode.INTERNAL_BUFFER_TRIP)
-        return _no(Stage.FTMO, codes, {
-            "projected_total_loss": projected_total,
-            "internal_max_loss": limits["internal_max_loss"],
-            "ftmo_max_loss": limits["ftmo_max_loss"]})
-
-    return _ok(Stage.FTMO, {"projected_daily_loss": projected_daily,
-                            "projected_total_loss": projected_total,
-                            "internal_daily_limit": limits["internal_daily_limit"],
-                            "internal_max_loss": limits["internal_max_loss"]})
+    # -- daily loss (most severe first) --
+    if equity < odl:
+        return _no(Stage.FTMO, [ReasonCode.FTMO_DAILY_LOSS_BREACH], ev)
+    if equity < idl:
+        return _no(Stage.FTMO, [ReasonCode.INTERNAL_DAILY_BUFFER_TRIP], ev)
+    if projected < odl:
+        return _no(Stage.FTMO, [ReasonCode.PROJECTED_DAILY_LOSS_BREACH,
+                                ReasonCode.FTMO_DAILY_LOSS_BREACH], ev)
+    if projected < idl:
+        return _no(Stage.FTMO, [ReasonCode.PROJECTED_DAILY_LOSS_BREACH,
+                                ReasonCode.INTERNAL_DAILY_BUFFER_TRIP], ev)
+    # -- static maximum loss --
+    if equity < oml:
+        return _no(Stage.FTMO, [ReasonCode.FTMO_MAXIMUM_LOSS_BREACH], ev)
+    if equity < iml:
+        return _no(Stage.FTMO, [ReasonCode.INTERNAL_MAXIMUM_LOSS_BUFFER_TRIP], ev)
+    if projected < oml:
+        return _no(Stage.FTMO, [ReasonCode.FTMO_MAXIMUM_LOSS_BREACH], ev)
+    if projected < iml:
+        return _no(Stage.FTMO, [ReasonCode.INTERNAL_MAXIMUM_LOSS_BUFFER_TRIP], ev)
+    return _ok(Stage.FTMO, ev)
 
 
 # -- Stage 4: Session compliance -------------------------------------------
@@ -244,7 +264,7 @@ def gate_broker_health(broker_health, now):
 
 
 # -- Stage 7: Risk compliance ----------------------------------------------
-def gate_risk(candidate, account_state, cfg, now):
+def gate_risk(candidate, account_state, profile, cfg, now):
     rf = finite(candidate.get("risk_fraction"))
     if rf is None or rf < 0:
         return _no(Stage.RISK, [ReasonCode.UNKNOWN_STATE], {"risk_fraction": candidate.get("risk_fraction")})
@@ -252,16 +272,15 @@ def gate_risk(candidate, account_state, cfg, now):
         return _no(Stage.RISK, [ReasonCode.RISK_PER_TRADE_EXCEEDED],
                    {"risk_fraction": rf, "max": cfg.max_risk_per_trade_pct})
 
-    limits = ftmo_limits(account_state, cfg)
-    risk_amt = candidate_risk_amount(candidate, account_state)
-    daily_loss = finite(account_state.get("current_daily_loss"))
-    open_risk = finite(account_state.get("open_risk_at_stop"))
-    if limits is None or risk_amt is None or daily_loss is None or open_risk is None:
+    levels = ftmo_levels(account_state, profile, cfg)
+    risk_amt = candidate_risk_amount(candidate, profile)
+    equity = finite(account_state.get("equity"))
+    if levels is None or risk_amt is None or equity is None:
         return _no(Stage.RISK, [ReasonCode.UNKNOWN_STATE], {"missing": "risk numerics"})
 
-    projected_daily = daily_loss + open_risk + risk_amt
-    if projected_daily >= limits["internal_daily_limit"]:
+    projected = equity - risk_amt        # defense-in-depth (FTMO gate catches first)
+    if projected < levels["internal_daily_level"]:
         return _no(Stage.RISK, [ReasonCode.RISK_PROJECTED_BREACH],
-                   {"projected_daily_loss": projected_daily,
-                    "internal_daily_limit": limits["internal_daily_limit"]})
-    return _ok(Stage.RISK, {"risk_amount": risk_amt, "projected_daily_loss": projected_daily})
+                   {"projected_post_trade_equity": projected,
+                    "internal_daily_level": levels["internal_daily_level"]})
+    return _ok(Stage.RISK, {"risk_amount": risk_amt, "projected_post_trade_equity": projected})

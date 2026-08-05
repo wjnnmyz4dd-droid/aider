@@ -19,14 +19,17 @@ from forex_swing_orb.compliance import (ComplianceAuditLog, ComplianceConfig,
                                         ReasonCode, SessionConfig, Stage,
                                         mapping, validate_reason)
 from forex_swing_orb.compliance import gates
-from conftest import NOW, SATURDAY, SUNDAY, FRIDAY
+from forex_swing_orb.compliance.contract import ftmo_levels
+from conftest import NOW, SATURDAY, SUNDAY, FRIDAY, verified_config, verified_profile
 
 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
 def _engine(config=None, audit_log=None, writer=None):
-    return ComplianceEngine(config=config, audit_log=audit_log, bridge_writer=writer)
+    # default engine uses a VERIFIED FTMO 2-Step Swing profile (Phase 8C)
+    return ComplianceEngine(config=config or verified_config(), audit_log=audit_log,
+                            bridge_writer=writer)
 
 
 def _writer_recorder():
@@ -151,10 +154,21 @@ def test_market_symbol_not_tradable(make_candidate, make_market, make_account,
 # --------------------------------------------------------------------------- #
 # FTMO compliance (stage 3)
 # --------------------------------------------------------------------------- #
-def test_ftmo_weekend_block(make_candidate, make_market, make_account, make_broker, make_news):
+# day-start balance 100k, initial 100k: official daily level 95000, internal 96000;
+# official max level 90000, internal max 92000.
+def test_ftmo_swing_allows_weekend_by_default(make_candidate, make_market, make_account,
+                                              make_broker, make_news):
     d = _evaluate(_engine(), make_candidate(), make_market(), make_account(),
                   make_broker(), make_news(as_of=serialize.iso_utc(SATURDAY)), now=SATURDAY)
-    assert d.primary_reason_code == ReasonCode.WEEKEND_BLOCK
+    assert d.is_pass                      # FTMO Swing: weekend holding allowed
+
+
+def test_internal_weekend_policy_when_enabled(make_candidate, make_market, make_account,
+                                              make_broker, make_news):
+    cfg = verified_config(ftmo=FtmoConfig(internal_weekend_flat=True))
+    d = _evaluate(_engine(cfg), make_candidate(), make_market(), make_account(),
+                  make_broker(), make_news(as_of=serialize.iso_utc(SATURDAY)), now=SATURDAY)
+    assert d.primary_reason_code == ReasonCode.INTERNAL_WEEKEND_POLICY
 
 
 def test_ftmo_one_per_symbol(make_candidate, make_market, make_account, make_broker, make_news):
@@ -164,7 +178,7 @@ def test_ftmo_one_per_symbol(make_candidate, make_market, make_account, make_bro
 
 
 def test_ftmo_max_positions(make_candidate, make_market, make_account, make_broker, make_news):
-    cfg = ComplianceConfig(ftmo=FtmoConfig(max_open_positions=3))
+    cfg = verified_config(ftmo=FtmoConfig(max_open_positions=3))
     acct = make_account(open_position_count=3, open_symbols=("GBPUSD.FX",))
     d = _evaluate(_engine(cfg), make_candidate(), make_market(), acct, make_broker(), make_news())
     assert d.primary_reason_code == ReasonCode.MAX_POSITIONS
@@ -172,41 +186,46 @@ def test_ftmo_max_positions(make_candidate, make_market, make_account, make_brok
 
 def test_ftmo_internal_buffer_trips_before_ftmo(make_candidate, make_market,
                                                 make_account, make_broker, make_news):
-    # anchor 100k, daily 5% => FTMO 5000, internal 4000. Put projected between.
-    acct = make_account(current_daily_loss=3600.0, open_risk_at_stop=0.0)
-    # candidate risk = 100000*0.005 = 500 => projected 4100 in (4000, 5000)
+    # equity between official (95000) and internal (96000) daily levels
+    acct = make_account(equity=95500.0)
     d = _evaluate(_engine(), make_candidate(), make_market(), acct, make_broker(), make_news())
-    assert d.primary_reason_code == ReasonCode.DAILY_LOSS_LIMIT
-    assert ReasonCode.INTERNAL_BUFFER_TRIP in d.reason_codes   # internal before FTMO
+    assert d.primary_reason_code == ReasonCode.INTERNAL_DAILY_BUFFER_TRIP
 
 
 def test_ftmo_daily_hard_limit(make_candidate, make_market, make_account, make_broker, make_news):
-    acct = make_account(current_daily_loss=4800.0)   # projected 5300 >= FTMO 5000
+    acct = make_account(equity=94000.0)     # below official daily level 95000
     d = _evaluate(_engine(), make_candidate(), make_market(), acct, make_broker(), make_news())
-    assert d.primary_reason_code == ReasonCode.DAILY_LOSS_LIMIT
-    assert ReasonCode.INTERNAL_BUFFER_TRIP not in d.reason_codes
+    assert d.primary_reason_code == ReasonCode.FTMO_DAILY_LOSS_BREACH
+
+
+def test_ftmo_daily_amount_uses_initial_not_dayequity(make_candidate, make_market,
+                                                      make_account, make_broker, make_news):
+    # M1: account grew (day_start_balance 130k) but the daily amount stays 5% of
+    # INITIAL (100k) => official level 130000-5000=125000, not 130000*0.95.
+    acct = make_account(day_start_balance=130000.0, equity=124000.0)
+    d = _evaluate(_engine(), make_candidate(), make_market(), acct, make_broker(), make_news())
+    assert d.primary_reason_code == ReasonCode.FTMO_DAILY_LOSS_BREACH  # 124000 < 125000
 
 
 def test_ftmo_max_account_loss(make_candidate, make_market, make_account, make_broker, make_news):
-    # max loss 10% => FTMO 10000, internal 8000. equity down 7800 + risk 500 = 8300 >= 8000
-    acct = make_account(equity=92200.0, current_daily_loss=0.0)
+    # account drawn down over prior days so max (static, from initial) bites before daily
+    acct = make_account(day_start_balance=91000.0, equity=89000.0)
     d = _evaluate(_engine(), make_candidate(), make_market(), acct, make_broker(), make_news())
-    assert d.primary_reason_code == ReasonCode.MAX_ACCOUNT_LOSS
+    assert d.primary_reason_code == ReasonCode.FTMO_MAXIMUM_LOSS_BREACH
 
 
-def test_internal_limits_strictly_below_ftmo():
-    from forex_swing_orb.compliance.contract import ftmo_limits
-    lim = ftmo_limits({"daily_anchor_equity": 100000.0, "initial_balance": 100000.0},
-                      FtmoConfig())
-    assert lim["internal_daily_limit"] < lim["ftmo_daily_limit"]
-    assert lim["internal_max_loss"] < lim["ftmo_max_loss"]
+def test_internal_levels_strictly_safer_than_official():
+    lv = ftmo_levels({"day_start_balance": 100000.0}, verified_profile(), FtmoConfig())
+    assert lv["internal_daily_level"] > lv["official_daily_level"]   # safer = higher
+    assert lv["internal_max_level"] > lv["official_max_level"]
+    assert lv["official_daily_amount"] == 5000.0 and lv["official_max_amount"] == 10000.0
 
 
 # --------------------------------------------------------------------------- #
 # Session compliance (stage 4)
 # --------------------------------------------------------------------------- #
 def test_session_outside_session(make_candidate, make_market, make_account, make_broker, make_news):
-    cfg = ComplianceConfig(session=SessionConfig(allowed_sessions=("LONDON",)))
+    cfg = verified_config(session=SessionConfig(allowed_sessions=("LONDON",)))
     # 02:00 UTC Wednesday: London (07-16) not active
     two_am = NOW.replace(hour=2)
     d = _evaluate(_engine(cfg), make_candidate(), make_market(), make_account(),
@@ -216,8 +235,8 @@ def test_session_outside_session(make_candidate, make_market, make_account, make
 
 def test_session_friday_close(make_candidate, make_market, make_account, make_broker, make_news):
     # disable weekend gate so FTMO passes; Friday 21:00 UTC, cutoff 20:00 (1200)
-    cfg = ComplianceConfig(
-        ftmo=FtmoConfig(weekend_flat_required=False),
+    cfg = verified_config(
+        ftmo=FtmoConfig(internal_weekend_flat=False),
         session=SessionConfig(friday_close_min=1200))
     d = _evaluate(_engine(cfg), make_candidate(), make_market(), make_account(),
                   make_broker(), make_news(as_of=serialize.iso_utc(FRIDAY)), now=FRIDAY)
@@ -225,8 +244,8 @@ def test_session_friday_close(make_candidate, make_market, make_account, make_br
 
 
 def test_session_sunday_open(make_candidate, make_market, make_account, make_broker, make_news):
-    cfg = ComplianceConfig(
-        ftmo=FtmoConfig(weekend_flat_required=False),
+    cfg = verified_config(
+        ftmo=FtmoConfig(internal_weekend_flat=False),
         session=SessionConfig(sunday_open_min=1320))    # no entries before 22:00 UTC Sun
     d = _evaluate(_engine(cfg), make_candidate(), make_market(), make_account(),
                   make_broker(), make_news(as_of=serialize.iso_utc(SUNDAY)), now=SUNDAY)
@@ -240,7 +259,7 @@ def test_news_high_impact_lockout(make_candidate, make_market, make_account,
                                   make_broker, make_news, make_event):
     news = make_news(events=[make_event(currency="USD", impact="HIGH", offset_min=0)])
     d = _evaluate(_engine(), make_candidate(), make_market(), make_account(), make_broker(), news)
-    assert d.primary_reason_code == ReasonCode.NEWS_LOCKOUT
+    assert d.primary_reason_code == ReasonCode.INTERNAL_NEWS_LOCKOUT
     assert ReasonCode.PAIR_BLOCKED in d.reason_codes
     news_v = {v.stage: v for v in d.gate_verdicts}[Stage.NEWS]
     assert news_v.evidence["lockout_expires_at"] is not None
@@ -289,7 +308,7 @@ def test_news_conflicting_records(make_candidate, make_market, make_account,
     e2 = make_event(currency="USD", impact="LOW", offset_min=0, event_id="DUP")
     news = make_news(events=[e1, e2])
     d = _evaluate(_engine(), make_candidate(), make_market(), make_account(), make_broker(), news)
-    assert d.primary_reason_code == ReasonCode.NEWS_CONFLICTING_RECORDS
+    assert d.primary_reason_code == ReasonCode.NEWS_DATA_CONFLICT
 
 
 @pytest.mark.parametrize("offset,blocked", [(15, True), (16, False), (-15, True), (-16, False)])
@@ -297,7 +316,7 @@ def test_news_window_boundaries(offset, blocked, make_candidate, make_market,
                                 make_account, make_broker, make_news, make_event):
     news = make_news(events=[make_event(currency="USD", impact="HIGH", offset_min=offset)])
     d = _evaluate(_engine(), make_candidate(), make_market(), make_account(), make_broker(), news)
-    assert (d.primary_reason_code == ReasonCode.NEWS_LOCKOUT) is blocked
+    assert (d.primary_reason_code == ReasonCode.INTERNAL_NEWS_LOCKOUT) is blocked
 
 
 # --------------------------------------------------------------------------- #
@@ -339,9 +358,9 @@ def test_risk_per_trade_exceeded(make_candidate, make_market, make_account,
 
 
 def test_risk_gate_projected_breach_defense_in_depth(make_candidate, make_account):
-    # direct gate test: projected >= internal daily limit
-    acct = make_account(current_daily_loss=3800.0)   # +500 risk => 4300 >= 4000
-    v = gates.gate_risk(make_candidate(), acct, FtmoConfig(), NOW)
+    # direct gate test: projected post-trade equity < internal daily level (96000)
+    acct = make_account(equity=96200.0)   # risk 0.005*100000=500 => projected 95700 < 96000
+    v = gates.gate_risk(make_candidate(), acct, verified_profile(), FtmoConfig(), NOW)
     assert not v.passed and v.reason_codes[0] == ReasonCode.RISK_PROJECTED_BREACH
 
 
@@ -452,14 +471,15 @@ def test_audit_persists_across_restart(tmp_path, make_candidate, make_market,
 # --------------------------------------------------------------------------- #
 def test_daily_loss_exact_internal_boundary(make_candidate, make_market, make_account,
                                             make_broker, make_news):
-    # internal daily limit = 4000; make projected exactly 4000 => reject (>=)
-    acct = make_account(current_daily_loss=3500.0)   # +500 => 4000
-    d = _evaluate(_engine(), make_candidate(), make_market(), acct, make_broker(), make_news())
-    assert d.primary_reason_code == ReasonCode.DAILY_LOSS_LIMIT
-    # just below => pass
-    acct2 = make_account(current_daily_loss=3499.0)  # 3999 < 4000
+    # internal daily level = 96000; breach iff equity < level. risk=500 => projected.
+    # equity 96500 -> projected 96000 == level -> safe (>=).
+    acct = make_account(equity=96500.0)
+    assert _evaluate(_engine(), make_candidate(), make_market(), acct,
+                     make_broker(), make_news()).is_pass
+    # equity 96499 -> projected 95999 < 96000 -> projected daily breach
+    acct2 = make_account(equity=96499.0)
     d2 = _evaluate(_engine(), make_candidate(), make_market(), acct2, make_broker(), make_news())
-    assert d2.is_pass
+    assert ReasonCode.PROJECTED_DAILY_LOSS_BREACH in d2.reason_codes
 
 
 def test_risk_exact_cap_boundary(make_candidate, make_market, make_account,
@@ -474,7 +494,7 @@ def test_risk_exact_cap_boundary(make_candidate, make_market, make_account,
 
 
 def test_max_positions_boundary(make_candidate, make_market, make_account, make_broker, make_news):
-    cfg = ComplianceConfig(ftmo=FtmoConfig(max_open_positions=5))
+    cfg = verified_config(ftmo=FtmoConfig(max_open_positions=5))
     ok = make_account(open_position_count=4, open_symbols=("GBPUSD.FX",))
     assert _evaluate(_engine(cfg), make_candidate(), make_market(), ok, make_broker(), make_news()).is_pass
     full = make_account(open_position_count=5, open_symbols=("GBPUSD.FX",))
@@ -525,15 +545,17 @@ def test_dashboard_budgets_and_fields(make_candidate, make_market, make_account,
                                       make_broker, make_news):
     dash = ComplianceDashboard(_engine())
     s = dash.status(make_candidate(), market_state=make_market(),
-                    account_state=make_account(current_daily_loss=1000.0),
+                    account_state=make_account(equity=99000.0),
                     broker_health=make_broker(), news_bundle=make_news(), now=NOW)
-    # internal daily 4000 - (1000 + 0) = 3000
+    # internal daily level = 96000; remaining = equity(99000) - 96000 = 3000
     assert s["remaining_daily_loss_budget"] == pytest.approx(3000.0)
-    # internal max 8000 - (100000-100000) = 8000
-    assert s["remaining_max_loss_budget"] == pytest.approx(8000.0)
+    # internal max level = 92000; remaining = 99000 - 92000 = 7000
+    assert s["remaining_max_loss_budget"] == pytest.approx(7000.0)
+    assert s["official_daily_level"] == pytest.approx(95000.0)
     assert s["active_session"] == "LONDON"
-    for k in ("ftmo_status", "broker_health", "kill_switch_active",
-              "active_news_lockout", "lockout_expiration", "active_reason_codes"):
+    for k in ("ftmo_status", "broker_health", "kill_switch_active", "program",
+              "account_type", "active_news_lockout", "lockout_expiration",
+              "active_reason_codes"):
         assert k in s
 
 

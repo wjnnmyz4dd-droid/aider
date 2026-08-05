@@ -52,9 +52,10 @@ class MockMarketDataProvider(MarketDataProvider):
 class MockAccountProvider(AccountStateProvider):
     def __init__(self, now, **over):
         self._snap = {
-            "balance": 100000.0, "equity": 100000.0, "initial_balance": 100000.0,
-            "daily_anchor_equity": 100000.0, "current_daily_loss": 0.0,
-            "open_risk_at_stop": 0.0, "open_position_count": 0, "open_symbols": (),
+            "balance": 100000.0, "current_balance": 100000.0, "equity": 100000.0,
+            "initial_balance": 100000.0, "day_start_balance": 100000.0,
+            "floating_pl": 0.0, "swaps": 0.0, "commissions": 0.0,
+            "trading_day": None, "open_position_count": 0, "open_symbols": (),
             "terminal_connected": True, "as_of": serialize.iso_utc(now),
             "is_demo": True, "account_type": "DEMO",
         }

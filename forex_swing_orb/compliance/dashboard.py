@@ -8,8 +8,7 @@ SHALL NOT influence execution — it has no path that writes anything.
 from __future__ import annotations
 
 from . import gates
-from .contract import (Decision, ReasonCode, candidate_risk_amount, finite,
-                       ftmo_limits)
+from .contract import Decision, ReasonCode, finite, ftmo_levels
 from .engine import ComplianceEngine
 
 
@@ -28,18 +27,21 @@ class ComplianceDashboard:
             broker_health=broker_health, news_bundle=news_bundle, now=now,
             kill_switch=kill_switch, dry_run=True)
 
-        limits = ftmo_limits(account_state or {}, cfg.ftmo)
-        daily_loss = finite((account_state or {}).get("current_daily_loss"))
-        open_risk = finite((account_state or {}).get("open_risk_at_stop"))
+        levels = ftmo_levels(account_state or {}, cfg.profile, cfg.ftmo)
         equity = finite((account_state or {}).get("equity"))
-        initial = finite((account_state or {}).get("initial_balance"))
 
-        remaining_daily = None
+        # corrected (M1/M3) budgets: distance from current equity to each level
+        remaining_daily = None          # to the INTERNAL daily level (safer)
         remaining_max = None
-        if limits is not None and daily_loss is not None and open_risk is not None:
-            remaining_daily = limits["internal_daily_limit"] - (daily_loss + open_risk)
-        if limits is not None and equity is not None and initial is not None:
-            remaining_max = limits["internal_max_loss"] - (initial - equity)
+        official_daily_level = internal_daily_level = None
+        official_max_level = internal_max_level = None
+        if levels is not None and equity is not None:
+            official_daily_level = levels["official_daily_level"]
+            internal_daily_level = levels["internal_daily_level"]
+            official_max_level = levels["official_max_level"]
+            internal_max_level = levels["internal_max_level"]
+            remaining_daily = equity - internal_daily_level
+            remaining_max = equity - internal_max_level
 
         # session + news read-outs (dry, no authority)
         try:
@@ -50,7 +52,7 @@ class ComplianceDashboard:
 
         news_verdict = {v.stage: v for v in decision.gate_verdicts}.get("news")
         news_lockout = bool(news_verdict is not None and not news_verdict.passed
-                            and ReasonCode.NEWS_LOCKOUT in news_verdict.reason_codes)
+                            and ReasonCode.INTERNAL_NEWS_LOCKOUT in news_verdict.reason_codes)
         lockout_expires = (news_verdict.evidence.get("lockout_expires_at")
                            if news_verdict is not None else None)
 
@@ -69,6 +71,13 @@ class ComplianceDashboard:
             "active_reason_codes": list(decision.reason_codes),
             "primary_reason_code": decision.primary_reason_code,
             "ftmo_status": ftmo_status,
+            "program": cfg.profile.program,
+            "account_type": cfg.profile.account_type,
+            "profile_verified": cfg.profile.profile_verified,
+            "official_daily_level": official_daily_level,
+            "internal_daily_level": internal_daily_level,
+            "official_max_level": official_max_level,
+            "internal_max_level": internal_max_level,
             "remaining_daily_loss_budget": remaining_daily,
             "remaining_max_loss_budget": remaining_max,
             "active_session": active_session,

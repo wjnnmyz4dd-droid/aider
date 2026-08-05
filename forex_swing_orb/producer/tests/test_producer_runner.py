@@ -83,7 +83,7 @@ def test_news_high_impact_block(make_runner):
     runner, d = make_runner(news=MockNewsProvider(NOW, events=[_event(NOW, offset_min=0)]))
     res = _only(runner.run_cycle(NOW))
     assert res.outcome == CycleOutcome.COMPLIANCE_REJECT
-    assert CRC.NEWS_LOCKOUT in res.reason_codes
+    assert CRC.INTERNAL_NEWS_LOCKOUT in res.reason_codes
     assert _pending(d["paths"]) == []
 
 

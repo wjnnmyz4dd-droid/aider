@@ -14,9 +14,24 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from forex_swing_orb.bridge import serialize                              # noqa: E402
+from forex_swing_orb.compliance import (ComplianceConfig, FtmoProfile,      # noqa: E402
+                                        prague_trading_day)
 
 # A fixed weekday during the London session (Wed 2026-01-07 10:00 UTC).
 NOW = datetime(2026, 1, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def verified_profile(**over):
+    """A verified FTMO 2-Step Swing profile for tests (Phase 8C)."""
+    f = dict(initial_balance=100000.0, account_currency="USD",
+             rule_source="ftmo.com/en/trading-objectives (2-Step)",
+             rule_source_verified_at="2026-08-05", profile_verified=True)
+    f.update(over)
+    return FtmoProfile(**f)
+
+
+def verified_config(**over):
+    return ComplianceConfig(profile=verified_profile(), **over)
 SATURDAY = datetime(2026, 1, 10, 10, 0, 0, tzinfo=timezone.utc)
 SUNDAY = datetime(2026, 1, 11, 10, 0, 0, tzinfo=timezone.utc)
 FRIDAY = datetime(2026, 1, 9, 21, 0, 0, tzinfo=timezone.utc)
@@ -50,11 +65,10 @@ def make_candidate():
 def make_account():
     def _make(**over):
         a = {
-            "daily_anchor_equity": 100000.0,
+            "day_start_balance": 100000.0,          # M3: balance anchor
             "initial_balance": 100000.0,
             "equity": 100000.0,
-            "current_daily_loss": 0.0,
-            "open_risk_at_stop": 0.0,
+            "trading_day": None,          # staleness is exercised explicitly in the 8C suite
             "open_position_count": 0,
             "open_symbols": (),
         }

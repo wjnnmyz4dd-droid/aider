@@ -58,23 +58,37 @@ class ReasonCode:
     SYMBOL_NOT_FOREX = "SYMBOL_NOT_FOREX"
     MTF_CONFLICT = "MTF_CONFLICT"
     MARKET_CLOSED = "MARKET_CLOSED"
-    # -- ftmo -----------------------------------------------------------------
-    DAILY_LOSS_LIMIT = "DAILY_LOSS_LIMIT"
-    MAX_ACCOUNT_LOSS = "MAX_ACCOUNT_LOSS"
+    # -- ftmo profile (Phase 8C: FTMO_TWO_STEP + FTMO_SWING) ------------------
+    FTMO_PROFILE_UNVERIFIED = "FTMO_PROFILE_UNVERIFIED"
+    FTMO_PROGRAM_UNSUPPORTED = "FTMO_PROGRAM_UNSUPPORTED"
+    FTMO_ACCOUNT_TYPE_UNSUPPORTED = "FTMO_ACCOUNT_TYPE_UNSUPPORTED"
+    FTMO_INITIAL_BALANCE_INVALID = "FTMO_INITIAL_BALANCE_INVALID"
+    # -- ftmo daily anchor (M2/M3: Prague day-start balance) ------------------
+    FTMO_DAILY_ANCHOR_MISSING = "FTMO_DAILY_ANCHOR_MISSING"
+    FTMO_DAILY_ANCHOR_STALE = "FTMO_DAILY_ANCHOR_STALE"
+    FTMO_DAILY_ANCHOR_CONFLICT = "FTMO_DAILY_ANCHOR_CONFLICT"
+    PRAGUE_ROLLOVER_FAILED = "PRAGUE_ROLLOVER_FAILED"
+    # -- ftmo loss rules (M1: initial-capital basis, static max) --------------
+    FTMO_DAILY_LOSS_BREACH = "FTMO_DAILY_LOSS_BREACH"
+    PROJECTED_DAILY_LOSS_BREACH = "PROJECTED_DAILY_LOSS_BREACH"
+    INTERNAL_DAILY_BUFFER_TRIP = "INTERNAL_DAILY_BUFFER_TRIP"
+    FTMO_MAXIMUM_LOSS_BREACH = "FTMO_MAXIMUM_LOSS_BREACH"
+    INTERNAL_MAXIMUM_LOSS_BUFFER_TRIP = "INTERNAL_MAXIMUM_LOSS_BUFFER_TRIP"
+    # -- internal (Session Edge) overlays: NOT official FTMO Swing rules ------
     MAX_POSITIONS = "MAX_POSITIONS"
     ONE_PER_SYMBOL = "ONE_PER_SYMBOL"
-    WEEKEND_BLOCK = "WEEKEND_BLOCK"
-    INTERNAL_BUFFER_TRIP = "INTERNAL_BUFFER_TRIP"
+    INTERNAL_WEEKEND_POLICY = "INTERNAL_WEEKEND_POLICY"
     # -- session --------------------------------------------------------------
     SESSION_BLOCK = "SESSION_BLOCK"
     OUTSIDE_SESSION = "OUTSIDE_SESSION"
-    # -- news -----------------------------------------------------------------
-    NEWS_LOCKOUT = "NEWS_LOCKOUT"
+    # -- news: Session Edge INTERNAL safety overlay (NOT an FTMO Swing rule) ---
+    INTERNAL_NEWS_LOCKOUT = "INTERNAL_NEWS_LOCKOUT"
+    INTERNAL_NEWS_LOCKOUT_EXPIRED = "INTERNAL_NEWS_LOCKOUT_EXPIRED"
     PAIR_BLOCKED = "PAIR_BLOCKED"
     NEWS_DATA_UNAVAILABLE = "NEWS_DATA_UNAVAILABLE"
     NEWS_DATA_STALE = "NEWS_DATA_STALE"
     NEWS_SOURCE_UNVERIFIED = "NEWS_SOURCE_UNVERIFIED"
-    NEWS_CONFLICTING_RECORDS = "NEWS_CONFLICTING_RECORDS"
+    NEWS_DATA_CONFLICT = "NEWS_DATA_CONFLICT"
     # -- broker health --------------------------------------------------------
     BROKER_UNHEALTHY = "BROKER_UNHEALTHY"
     SPREAD_TOO_HIGH = "SPREAD_TOO_HIGH"
@@ -89,13 +103,19 @@ class ReasonCode:
 
     REQUIRED = frozenset({
         COMPLIANCE_PASS, KILL_SWITCH, UNKNOWN_STATE, CANDIDATE_MALFORMED,
-        SYMBOL_NOT_FOREX, MTF_CONFLICT, MARKET_CLOSED, DAILY_LOSS_LIMIT,
-        MAX_ACCOUNT_LOSS, MAX_POSITIONS, ONE_PER_SYMBOL, WEEKEND_BLOCK,
-        INTERNAL_BUFFER_TRIP, SESSION_BLOCK, OUTSIDE_SESSION, NEWS_LOCKOUT,
-        PAIR_BLOCKED, NEWS_DATA_UNAVAILABLE, NEWS_DATA_STALE,
-        NEWS_SOURCE_UNVERIFIED, NEWS_CONFLICTING_RECORDS, BROKER_UNHEALTHY,
-        SPREAD_TOO_HIGH, SLIPPAGE_TOO_HIGH, TERMINAL_DISCONNECTED,
-        BRIDGE_UNHEALTHY, MARKET_DATA_STALE, ACK_MISSING,
+        SYMBOL_NOT_FOREX, MTF_CONFLICT, MARKET_CLOSED,
+        FTMO_PROFILE_UNVERIFIED, FTMO_PROGRAM_UNSUPPORTED,
+        FTMO_ACCOUNT_TYPE_UNSUPPORTED, FTMO_INITIAL_BALANCE_INVALID,
+        FTMO_DAILY_ANCHOR_MISSING, FTMO_DAILY_ANCHOR_STALE,
+        FTMO_DAILY_ANCHOR_CONFLICT, PRAGUE_ROLLOVER_FAILED,
+        FTMO_DAILY_LOSS_BREACH, PROJECTED_DAILY_LOSS_BREACH,
+        INTERNAL_DAILY_BUFFER_TRIP, FTMO_MAXIMUM_LOSS_BREACH,
+        INTERNAL_MAXIMUM_LOSS_BUFFER_TRIP, MAX_POSITIONS, ONE_PER_SYMBOL,
+        INTERNAL_WEEKEND_POLICY, SESSION_BLOCK, OUTSIDE_SESSION,
+        INTERNAL_NEWS_LOCKOUT, INTERNAL_NEWS_LOCKOUT_EXPIRED, PAIR_BLOCKED,
+        NEWS_DATA_UNAVAILABLE, NEWS_DATA_STALE, NEWS_SOURCE_UNVERIFIED,
+        NEWS_DATA_CONFLICT, BROKER_UNHEALTHY, SPREAD_TOO_HIGH, SLIPPAGE_TOO_HIGH,
+        TERMINAL_DISCONNECTED, BRIDGE_UNHEALTHY, MARKET_DATA_STALE, ACK_MISSING,
         RISK_PER_TRADE_EXCEEDED, RISK_PROJECTED_BREACH,
     })
 
@@ -108,15 +128,61 @@ def validate_reason(code):
 # ---------------------------------------------------------------------------
 # Frozen configuration (operator-set; stable across a trading day).
 # ---------------------------------------------------------------------------
+class ProgramType:
+    FTMO_TWO_STEP = "FTMO_TWO_STEP"
+    FTMO_ONE_STEP = "FTMO_ONE_STEP"          # NOT implemented this phase (rejected)
+    SUPPORTED = frozenset({FTMO_TWO_STEP})
+
+
+class AccountType:
+    FTMO_SWING = "FTMO_SWING"
+    FTMO_NORMAL = "FTMO_NORMAL"              # NOT implemented this phase (rejected)
+    SUPPORTED = frozenset({FTMO_SWING})
+
+
+@dataclass(frozen=True)
+class FtmoProfile:
+    """The single explicit, verified FTMO profile (Phase 8C). Official rule
+    percentages/timezone come from the verified source; nothing is guessed."""
+
+    program: str = ProgramType.FTMO_TWO_STEP
+    account_type: str = AccountType.FTMO_SWING
+    initial_balance: float = None            # operator-verified funded balance
+    account_currency: str = None
+    daily_loss_pct: float = 0.05             # FTMO 2-Step: 5% of INITIAL capital
+    maximum_loss_pct: float = 0.10           # FTMO 2-Step: static 10% of INITIAL capital
+    reset_timezone: str = "Europe/Prague"    # daily reset 00:00 CE(S)T
+    rule_source: str = None                  # e.g. "ftmo.com/en/trading-objectives (2-Step)"
+    rule_source_verified_at: str = None      # ISO-8601 date of the Phase 8B verification
+    profile_version: str = "ftmo.two_step.swing.v1"
+    profile_verified: bool = False           # never silently True
+
+    def verification_error(self):
+        """Return a ReasonCode if the profile cannot be used, else None (fail closed)."""
+        if self.program not in ProgramType.SUPPORTED:
+            return ReasonCode.FTMO_PROGRAM_UNSUPPORTED
+        if self.account_type not in AccountType.SUPPORTED:
+            return ReasonCode.FTMO_ACCOUNT_TYPE_UNSUPPORTED
+        if finite(self.initial_balance) is None or self.initial_balance <= 0:
+            return ReasonCode.FTMO_INITIAL_BALANCE_INVALID
+        if not (self.rule_source and self.rule_source_verified_at):
+            return ReasonCode.FTMO_PROFILE_UNVERIFIED
+        if not _tz_loadable(self.reset_timezone):
+            return ReasonCode.PRAGUE_ROLLOVER_FAILED
+        if not self.profile_verified:
+            return ReasonCode.FTMO_PROFILE_UNVERIFIED
+        return None
+
+
 @dataclass(frozen=True)
 class FtmoConfig:
-    daily_loss_pct: float = 0.05            # FTMO daily hard limit (of daily anchor equity)
-    max_account_loss_pct: float = 0.10      # FTMO overall hard limit (of initial balance)
-    safety_buffer_fraction: float = 0.20    # internal cushion; internal = hard*(1-f)
-    max_open_positions: int = 5
-    max_risk_per_trade_pct: float = 0.01
-    one_position_per_symbol: bool = True
-    weekend_flat_required: bool = True
+    """Session Edge INTERNAL safety overlays — NOT official FTMO Swing rules."""
+
+    safety_buffer_fraction: float = 0.20     # internal cushion; internal triggers before FTMO
+    max_open_positions: int = 5              # internal risk overlay
+    max_risk_per_trade_pct: float = 0.01     # internal risk overlay
+    one_position_per_symbol: bool = True     # internal risk overlay
+    internal_weekend_flat: bool = False      # internal-only; FTMO Swing allows weekend holding
 
 
 @dataclass(frozen=True)
@@ -144,13 +210,15 @@ class SessionConfig:
 
 @dataclass(frozen=True)
 class ComplianceConfig:
-    ftmo: FtmoConfig = field(default_factory=FtmoConfig)
+    profile: FtmoProfile = field(default_factory=FtmoProfile)   # official FTMO 2-Step Swing
+    ftmo: FtmoConfig = field(default_factory=FtmoConfig)         # internal overlays
     news: NewsLockoutConfig = field(default_factory=NewsLockoutConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
 
     def digest(self):
         """Stable 16-hex digest of the whole config, for audit reproducibility."""
         payload = serialize.canonical_json({
+            "profile": asdict(self.profile),
             "ftmo": asdict(self.ftmo),
             "news": asdict(self.news),
             "session": asdict(self.session),
@@ -219,32 +287,70 @@ def _sanitize(obj):
     return obj
 
 
-def ftmo_limits(account_state, cfg):
-    """Deterministic FTMO + internal thresholds. Internal < FTMO always."""
-    anchor = finite(account_state.get("daily_anchor_equity"))
-    initial = finite(account_state.get("initial_balance"))
-    if anchor is None or initial is None or anchor <= 0 or initial <= 0:
+def _tz_loadable(name):
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(name)
+        return True
+    except Exception:
+        return False
+
+
+def prague_trading_day(now, reset_timezone="Europe/Prague"):
+    """The FTMO trading-day key: the local calendar date at ``now`` in the reset
+    timezone (00:00 CE(S)T boundary). DST-aware. None if the tz cannot load or
+    ``now`` is naive/invalid (fail closed)."""
+    try:
+        from zoneinfo import ZoneInfo
+        if now is None or now.tzinfo is None:
+            return None
+        return now.astimezone(ZoneInfo(reset_timezone)).strftime("%Y-%m-%d")
+    except Exception:
         return None
-    ftmo_daily = anchor * cfg.daily_loss_pct
-    ftmo_max = initial * cfg.max_account_loss_pct
+
+
+def ftmo_levels(account_state, profile, cfg):
+    """FTMO 2-Step levels from the INITIAL capital, anchored to the DAY-START
+    BALANCE (M1/M3). Internal thresholds are strictly safer (trigger first).
+    Returns a dict, or (None, reason) semantics via caller checks.
+
+    Official daily level  = day_start_balance − daily_loss_pct × initial_balance
+    Official max level     = initial_balance   − maximum_loss_pct × initial_balance (static)
+    Breach iff current equity < level (equality = safe).
+    """
+    day_start_balance = finite(account_state.get("day_start_balance"))
+    initial = finite(profile.initial_balance)
+    if initial is None or initial <= 0:
+        return None
+    if day_start_balance is None or day_start_balance <= 0:
+        return None
     keep = 1.0 - cfg.safety_buffer_fraction
+    official_daily_amount = profile.daily_loss_pct * initial
+    internal_daily_amount = official_daily_amount * keep
+    official_max_amount = profile.maximum_loss_pct * initial
+    internal_max_amount = official_max_amount * keep
     return {
-        "ftmo_daily_limit": ftmo_daily,
-        "internal_daily_limit": ftmo_daily * keep,
-        "ftmo_max_loss": ftmo_max,
-        "internal_max_loss": ftmo_max * keep,
+        "initial_balance": initial,
+        "day_start_balance": day_start_balance,
+        "official_daily_amount": official_daily_amount,
+        "internal_daily_amount": internal_daily_amount,
+        "official_daily_level": day_start_balance - official_daily_amount,
+        "internal_daily_level": day_start_balance - internal_daily_amount,   # higher/safer
+        "official_max_amount": official_max_amount,
+        "internal_max_amount": internal_max_amount,
+        "official_max_level": initial - official_max_amount,                  # static (no trailing)
+        "internal_max_level": initial - internal_max_amount,
     }
 
 
-def candidate_risk_amount(candidate, account_state):
-    """Declared risk in account currency = daily anchor equity * risk_fraction.
-    (The EA never sizes from risk_fraction; compliance validates the DECLARED
-    risk against caps/buffers only.) None on any invalid input."""
+def candidate_risk_amount(candidate, profile):
+    """Declared worst-case per-trade loss = risk_fraction × INITIAL capital (fixed,
+    deterministic base; does not grow with account equity). None on invalid input."""
     rf = finite(candidate.get("risk_fraction"))
-    anchor = finite(account_state.get("daily_anchor_equity"))
-    if rf is None or anchor is None or rf < 0 or anchor <= 0:
+    initial = finite(profile.initial_balance)
+    if rf is None or initial is None or rf < 0 or initial <= 0:
         return None
-    return anchor * rf
+    return initial * rf
 
 
 def decision_id(body):

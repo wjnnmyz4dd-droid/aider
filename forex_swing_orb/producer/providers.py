@@ -144,9 +144,8 @@ def validate_account(snap, now, max_age_sec):
     """Return (ok, reason_code). Fail closed on missing/stale/unverified."""
     if not isinstance(snap, dict):
         return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
-    for k in ("balance", "equity", "initial_balance", "daily_anchor_equity",
-              "current_daily_loss", "open_risk_at_stop", "open_position_count",
-              "open_symbols", "terminal_connected", "as_of"):
+    for k in ("balance", "equity", "initial_balance", "day_start_balance",
+              "open_position_count", "open_symbols", "terminal_connected", "as_of"):
         if snap.get(k) is None:
             return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
     as_of = serialize.parse_iso(snap.get("as_of"))

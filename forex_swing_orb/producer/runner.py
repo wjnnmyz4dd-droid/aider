@@ -51,6 +51,10 @@ class ProducerRunner:
             raise RunnerRefused("mode is not DEMO (this phase is demo-only)")
         if not cfg.ftmo_profile_verified:
             raise RunnerRefused("FTMO profile is unverified")
+        # Phase 8C: the compliance FTMO profile itself must be verified/usable.
+        perr = cfg.compliance.profile.verification_error()
+        if perr is not None:
+            raise RunnerRefused(f"FTMO profile not usable: {perr}")
         acct = self.account.snapshot(now)
         if not isinstance(acct, dict):
             raise RunnerRefused("account snapshot unavailable")

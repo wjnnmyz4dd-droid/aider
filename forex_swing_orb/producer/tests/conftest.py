@@ -14,7 +14,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from forex_swing_orb.bridge.paths import BridgePaths                       # noqa: E402
-from forex_swing_orb.compliance import ComplianceConfig                    # noqa: E402
+from forex_swing_orb.compliance import ComplianceConfig, FtmoProfile        # noqa: E402
+
+
+def _verified_config():
+    return ComplianceConfig(profile=FtmoProfile(
+        initial_balance=100000.0, account_currency="USD",
+        rule_source="ftmo.com/en/trading-objectives (2-Step)",
+        rule_source_verified_at="2026-08-05", profile_verified=True))
 from forex_swing_orb.producer import ProducerRunner, RunnerConfig, RunnerMode  # noqa: E402
 from forex_swing_orb.producer.mock_providers import (                      # noqa: E402
     MockAccountProvider, MockBrokerHealthProvider, MockMarketDataProvider,
@@ -36,7 +43,7 @@ def make_runner(tmp_path):
         paths = BridgePaths(tmp_path / "bridge").ensure()
         cfg = RunnerConfig(symbols=symbols, mode=mode,
                            ftmo_profile_verified=ftmo_verified,
-                           compliance=compliance or ComplianceConfig())
+                           compliance=compliance or _verified_config())
         market = market or MockMarketDataProvider(symbols, now)
         account = account or MockAccountProvider(now)
         news = news if news is not None else MockNewsProvider(now)
