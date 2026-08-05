@@ -1,0 +1,115 @@
+"""MT5 client abstraction (Phase 8A) — the single seam to MetaTrader 5.
+
+The live providers depend ONLY on this narrow, duck-typed client — never on the
+``MetaTrader5`` package directly — so provider logic is testable off-Windows with
+:class:`FakeMt5Client`. :func:`create_real_client` lazily imports MetaTrader5 at
+deployment (Windows only); importing this module never requires the package.
+
+The MT5 package uses a local IPC pipe to a running terminal — no HTTP, no sockets,
+no scraping. That is the ONLY external integration these providers use.
+"""
+
+from __future__ import annotations
+
+# canonical timeframe labels -> MetaTrader5 timeframe enum values (fixed by MT5)
+_MT5_TF = {"M15": 15, "H1": 16385, "H4": 16388, "D1": 16408}
+
+# MetaTrader5 account trade modes
+ACCOUNT_TRADE_MODE_DEMO = 0
+ACCOUNT_TRADE_MODE_CONTEST = 1
+ACCOUNT_TRADE_MODE_REAL = 2
+# MetaTrader5 symbol trade modes
+SYMBOL_TRADE_MODE_DISABLED = 0
+SYMBOL_TRADE_MODE_FULL = 4
+POSITION_TYPE_BUY = 0
+POSITION_TYPE_SELL = 1
+
+
+def create_real_client():  # pragma: no cover - Windows/terminal deployment only
+    """Wrap the live MetaTrader5 package. Raises a clear error off-Windows / when
+    the package or terminal is unavailable. NEVER imported at module load."""
+    try:
+        import MetaTrader5 as _mt5  # noqa: N813
+    except Exception as exc:
+        raise RuntimeError(
+            "MetaTrader5 package unavailable — live providers run only on a "
+            "Windows host with MetaTrader5 installed and a terminal running "
+            f"({exc!r})")
+    if not _mt5.initialize():
+        raise RuntimeError(f"MetaTrader5.initialize() failed: {_mt5.last_error()!r}")
+    return _RealMt5Client(_mt5)
+
+
+class _RealMt5Client:  # pragma: no cover - requires a live terminal
+    def __init__(self, mt5):
+        self._mt5 = mt5
+
+    def timeframe(self, label):
+        return getattr(self._mt5, "TIMEFRAME_" + label)
+
+    def copy_rates_from_pos(self, symbol, tf_label, start, count):
+        return self._mt5.copy_rates_from_pos(symbol, self.timeframe(tf_label), start, count)
+
+    def symbol_info(self, symbol):
+        return self._mt5.symbol_info(symbol)
+
+    def account_info(self):
+        return self._mt5.account_info()
+
+    def positions_get(self, symbol=None):
+        return self._mt5.positions_get(symbol=symbol) if symbol else self._mt5.positions_get()
+
+    def terminal_info(self):
+        return self._mt5.terminal_info()
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic test double (mirrors the MetaTrader5 API surface used above).
+# --------------------------------------------------------------------------- #
+class _Rate:
+    __slots__ = ("time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume")
+
+    def __init__(self, time, o, h, l, c):
+        self.time = time; self.open = o; self.high = h; self.low = l; self.close = c
+        self.tick_volume = 0; self.spread = 0; self.real_volume = 0
+
+    def __getitem__(self, k):        # MT5 rates behave like structured records
+        return getattr(self, k)
+
+
+class FakeMt5Client:
+    """In-memory MT5 client for tests. No networking. Deterministic."""
+
+    def __init__(self):
+        self.rates = {}          # (symbol, tf_label) -> list[_Rate]
+        self.symbols = {}        # symbol -> object with MT5 symbol_info fields
+        self.account = None      # object with account_info fields
+        self.positions = []      # list of objects with position fields
+        self.terminal = type("T", (), {"connected": True, "trade_allowed": True})()
+
+    def timeframe(self, label):
+        return _MT5_TF[label]
+
+    def add_rates(self, symbol, tf_label, rows):
+        self.rates[(symbol, tf_label)] = [
+            _Rate(int(t), o, h, l, c) for (t, o, h, l, c) in rows]
+
+    def copy_rates_from_pos(self, symbol, tf_label, start, count):
+        data = self.rates.get((symbol, tf_label))
+        if data is None:
+            return None
+        return list(data[start:start + count]) if count else list(data[start:])
+
+    def symbol_info(self, symbol):
+        return self.symbols.get(symbol)
+
+    def account_info(self):
+        return self.account
+
+    def positions_get(self, symbol=None):
+        if symbol is not None:
+            return tuple(p for p in self.positions if p.symbol == symbol)
+        return tuple(self.positions)
+
+    def terminal_info(self):
+        return self.terminal
