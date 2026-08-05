@@ -53,4 +53,5 @@ class RunnerDashboard:
             "unresolved_reconciliations": unresolved,
             "written_signal_count": len(r.state.written_signals),
             "last_error": r.last_error,
+            "session": getattr(r, "_last_session_snapshot", None),   # Phase 9A
         }

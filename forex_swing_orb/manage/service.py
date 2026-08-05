@@ -66,6 +66,11 @@ class ManagerService:
     def status(self, now):
         inflight = dict(self.ledger.inflight)
         recovery = sorted(self._recovery_reconcile)
+        sess = None
+        model = getattr(self, "_session_model", None)
+        if model is not None:
+            from ..session.model import session_snapshot
+            sess = session_snapshot(model, now, getattr(self, "_capability", None))
         return {
             "service_state": "READY",
             "terminal_connected": self._safe_connected(),
@@ -76,6 +81,11 @@ class ManagerService:
             "recovery_reconciliation_required": recovery,
             "recovery_reconciliation_count": len(recovery),
             "tracked_signals": list(self.pm.states.keys()),
+            # Phase 9A: session context is for AUDIT/REPORTING only — protective
+            # management (BE/lock/trail/authorized close) is NEVER blocked by session.
+            "session": sess,
+            "managing_outside_entry_session": bool(
+                sess is not None and not sess["eligible"] and self.pm.states),
             "last_error": self._last_error,
             "timestamp": serialize.iso_utc(now),
         }
@@ -267,4 +277,7 @@ class ManagerService:
         service._enter_paths = BridgePaths(cfg.bridge_root).ensure()
         service._cadence_sec = cfg.cadence_sec
         service._context_provider = wiring.build_context_provider(client, cfg)
+        from ..session.capability import LONDON_ORB_CAPABILITY
+        service._session_model = cfg.session_model()      # audit/reporting only
+        service._capability = LONDON_ORB_CAPABILITY
         return service

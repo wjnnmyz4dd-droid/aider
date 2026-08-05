@@ -93,6 +93,9 @@ def env_config(tmp_path):
             "SESSION_EDGE_FTMO_PROFILE_VERIFIED": "true",
             "SESSION_EDGE_NEWS_FILE": news,
             "SESSION_EDGE_CADENCE_SEC": "900",
+            # Phase 9A: canonical session framework (LONDON is strategy-supported)
+            "SESSION_EDGE_ENABLED_SESSIONS": "LONDON",
+            "SESSION_EDGE_OVERLAP_MODE": "ALLOW",
         }
         env.update(over)
         return env, {"bridge_root": bridge_root, "runtime_dir": runtime_dir,

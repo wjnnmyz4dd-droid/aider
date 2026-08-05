@@ -326,7 +326,8 @@ def test_second_process_restart_recovers_same_phase(env_config, tmp_path):
         "SESSION_EDGE_ACCOUNT_CURRENCY": "USD",
         "SESSION_EDGE_FTMO_RULE_SOURCE": "x", "SESSION_EDGE_FTMO_RULE_VERIFIED_AT": "2026-08-05",
         "SESSION_EDGE_FTMO_PROFILE_VERIFIED": "true",
-        "SESSION_EDGE_NEWS_FILE": str(tmp_path / "news.json")}
+        "SESSION_EDGE_NEWS_FILE": str(tmp_path / "news.json"),
+        "SESSION_EDGE_ENABLED_SESSIONS": "LONDON", "SESSION_EDGE_OVERLAP_MODE": "ALLOW"}
     (tmp_path / "news.json").write_text(
         serialize.canonical_json({"as_of": serialize.iso_utc(NOW), "events": []}),
         encoding="utf-8")

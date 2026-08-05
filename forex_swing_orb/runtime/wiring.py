@@ -45,10 +45,14 @@ def build_profile(cfg):
 
 
 def build_compliance_config(cfg):
-    return ComplianceConfig(profile=build_profile(cfg), ftmo=FtmoConfig())
+    from ..compliance.contract import SessionConfig
+    model = cfg.session_model()               # canonical, validated (fail closed)
+    return ComplianceConfig(profile=build_profile(cfg), ftmo=FtmoConfig(),
+                            session=SessionConfig(session_model=model))
 
 
 def build_runner_config(cfg, compliance=None):
+    from ..session.capability import LONDON_ORB_CAPABILITY
     compliance = compliance or build_compliance_config(cfg)
     return RunnerConfig(
         symbols=tuple(cfg.symbols),
@@ -56,7 +60,9 @@ def build_runner_config(cfg, compliance=None):
         ftmo_profile_verified=True,           # profile already verified above
         cadence_sec=cfg.cadence_sec,
         compliance=compliance,
-        strategy_config={"min_history_bars": 60})
+        strategy_config={"min_history_bars": 60},
+        session_model=cfg.session_model(),    # pre-strategy session gate (canonical)
+        strategy_capability=LONDON_ORB_CAPABILITY)
 
 
 # --------------------------------------------------------------------------- #

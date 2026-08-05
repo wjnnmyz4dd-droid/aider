@@ -48,12 +48,14 @@ class ProducerService:
     """Background loop around :class:`ProducerRunner`. No console window required."""
 
     def __init__(self, runner, log_path, health_path, now_fn=_utc_now,
-                 compliance_status_path=None):
+                 compliance_status_path=None, session_status_path=None, advisory=None):
         self.runner = runner
         self.logger = configure_logging(log_path)
         self.health_path = health_path
         self.dashboard = RunnerDashboard(runner)
         self.compliance_status_path = compliance_status_path
+        self.session_status_path = session_status_path
+        self.advisory = advisory                 # Phase 9A ShadowAdvisoryService or None
         self._now = now_fn
         self._stop = False
 
@@ -88,6 +90,8 @@ class ProducerService:
                 self.logger.exception("cycle error")
             write_health(self.health_path, self.dashboard, now)
             self._write_compliance_status(now)
+            self._write_session_status(now)
+            self._observe_advisory(now)
             n += 1
             if max_cycles is not None and n >= max_cycles:
                 break
@@ -106,6 +110,27 @@ class ProducerService:
             write_status(self.compliance_status_path, status)
         except Exception as exc:                            # never crash the loop
             self.logger.warning("compliance status write failed: %r", exc)
+
+    def _write_session_status(self, now):
+        """Write the canonical session snapshot to a read-only status file."""
+        if self.session_status_path is None:
+            return
+        try:
+            from ..bridge.atomic import atomic_write_text
+            snap = getattr(self.runner, "_last_session_snapshot", None)
+            if snap is not None:
+                atomic_write_text(self.session_status_path, serialize.canonical_json(snap))
+        except Exception as exc:
+            self.logger.warning("session status write failed: %r", exc)
+
+    def _observe_advisory(self, now):
+        """Shadow-only advisory observation. Failure NEVER affects trading."""
+        if self.advisory is None:
+            return
+        try:
+            self.advisory.observe(self.runner, now)
+        except Exception as exc:
+            self.logger.warning("advisory shadow failed (non-blocking): %r", exc)
 
     def _sleep_until_next_bar(self, now):
         target = next_bar_close(now, self.runner.config.exec_timeframe)
@@ -149,7 +174,13 @@ def build_from_env(env=None, config_path=None, client=None, now_fn=_utc_now):
         runner_audit_path=cfg.runner_audit_path,
         compliance_audit_path=cfg.compliance_audit_path)
 
+    advisory = None
+    if cfg.advisory_enabled:
+        from ..runtime.advisory import ShadowAdvisoryService
+        advisory = ShadowAdvisoryService.build(cfg, client)
+
     return ProducerService(
         runner, log_path=cfg.producer_log_path,
         health_path=cfg.producer_health_path, now_fn=now_fn,
-        compliance_status_path=cfg.compliance_status_path)
+        compliance_status_path=cfg.compliance_status_path,
+        session_status_path=cfg.session_status_path, advisory=advisory)

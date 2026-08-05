@@ -206,6 +206,10 @@ class SessionConfig:
     friday_close_min: int = None            # e.g. 1200 => flat from 20:00 UTC Fri
     sunday_open_min: int = None             # e.g. 1320 => no entries before 22:00 UTC Sun
     weekend_isoweekdays: tuple = (6, 7)     # Sat, Sun (FTMO weekend-flat for entries)
+    # Phase 9A: optional canonical session model. When present, the session gate
+    # delegates ALL window/overlap logic to it (the single canonical owner); when
+    # None the gate builds a legacy model from allowed_sessions/friday/sunday.
+    session_model: object = None
 
 
 @dataclass(frozen=True)

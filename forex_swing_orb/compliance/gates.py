@@ -175,33 +175,48 @@ def _session_active(open_min, close_min, m):
     return m >= open_min or m < close_min          # wrap past midnight
 
 
+def _canonical_model(session_cfg):
+    """Return the canonical SessionModel for this SessionConfig — the injected one
+    if present, else a legacy model derived from allowed_sessions / friday / sunday
+    (overlap DISABLE). The gate NEVER computes its own time windows (Phase 9A: the
+    canonical model is the single owner of session/overlap window logic)."""
+    from ..session.model import (SessionModel, OverlapMode, SESSION_IDS)
+    if getattr(session_cfg, "session_model", None) is not None:
+        return session_cfg.session_model
+    # normalize legacy "NEWYORK" -> canonical "NEW_YORK"; keep only known ids
+    norm = {"NEWYORK": "NEW_YORK"}
+    enabled = tuple(s for s in (norm.get(x, x) for x in session_cfg.allowed_sessions)
+                    if s in SESSION_IDS)
+    return SessionModel(enabled_sessions=enabled, enabled_overlaps=(),
+                        overlap_mode=OverlapMode.DISABLE,
+                        friday_close_policy=session_cfg.friday_close_min,
+                        sunday_open_policy=session_cfg.sunday_open_min,
+                        strategy_session_policy="REPORT_ONLY")   # strategy gate is producer-side
+
+
 def active_sessions(session_cfg, now):
-    m = _minute_of_day(now)
-    return tuple(name for (name, o, c) in session_cfg.sessions
-                 if _session_active(o, c, m))
+    """Delegates to the canonical model (kept for backward-compatible callers)."""
+    from ..session import model as sm
+    return sm.active_sessions(_canonical_model(session_cfg), now)
 
 
 def gate_session(candidate, session_cfg, now):
     if now is None:
         return _no(Stage.SESSION, [ReasonCode.UNKNOWN_STATE], {"missing": "now"})
-    m = _minute_of_day(now)
-    wd = now.isoweekday()
-
-    # explicit friday-close / sunday-open restrictions (deterministic)
-    if session_cfg.friday_close_min is not None and wd == 5 and m >= session_cfg.friday_close_min:
-        return _no(Stage.SESSION, [ReasonCode.SESSION_BLOCK],
-                   {"restriction": "friday_close", "minute": m})
-    if session_cfg.sunday_open_min is not None and wd == 7 and m < session_cfg.sunday_open_min:
-        return _no(Stage.SESSION, [ReasonCode.SESSION_BLOCK],
-                   {"restriction": "sunday_open", "minute": m})
-
-    active = active_sessions(session_cfg, now)
-    allowed_active = tuple(s for s in active if s in tuple(session_cfg.allowed_sessions))
-    if not allowed_active:
-        return _no(Stage.SESSION, [ReasonCode.OUTSIDE_SESSION],
-                   {"active": list(active), "allowed": list(session_cfg.allowed_sessions)})
-    return _ok(Stage.SESSION, {"active_session": allowed_active[0],
-                               "active_sessions": list(allowed_active)})
+    from ..session import model as sm
+    model = _canonical_model(session_cfg)
+    act = sm.active_sessions(model, now)
+    act_o = sm.active_overlaps(model, now)
+    elig = sm.eligibility(model, now, capability=None)   # strategy support gated in producer
+    ev = {"active_session": (act[0] if act else None),
+          "active_sessions": list(act), "active_overlaps": list(act_o),
+          "overlap_mode": model.overlap_mode, "eligibility_reason": elig["reason"]}
+    if elig["eligible"]:
+        return _ok(Stage.SESSION, {**ev, "primary_session": elig["primary_session"]})
+    # map canonical session reasons -> frozen compliance reason codes
+    if elig["reason"] in (sm.SessionReason.FRIDAY_CLOSED, sm.SessionReason.SUNDAY_CLOSED):
+        return _no(Stage.SESSION, [ReasonCode.SESSION_BLOCK], ev)
+    return _no(Stage.SESSION, [ReasonCode.OUTSIDE_SESSION], ev)
 
 
 # -- Stage 6: Broker health -------------------------------------------------

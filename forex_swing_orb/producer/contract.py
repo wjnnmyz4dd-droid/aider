@@ -27,6 +27,7 @@ class RunnerMode:
 class CycleOutcome:
     KILL_SWITCH = "KILL_SWITCH"
     NO_NEW_BAR = "NO_NEW_BAR"
+    SESSION_INELIGIBLE = "SESSION_INELIGIBLE"     # Phase 9A: pre-strategy session gate
     DATA_REJECTED = "DATA_REJECTED"
     ACCOUNT_REJECTED = "ACCOUNT_REJECTED"
     NEWS_REJECTED = "NEWS_REJECTED"
@@ -34,8 +35,9 @@ class CycleOutcome:
     COMPLIANCE_REJECT = "COMPLIANCE_REJECT"
     INSTRUCTION_WRITTEN = "INSTRUCTION_WRITTEN"
     DUPLICATE_SUPPRESSED = "DUPLICATE_SUPPRESSED"
-    ALL = (KILL_SWITCH, NO_NEW_BAR, DATA_REJECTED, ACCOUNT_REJECTED, NEWS_REJECTED,
-           NO_CANDIDATE, COMPLIANCE_REJECT, INSTRUCTION_WRITTEN, DUPLICATE_SUPPRESSED)
+    ALL = (KILL_SWITCH, NO_NEW_BAR, SESSION_INELIGIBLE, DATA_REJECTED, ACCOUNT_REJECTED,
+           NEWS_REJECTED, NO_CANDIDATE, COMPLIANCE_REJECT, INSTRUCTION_WRITTEN,
+           DUPLICATE_SUPPRESSED)
 
 
 class RunnerReason:
@@ -45,6 +47,7 @@ class RunnerReason:
     OK = "R_OK"
     KILL_SWITCH = "R_KILL_SWITCH"
     NO_NEW_BAR = "R_NO_NEW_BAR"
+    SESSION_INELIGIBLE = "R_SESSION_INELIGIBLE"
     DATA_STALE = "R_DATA_STALE"
     DATA_GAP = "R_DATA_GAP"
     DATA_FUTURE_BAR = "R_DATA_FUTURE_BAR"
@@ -61,7 +64,7 @@ class RunnerReason:
     RECONCILE_REQUIRED = "R_RECONCILE_REQUIRED"
 
     REQUIRED = frozenset({
-        OK, KILL_SWITCH, NO_NEW_BAR, DATA_STALE, DATA_GAP, DATA_FUTURE_BAR,
+        OK, KILL_SWITCH, NO_NEW_BAR, SESSION_INELIGIBLE, DATA_STALE, DATA_GAP, DATA_FUTURE_BAR,
         DATA_UNCLOSED_BAR, DATA_INSUFFICIENT, DATA_NOT_FOREX, DATA_UNAVAILABLE,
         ACCOUNT_UNAVAILABLE, ACCOUNT_STALE, NO_CANDIDATE, COMPLIANCE_REJECT,
         INSTRUCTION_WRITTEN, DUPLICATE_SUPPRESSED, RECONCILE_REQUIRED,
@@ -92,6 +95,10 @@ class RunnerConfig:
     continuity_bars: int = 8                    # recent exec bars checked for gaps
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
     strategy_config: dict = field(default_factory=dict)
+    # Phase 9A: canonical session gating (pre-strategy). None -> no session gate
+    # (backward compatible with pre-9A runners/tests).
+    session_model: object = None
+    strategy_capability: object = None
 
 
 @dataclass(frozen=True)

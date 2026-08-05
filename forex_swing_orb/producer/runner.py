@@ -88,15 +88,22 @@ class ProducerRunner:
             return results
         news_bundle = self.news.bundle(now)     # compliance validates it (fails closed)
 
+        # Phase 9A: one canonical session snapshot per cycle (deterministic)
+        sess = None
+        if cfg.session_model is not None:
+            from ..session.model import session_snapshot
+            sess = session_snapshot(cfg.session_model, now, cfg.strategy_capability)
+        self._last_session_snapshot = sess
+
         for sym in cfg.symbols:
-            results.append(self._run_symbol(sym, now, acct, news_bundle))
+            results.append(self._run_symbol(sym, now, acct, news_bundle, sess))
 
         # 11/12. result ingestion + reconciliation (read-only)
         self._ingest_and_reconcile(now)
         return results
 
     # -- per-symbol pipeline ------------------------------------------------
-    def _run_symbol(self, symbol, now, acct, news_bundle):
+    def _run_symbol(self, symbol, now, acct, news_bundle, sess=None):
         cfg = self.config
         # 2. obtain bars for every required timeframe; 3. validate all (fail closed)
         tf_bars = {}
@@ -122,6 +129,16 @@ class ProducerRunner:
         if exec_bars.last["open_time"] != last_closed_open(now, cfg.exec_timeframe):
             return self._emit(CycleOutcome.DATA_REJECTED, symbol, bar_iso,
                               [RunnerReason.DATA_STALE], now, versions)
+
+        # Phase 9A: pre-strategy session gate. If scanning is ineligible (session/
+        # overlap disabled, outside window, friday/sunday policy, or the frozen
+        # strategy does not support the active session) DO NOT call strategy.evaluate;
+        # emit a deterministic no-trade audit and write no bridge instruction.
+        if sess is not None and not sess["eligible"]:
+            self.state.mark_processed(symbol, bar_iso)
+            return self._emit(CycleOutcome.SESSION_INELIGIBLE, symbol, bar_iso,
+                              [RunnerReason.SESSION_INELIGIBLE, sess["rejection_reason"]],
+                              now, versions, session=sess)
 
         # 6. deterministic strategy evaluation (frozen engine; no duplication)
         instr = self.strategy.evaluate(symbol, exec_bars)
@@ -178,9 +195,10 @@ class ProducerRunner:
 
     # -- audit + result construction ---------------------------------------
     def _emit(self, outcome, symbol, bar_ts, reason_codes, now, versions,
-              signal_id=None, compliance_decision_id=None):
+              signal_id=None, compliance_decision_id=None, session=None):
         now_iso = serialize.iso_utc(now)
         cid = cycle_id(symbol, bar_ts, now_iso, versions)
+        sess = session if session is not None else getattr(self, "_last_session_snapshot", None)
         record = {
             "kind": "cycle",
             "cycle_id": cid,
@@ -192,6 +210,19 @@ class ProducerRunner:
             "signal_id": signal_id,
             "compliance_decision_id": compliance_decision_id,
             "data_versions": versions,
+            # Phase 9A: deterministic session audit fields (None when no session model)
+            "session": None if sess is None else {
+                "config_version": sess.get("config_version"),
+                "enabled_sessions": sess.get("enabled_sessions"),
+                "enabled_overlaps": sess.get("enabled_overlaps"),
+                "overlap_mode": sess.get("overlap_mode"),
+                "active_sessions": sess.get("active_sessions"),
+                "active_overlaps": sess.get("active_overlaps"),
+                "eligible": sess.get("eligible"),
+                "eligibility_reason": sess.get("eligibility_reason"),
+                "strategy_supported": sess.get("strategy_supported"),
+                "snapshot_id": sess.get("snapshot_id"),
+            },
         }
         self.audit.emit(record)
         return CycleResult(cid, symbol, bar_ts, outcome, tuple(reason_codes),

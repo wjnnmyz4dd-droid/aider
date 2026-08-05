@@ -89,7 +89,8 @@ def test_config_json_file_and_env_override(tmp_path, env_config):
         "symbols": ["EURUSD.FX", "GBPUSD.FX"], "initial_balance": 200000,
         "account_currency": "USD", "ftmo_rule_source": "x",
         "ftmo_rule_source_verified_at": "2026-08-05", "ftmo_profile_verified": True,
-        "news_file": paths["news"]}), encoding="utf-8")
+        "news_file": paths["news"], "enabled_sessions": ["LONDON"],
+        "overlap_mode": "ALLOW"}), encoding="utf-8")
     # env overrides the file's initial_balance
     cfg = load_config(env={"SESSION_EDGE_INITIAL_BALANCE": "100000"},
                       config_path=str(cfg_file))
@@ -131,7 +132,7 @@ def test_build_compliance_config_rejects_unusable_profile(env_config):
         bridge_root="/x", runtime_dir="/x", symbols=("EURUSD.FX",),
         initial_balance=100000.0, account_currency="USD", ftmo_rule_source=None,
         ftmo_rule_source_verified_at=None, ftmo_profile_verified=True,
-        news_file="/x/news.json")
+        news_file="/x/news.json", enabled_sessions=("LONDON",), overlap_mode="ALLOW")
     with pytest.raises(ConfigError):
         wiring.build_compliance_config(cfg)
 

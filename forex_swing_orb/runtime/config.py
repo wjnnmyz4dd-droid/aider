@@ -45,6 +45,19 @@ _ENV = {
     "mt5_terminal_path": "SESSION_EDGE_MT5_TERMINAL_PATH",
     "mt5_login": "SESSION_EDGE_MT5_LOGIN",
     "mt5_server": "SESSION_EDGE_MT5_SERVER",
+    # -- Phase 9A: canonical session / overlap framework -------------------
+    "enabled_sessions": "SESSION_EDGE_ENABLED_SESSIONS",
+    "enabled_overlaps": "SESSION_EDGE_ENABLED_OVERLAPS",
+    "overlap_mode": "SESSION_EDGE_OVERLAP_MODE",
+    "session_priority": "SESSION_EDGE_SESSION_PRIORITY",
+    "friday_close_min": "SESSION_EDGE_FRIDAY_CLOSE_MIN",
+    "sunday_open_min": "SESSION_EDGE_SUNDAY_OPEN_MIN",
+    "strategy_session_policy": "SESSION_EDGE_STRATEGY_SESSION_POLICY",
+    # -- Phase 9A: advisory shadow layer ----------------------------------
+    "advisory_enabled": "SESSION_EDGE_ADVISORY_ENABLED",
+    "advisory_mode": "SESSION_EDGE_ADVISORY_MODE",
+    "advisory_provider": "SESSION_EDGE_ADVISORY_PROVIDER",
+    "advisory_output_path": "SESSION_EDGE_ADVISORY_OUTPUT_PATH",
 }
 _CONFIG_PATH_ENV = "SESSION_EDGE_CONFIG"
 _PASSWORD_ENV = "SESSION_EDGE_MT5_PASSWORD"     # secret; never stored on the config
@@ -69,6 +82,39 @@ class RuntimeConfig:
     mt5_terminal_path: str = None
     mt5_login: int = None
     mt5_server: str = None
+    # -- Phase 9A: canonical session framework (validated in _validate) ------
+    enabled_sessions: tuple = ()
+    enabled_overlaps: tuple = ()
+    overlap_mode: str = "ALLOW"
+    session_priority: tuple = ("SYDNEY", "TOKYO", "LONDON", "NEW_YORK")
+    friday_close_min: int = None
+    sunday_open_min: int = None
+    strategy_session_policy: str = "FAIL_CLOSED"
+    # -- Phase 9A: advisory shadow layer ------------------------------------
+    advisory_enabled: bool = False
+    advisory_mode: str = "SHADOW_ONLY"
+    advisory_provider: str = "mock"
+    advisory_output_path_override: str = None
+
+    # -- canonical session model (single source of truth) -------------------
+    def session_model(self):
+        from ..session.model import SessionModel
+        return SessionModel(
+            enabled_sessions=tuple(self.enabled_sessions),
+            enabled_overlaps=tuple(self.enabled_overlaps),
+            overlap_mode=self.overlap_mode,
+            friday_close_policy=self.friday_close_min,
+            sunday_open_policy=self.sunday_open_min,
+            session_priority=tuple(self.session_priority),
+            strategy_session_policy=self.strategy_session_policy).validate()
+
+    @property
+    def advisory_output_path(self):
+        return self.advisory_output_path_override or str(self._rt / "advisory_shadow.jsonl")
+
+    @property
+    def session_status_path(self):
+        return str(self._rt / "session_status.json")
 
     # -- derived runtime file locations (all under runtime_dir) --------------
     @property
@@ -258,6 +304,35 @@ def _validate(merged):
     mt5_login = merged.get("mt5_login")
     mt5_login = _as_int("mt5_login", mt5_login) if mt5_login not in (None, "") else None
 
+    # -- Phase 9A: canonical session framework (fail closed) ----------------
+    from ..session.model import SessionModel, SessionConfigError, OverlapMode
+    enabled_sessions = _parse_list(_require(merged, "enabled_sessions"))
+    enabled_overlaps = _parse_list(merged.get("enabled_overlaps", ()))
+    overlap_mode = str(_require(merged, "overlap_mode")).upper()
+    if overlap_mode not in OverlapMode.ALL:
+        raise ConfigError(f"overlap_mode must be one of {OverlapMode.ALL}, got {overlap_mode!r}")
+    session_priority = _parse_list(merged.get("session_priority", ())) or \
+        ("SYDNEY", "TOKYO", "LONDON", "NEW_YORK")
+    friday_close_min = (_as_int("friday_close_min", merged["friday_close_min"])
+                        if merged.get("friday_close_min") not in (None, "") else None)
+    sunday_open_min = (_as_int("sunday_open_min", merged["sunday_open_min"])
+                       if merged.get("sunday_open_min") not in (None, "") else None)
+    strategy_session_policy = str(merged.get("strategy_session_policy") or "FAIL_CLOSED").upper()
+    try:                                                # fail closed on invalid combos
+        SessionModel(enabled_sessions=enabled_sessions, enabled_overlaps=enabled_overlaps,
+                     overlap_mode=overlap_mode, friday_close_policy=friday_close_min,
+                     sunday_open_policy=sunday_open_min, session_priority=session_priority,
+                     strategy_session_policy=strategy_session_policy).validate()
+    except SessionConfigError as exc:
+        raise ConfigError(f"invalid session configuration: {exc}")
+
+    # -- Phase 9A: advisory shadow (SHADOW_ONLY only) -----------------------
+    advisory_enabled = _as_bool("advisory_enabled", merged.get("advisory_enabled", False))
+    advisory_mode = str(merged.get("advisory_mode") or "SHADOW_ONLY").upper()
+    if advisory_mode != "SHADOW_ONLY":
+        raise ConfigError("advisory_mode must be SHADOW_ONLY in this phase")
+    advisory_provider = str(merged.get("advisory_provider") or "mock")
+
     return RuntimeConfig(
         bridge_root=bridge_root, runtime_dir=runtime_dir, symbols=symbols,
         initial_balance=initial_balance, account_currency=account_currency,
@@ -269,7 +344,15 @@ def _validate(merged):
         mt5_terminal_path=(str(merged["mt5_terminal_path"])
                            if merged.get("mt5_terminal_path") else None),
         mt5_login=mt5_login,
-        mt5_server=(str(merged["mt5_server"]) if merged.get("mt5_server") else None))
+        mt5_server=(str(merged["mt5_server"]) if merged.get("mt5_server") else None),
+        enabled_sessions=enabled_sessions, enabled_overlaps=enabled_overlaps,
+        overlap_mode=overlap_mode, session_priority=session_priority,
+        friday_close_min=friday_close_min, sunday_open_min=sunday_open_min,
+        strategy_session_policy=strategy_session_policy,
+        advisory_enabled=advisory_enabled, advisory_mode=advisory_mode,
+        advisory_provider=advisory_provider,
+        advisory_output_path_override=(str(merged["advisory_output_path"])
+                                       if merged.get("advisory_output_path") else None))
 
 
 def _parse_symbols(raw):
@@ -277,6 +360,18 @@ def _parse_symbols(raw):
         items = [str(x).strip() for x in raw]
     else:
         items = [p.strip() for p in str(raw).split(",")]
+    return tuple(s for s in items if s)
+
+
+def _parse_list(raw):
+    """Parse a comma-separated string / list into an upper-cased tuple (session and
+    overlap ids). Empty -> ()."""
+    if raw in (None, ""):
+        return ()
+    if isinstance(raw, (list, tuple)):
+        items = [str(x).strip().upper() for x in raw]
+    else:
+        items = [p.strip().upper() for p in str(raw).split(",")]
     return tuple(s for s in items if s)
 
 
