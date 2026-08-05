@@ -361,7 +361,10 @@ class PositionManager:
     # -- protective exit (weekend / max-duration / kill) --------------------
     def _protective_exit(self, st, reason, now):
         try:
-            res = self.mt5.position_close(st["ticket"])
+            # R3: pass the (already-computed) protective reason to the broker seam so
+            # a bridge-backed adapter can authorize the close. Non-arithmetic plumbing;
+            # the mock/real terminal ignore the kwarg. No change to triggers/precedence.
+            res = self.mt5.position_close(st["ticket"], reason=reason)
         except mt5c.MT5Disconnected:
             return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
                               reconciliation_status="uncertain", broker_result="UNCERTAIN")

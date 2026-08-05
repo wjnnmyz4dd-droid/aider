@@ -82,11 +82,15 @@ class ManageConsumer:
         sym = rec["symbol"]
         seq = int(rec["per_ticket_sequence"])
 
-        # 9 dedup / terminal evidence (idempotent)
-        if self.ledger.is_terminal(manage_id):
-            prev = self.ledger.terminal_status(manage_id)
+        # 9 dedup / terminal evidence (idempotent). Filesystem is the durable
+        # truth (survives ledger loss): a prior result/archive => already terminal.
+        if self.ledger.is_terminal(manage_id) or self._fs_terminal(manage_id):
+            prev = self.ledger.terminal_status(manage_id) or "fs"
+            # idempotent: the ORIGINAL terminal result stands (exactly one per
+            # manage_id). Archive the duplicate claimed file; write no 2nd result.
             return self._finalize(rec, manage_id, MC.ManageStatus.ALREADY_APPLIED,
-                                  f"dedup:{prev}", now, path)
+                                  f"dedup:{prev}", now, path, archive="applied",
+                                  write_result=False)
         # 8 sequence: older-than-terminal rejected; same-seq/other-id conflict quarantines
         last_term = self.ledger.last_terminal_seq(ticket)
         if seq < last_term:
@@ -126,6 +130,11 @@ class ManageConsumer:
         observed_before = pos.sl
 
         if rec["action"] == MC.ManageAction.PROTECTIVE_CLOSE:
+            # R3: independently authorize the close against the frozen reason set.
+            if not MC.protective_close_authorized(rec.get("pm_reason")):
+                return self._finalize(rec, manage_id, MC.ManageStatus.REJECTED_INVALID,
+                                      "unauthorized_close", now, path,
+                                      observed_before=observed_before)
             return self._apply_close(rec, manage_id, pos, observed_before, now, path)
 
         # ---- MODIFY_STOP path ----
@@ -183,6 +192,19 @@ class ManageConsumer:
         return self._finalize(rec, manage_id, MC.ManageStatus.NO_OP_CLOSED, "closed", now, path,
                               observed_before=observed_before, archive="closed",
                               broker_retcode=res.retcode)
+
+    # -- durable dedup evidence (filesystem is the source of truth) ---------
+    def _fs_terminal(self, manage_id):
+        """True iff a terminal result/archive artifact already exists for this
+        manage_id (survives EA-ledger loss; prevents replay of a completed action)."""
+        for d in (self.paths.archive_applied, self.paths.archive_rejected,
+                  self.paths.archive_closed):
+            if (d / P.instruction_name(manage_id)).exists():
+                return True
+        if self.paths.results.exists():
+            for _ in self.paths.results.glob(f"{manage_id}.*.json"):
+                return True
+        return False
 
     # -- crash recovery over claimed/ --------------------------------------
     def recover(self, now):
@@ -251,9 +273,10 @@ class ManageConsumer:
         return res
 
     def _finalize(self, rec, manage_id, status, reason, now, path, quarantine=False,
-                  archive="rejected", **kw):
+                  archive="rejected", write_result=True, **kw):
         res = self._result(rec, manage_id, status, reason, now, **kw)
-        self._write_result(res, now)
+        if write_result:
+            self._write_result(res, now)         # exactly one terminal result per manage_id
         # archive the claimed/pending file to the terminal family
         dest_dir = {"applied": self.paths.archive_applied, "closed": self.paths.archive_closed,
                     "rejected": self.paths.archive_rejected}[

@@ -68,26 +68,37 @@ class BridgeMt5Adapter:
     def modify_stop(self, ticket, sl):
         return self._emit_and_wait(ticket, MC.ManageAction.MODIFY_STOP, sl)
 
-    def position_close(self, ticket):
-        return self._emit_and_wait(ticket, MC.ManageAction.PROTECTIVE_CLOSE, None)
+    def position_close(self, ticket, reason=None):
+        # R3: carry the specific frozen PMReason (kill/weekend/max-duration) so the
+        # EA can independently authorize the close. None -> unauthorized (fail closed).
+        return self._emit_and_wait(ticket, MC.ManageAction.PROTECTIVE_CLOSE, None, reason=reason)
 
     # -- core bounded-wait --------------------------------------------------
-    def _emit_and_wait(self, ticket, action, sl):
+    def _emit_and_wait(self, ticket, action, sl, reason=None):
         now = self._now_fn()
         st = self._ctx(ticket)
         if st is None:
             return _Res(_UNCERTAIN, ticket)         # unknown ticket -> PM reconciles
         sym = st["symbol"]
 
-        existing = self.ledger.get_inflight(ticket)
+        # R2: resolve any existing in-flight BEFORE allocating a sequence or emitting.
+        # Never allocate a seq or write a second instruction while one is unresolved;
+        # timeout leaves in-flight set, so the next call defers (no duplicate emit).
+        if self.ledger.get_inflight(ticket) is not None:
+            self.reconcile_inflight(ticket)         # clear iff a terminal result arrived
+            if self.ledger.get_inflight(ticket) is not None:
+                return _Res(_UNCERTAIN, ticket)     # still in-flight -> PM reconciles this cycle
+
         seq = self.ledger.next_seq(ticket)
+        pm_reason = (f"PM_MODIFY@{st['phase']}" if action == MC.ManageAction.MODIFY_STOP
+                     else (reason if reason else "PM_UNAUTHORIZED_CLOSE"))
         fields = {
             "signal_id": st["signal_id"], "ticket": ticket, "symbol": sym,
             "direction": st["direction"], "action": action,
             "target_stop": (ticks.quantize(sl, self.truth, sym) if sl is not None else None),
             "expected_current_stop": (st["current_stop"] if action == MC.ManageAction.MODIFY_STOP else None),
             "prior_stop": st["current_stop"], "pm_phase": st["phase"],
-            "pm_reason": f"PM_MODIFY@{st['phase']}" if action == MC.ManageAction.MODIFY_STOP else "PM_PROTECTIVE_CLOSE",
+            "pm_reason": pm_reason,
             "structure_reference": st.get("last_structure_ref"),
             "market_reference": st.get("_market_reference"),
             "point": ticks.point(self.truth, sym), "digits": ticks.digits(self.truth, sym),
@@ -101,12 +112,9 @@ class BridgeMt5Adapter:
         instr = MC.build_instruction(fields)
         mid = instr["manage_id"]
 
-        # idempotent: already terminal from a prior attempt
+        # idempotent: already terminal from a prior attempt (same manage_id)
         if self.ledger.is_terminal(mid):
             return self._map_status(self.ledger.terminal_status(mid), ticket)
-        # one-in-flight (defense; manager gates too)
-        if existing is not None and existing != mid:
-            return _Res(_UNCERTAIN, ticket)
 
         self.ledger.set_inflight(ticket, mid)
         write_manage_instruction(self.paths, instr, now, audit=self.audit)

@@ -157,7 +157,7 @@ def test_old_sequence_rejected(tmp_path):
 def test_protective_close(tmp_path):
     mp = ManagePaths(tmp_path).ensure(); mt5 = _mt5_with_long()
     instr = _instr(action=ManageAction.PROTECTIVE_CLOSE, target_stop=None,
-                   expected_current_stop=None, pm_reason="PM_PROTECTIVE_CLOSE")
+                   expected_current_stop=None, pm_reason="PM_KILL_SWITCH")  # R3-authorized
     res = _emit(mp, mt5, instr)
     assert res["status"] == ManageStatus.NO_OP_CLOSED
     assert mt5.positions[5000001].closed is True
@@ -286,3 +286,119 @@ def test_no_entry_creation_in_manage():
         s = f.read_text(encoding="utf-8")
         for b in banned:
             assert b not in s, f"{f.name}: {b}"
+
+
+# ============================================================================
+# Phase 7B-B-R — expanded R2 (sequence/idempotency) coverage
+# ============================================================================
+def test_duplicate_manage_id_replay_idempotent_single_result(tmp_path):
+    mp = ManagePaths(tmp_path).ensure(); mt5 = _mt5_with_long()
+    c = ManageConsumer(mt5, mp)
+    write_manage_instruction(mp, _instr(), NOW); c.run_once(NOW)
+    write_manage_instruction(mp, _instr(), NOW)                 # exact replay
+    res2 = c.run_once(NOW)
+    assert res2["status"] == ManageStatus.ALREADY_APPLIED
+    # exactly one terminal result file for this manage_id (no duplicate result)
+    mid = _instr()["manage_id"]
+    assert len(list(mp.results.glob(f"{mid}.*.json"))) == 1
+
+
+def test_replay_rejected_after_ledger_loss(tmp_path):
+    mp = ManagePaths(tmp_path).ensure(); mt5 = _mt5_with_long()
+    write_manage_instruction(mp, _instr(), NOW); ManageConsumer(mt5, mp).run_once(NOW)
+    Path(mp.ea_ledger).unlink(missing_ok=True)                 # catastrophic ledger loss
+    write_manage_instruction(mp, _instr(), NOW)
+    res = ManageConsumer(mt5, mp).run_once(NOW)                # fresh (empty) ledger
+    assert res["status"] == ManageStatus.ALREADY_APPLIED       # fs evidence caught replay
+
+
+def test_conflicting_same_sequence_quarantined(tmp_path):
+    mp = ManagePaths(tmp_path).ensure(); mt5 = _mt5_with_long(sl=1.09800)
+    c = ManageConsumer(mt5, mp)
+    write_manage_instruction(mp, _instr(per_ticket_sequence=1, target_stop=1.10020), NOW)
+    c.run_once(NOW)
+    write_manage_instruction(mp, _instr(per_ticket_sequence=1, target_stop=1.10050), NOW)
+    res = c.run_once(NOW)                                      # same seq, different manage_id
+    assert res["status"] == ManageStatus.QUARANTINED
+    assert list(mp.quarantine.glob("*.json"))
+
+
+def test_no_second_emit_or_seq_while_in_flight(tmp_path):
+    mt5 = _mt5_with_long(); mp = ManagePaths(tmp_path).ensure()
+    ad = BridgeMt5Adapter(mt5, mp, now_fn=lambda: NOW, timeout_sec=1,
+                          poll_interval_sec=1, sleep_fn=lambda s: None, pump=None)
+
+    class _PM:
+        _ticket_owner = {5000001: "0123456789abcdef"}
+        states = {"0123456789abcdef": {"signal_id": "0123456789abcdef", "symbol": "EURUSD",
+                  "direction": "LONG", "current_stop": 1.09800, "phase": "INITIAL",
+                  "entry": 1.10000, "initial_stop": 1.09800, "last_structure_ref": None}}
+    ad.bind(_PM())
+    ad.modify_stop(5000001, 1.10020)                          # timeout -> in-flight
+    assert len(list(mp.pending.glob("*.json"))) == 1
+    assert ad.ledger.seq.get("5000001") == 1
+    ad.modify_stop(5000001, 1.10030)                          # second call while in-flight
+    assert len(list(mp.pending.glob("*.json"))) == 1          # NO second instruction
+    assert ad.ledger.seq.get("5000001") == 1                  # NO wasted sequence
+
+
+def test_ea_restart_after_timeout_recovers_once(tmp_path):
+    # instruction applied at broker but result lost (crash); recovery adopts once
+    mp = ManagePaths(tmp_path).ensure(); mt5 = _mt5_with_long()
+    write_manage_instruction(mp, _instr(), NOW)
+    c = ManageConsumer(mt5, mp); c.claim_next(NOW)             # claimed, then "crash"
+    mt5.positions[5000001].sl = 1.10020                       # broker actually applied
+    out1 = ManageConsumer(mt5, mp).recover(NOW)               # fresh EA instance (restart)
+    assert out1 and out1[0]["status"] == ManageStatus.ALREADY_APPLIED
+    out2 = ManageConsumer(mt5, mp).recover(NOW)               # recover again -> no re-apply
+    assert out2 == []                                         # nothing left in claimed
+
+
+def test_old_sequence_rejected_after_higher_applied(tmp_path):
+    mp = ManagePaths(tmp_path).ensure(); mt5 = _mt5_with_long(sl=1.10020)
+    c = ManageConsumer(mt5, mp)
+    write_manage_instruction(mp, _instr(per_ticket_sequence=5, expected_current_stop=1.10020,
+                                        target_stop=1.10060), NOW); c.run_once(NOW)
+    write_manage_instruction(mp, _instr(per_ticket_sequence=2, target_stop=1.10010), NOW)
+    assert c.run_once(NOW)["status"] == ManageStatus.REJECTED_STALE
+
+
+# ============================================================================
+# Phase 7B-B-R — R3 PROTECTIVE_CLOSE authority
+# ============================================================================
+def _close_instr(reason, **over):
+    return _instr(action=ManageAction.PROTECTIVE_CLOSE, target_stop=None,
+                  expected_current_stop=None, pm_reason=reason, **over)
+
+
+@pytest.mark.parametrize("reason", ["PM_KILL_SWITCH", "PM_WEEKEND_EXIT", "PM_MAX_DURATION_EXIT"])
+def test_protective_close_authorized(tmp_path, reason):
+    mp = ManagePaths(tmp_path / reason).ensure(); mt5 = _mt5_with_long()
+    res = _emit(mp, mt5, _close_instr(reason))
+    assert res["status"] == ManageStatus.NO_OP_CLOSED
+    assert mt5.positions[5000001].closed is True
+
+
+@pytest.mark.parametrize("reason", ["PM_MODIFY@INITIAL", "PM_TRAIL_ADVANCED",
+                                    "PM_UNAUTHORIZED_CLOSE", "ARBITRARY", "PM_NO_ACTION"])
+def test_protective_close_unauthorized_rejected(tmp_path, reason):
+    mp = ManagePaths(tmp_path / reason[:6]).ensure(); mt5 = _mt5_with_long()
+    res = _emit(mp, mt5, _close_instr(reason))
+    assert res["status"] == ManageStatus.REJECTED_INVALID
+    assert mt5.positions[5000001].closed is False             # position untouched (fail closed)
+
+
+def test_kill_switch_authorized_close_end_to_end(wired, long_pos):
+    sid, ticket = long_pos()
+    wired["pm"].evaluate(sid, market_price=1.10100, now=NOW, kill_switch=True)
+    assert wired["mt5"].positions[ticket].closed is True      # PM->adapter->EA authorized close
+
+
+def test_protective_close_reason_flows_through_adapter(wired, long_pos):
+    # the adapter must carry the specific PMReason (not a coarse constant)
+    sid, ticket = long_pos()
+    wired["pm"].evaluate(sid, market_price=1.10100, now=NOW, kill_switch=True)
+    # a manage result exists with an authorized close reason path -> closed
+    from forex_swing_orb.manage import ManagePaths as MP
+    results = list(wired["mpaths"].archive_closed.glob("*.json"))
+    assert results        # archived to the closed family (authorized close applied)

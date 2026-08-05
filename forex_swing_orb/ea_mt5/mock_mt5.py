@@ -228,7 +228,9 @@ class MockMT5:
         return OrderResult(retcode=codes.get(outcome, TRADE_RETCODE_INVALID),
                            position=ticket, comment=outcome)
 
-    def position_close(self, ticket, price=None):
+    def position_close(self, ticket, price=None, reason=None):
+        # ``reason`` (R3) is accepted for interface parity with the bridge-backed
+        # adapter and ignored by the mock terminal.
         p = self.positions.get(ticket)
         if p is None or p.closed:
             return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="no position")

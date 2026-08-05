@@ -25,6 +25,19 @@ class ManageAction:
     ALL = (MODIFY_STOP, PROTECTIVE_CLOSE)
 
 
+# R3: PROTECTIVE_CLOSE is authorized ONLY for these frozen PositionManager
+# reasons (PMReason values). The EA/consumer independently enforce this set; a
+# PROTECTIVE_CLOSE carrying any other pm_reason is rejected fail-closed. (A future
+# "capital-preservation remediation" PMReason is added here when defined.)
+PROTECTIVE_CLOSE_REASONS = frozenset({
+    "PM_KILL_SWITCH", "PM_WEEKEND_EXIT", "PM_MAX_DURATION_EXIT",
+})
+
+
+def protective_close_authorized(pm_reason):
+    return pm_reason in PROTECTIVE_CLOSE_REASONS
+
+
 class ManageStatus:
     APPLIED = "APPLIED"
     ALREADY_APPLIED = "ALREADY_APPLIED"

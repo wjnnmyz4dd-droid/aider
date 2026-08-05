@@ -131,6 +131,12 @@ void MgProcessClaimed(const string mid)
 
    if(action == "PROTECTIVE_CLOSE")
    {
+      // R3: independently authorize the close against the frozen PMReason set.
+      string preason = JsonGet(json, "pm_reason");
+      if(preason != "PM_KILL_SWITCH" && preason != "PM_WEEKEND_EXIT" &&
+         preason != "PM_MAX_DURATION_EXIT")
+      { MgWriteResult(mid,sid,ticket,symbol,action,"REJECTED_INVALID","unauthorized_close",
+                      0,0,expect,before,0,seq,MG_ARC_REJ); return; }
       if(g_trade.PositionClose(ticket))
          MgWriteResult(mid,sid,ticket,symbol,action,"NO_OP_CLOSED","closed",
                        g_trade.ResultRetcode(),0,expect,before,0,seq,MG_ARC_CLO);
