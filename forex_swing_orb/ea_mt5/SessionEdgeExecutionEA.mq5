@@ -495,9 +495,11 @@ void OnTimer()
    if(!g_recovered)                    // reconstruct state from bridge + terminal
    {
       Recover();
+      ManageRecover();                 // Phase 7B-B: reconcile any claimed manage instruction
       g_recovered = true;
    }
-   ProcessNext();                      // at most one claim+execute per tick
+   ProcessNext();                      // at most one entry claim+execute per tick
+   ManageProcessNext();               // Phase 7B-B: at most one manage claim+apply per tick
 }
 
 //+------------------------------------------------------------------+
@@ -508,4 +510,12 @@ void OnDeinit(const int reason) { EventKillTimer(); }
 //| never reads price series or reacts to quotes (no strategy logic). |
 //+------------------------------------------------------------------+
 void OnTick() { }
+
+//+------------------------------------------------------------------+
+//| Phase 7B-B manage-channel applier (additive). Included AFTER all  |
+//| globals (g_trade, BridgeRoot, UseCommonFolder) and helpers        |
+//| (NowIso, Sha256Hex16, JsonBridge) are declared, so its functions  |
+//| resolve. Entry execution behavior above is unchanged.             |
+//+------------------------------------------------------------------+
+#include "SessionEdgeManageHandler.mqh"
 //+------------------------------------------------------------------+
