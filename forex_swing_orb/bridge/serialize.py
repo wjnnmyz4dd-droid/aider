@@ -45,10 +45,25 @@ def dumps(record):
     return canonical_json(record)
 
 
+def _reject_non_finite(constant):
+    """parse_constant hook: reject the non-standard JSON numeric constants
+    ``NaN`` / ``Infinity`` / ``-Infinity`` at the parser boundary. Raising here
+    turns a non-finite artifact into a deterministic parse failure (fail closed)
+    instead of a later ``ValueError`` from ``canonical_json(allow_nan=False)``
+    during integrity verification. Fires for these tokens in ANY position
+    (top-level, nested, or unknown fields); quoted strings like ``"NaN"`` are
+    unaffected."""
+    raise ValueError(f"non-finite JSON constant not allowed: {constant}")
+
+
 def loads(text):
-    """Strict JSON parse; returns (ok, obj_or_None)."""
+    """Strict JSON parse; returns (ok, obj_or_None). Rejects non-finite numeric
+    constants (NaN/Infinity/-Infinity) at the parser boundary so a malformed or
+    tampered artifact fails closed here rather than raising later during canonical
+    serialization / integrity verification. Valid finite floats and integers parse
+    exactly as before."""
     try:
-        obj = json.loads(text)
+        obj = json.loads(text, parse_constant=_reject_non_finite)
     except (ValueError, TypeError):
         return False, None
     if not isinstance(obj, dict):
