@@ -1,14 +1,12 @@
-"""Manager position adoption (Phase 8D) — READ-ONLY discovery + initial-reference
-recovery.
+"""Manager position adoption + restart-recovery orchestration inputs (G4).
 
-The autonomous manager must learn which open broker positions to manage. The
-ENTER-channel EA stamps each position's comment with the originating ``signal_id``;
-this module correlates open broker positions to their approved ENTER instruction
-(recovering the immutable entry / initial-stop / take-profit that define the R
-basis) so the PositionManager can register and manage them. It computes no
-strategy, no risk, and no stop; it never places or closes anything. Fail closed:
-a position whose approved reference cannot be recovered is skipped (never adopted
-with a guessed stop).
+READ-ONLY discovery and evidence inspection for the manager. This module holds NO
+phase logic and NO stop mathematics: :meth:`PositionManager.recover` is the single
+phase-recovery implementation, and :meth:`PositionManager.register` the single
+new-position path. Here we only (a) discover open broker positions carrying a
+signal_id, (b) recover a genuinely-new position's approved ENTER immutable facts,
+and (c) inspect a PM audit history for immutable-fact consistency so the service
+can decide recover-vs-register-vs-fail-closed. Never guesses entry/stop/phase.
 """
 
 from __future__ import annotations
@@ -20,34 +18,77 @@ from ..bridge.paths import BridgePaths
 
 _SIGNAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
+# immutable entry facts a PM audit history must carry consistently to be a
+# trustworthy recovery basis (phase progression is NOT one of these — that is
+# reconstructed by PositionManager.recover()).
+_IMMUTABLE = ("direction", "symbol", "ticket", "entry_price", "initial_stop")
 
-def discover_registrations(truth, bridge_paths, tracked_signals):
-    """Return a list of registration dicts for open broker positions that are not
-    yet tracked and whose approved ENTER reference is recoverable.
 
-    Each dict: {signal_id, ticket, symbol, direction, entry, initial_stop,
-    take_profit}. ``symbol`` is the broker symbol reported by the terminal.
-    """
-    paths = bridge_paths if isinstance(bridge_paths, BridgePaths) else BridgePaths(bridge_paths)
-    tracked = set(tracked_signals or ())
-    out = []
-    seen = set()
+def discover_positions(truth):
+    """Open broker positions carrying a valid 16-hex signal_id comment.
+
+    Returns ``[{signal_id, ticket, symbol}]`` (broker symbol), deduped by
+    signal_id (first occurrence wins). Read-only; closed positions never appear
+    (the truth source returns only open positions)."""
+    out, seen = [], set()
     for pos in truth.positions():
         sid = getattr(pos, "comment", None)
         ticket = getattr(pos, "ticket", None)
         if not isinstance(sid, str) or not _SIGNAL_ID_RE.match(sid):
-            continue                                 # no correlatable signal_id
-        if sid in tracked or sid in seen or ticket is None:
             continue
-        instr = _recover_instruction(paths, sid)
-        if instr is None:
-            continue                                 # fail closed: unknown approved reference
-        reg = _registration(pos, sid, ticket, instr)
-        if reg is None:
+        if ticket is None or sid in seen:
             continue
-        out.append(reg)
         seen.add(sid)
+        out.append({"signal_id": sid, "ticket": ticket,
+                    "symbol": getattr(pos, "symbol", None)})
     return out
+
+
+def enter_reference(bridge_paths, signal_id, ticket, symbol=None):
+    """Approved ENTER immutable facts for a GENUINELY NEW position (no PM history).
+
+    Recovered from the archived/claimed/pending ENTER instruction. Returns a dict
+    {signal_id, ticket, symbol, direction, entry, initial_stop, take_profit} or
+    None if the approved reference is unavailable or malformed — fail closed:
+    entry/stop are never guessed."""
+    paths = bridge_paths if isinstance(bridge_paths, BridgePaths) else BridgePaths(bridge_paths)
+    instr = _recover_instruction(paths, signal_id)
+    if instr is None:
+        return None
+    try:
+        return {
+            "signal_id": signal_id,
+            "ticket": ticket,
+            "symbol": symbol or instr.get("symbol"),
+            "direction": str(instr["direction"]),
+            "entry": float(instr["entry_price"]),
+            "initial_stop": float(instr["stop_loss"]),
+            "take_profit": float(instr["take_profit"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def audit_immutable_conflict(records):
+    """True iff a PM audit history is not a trustworthy recovery basis: an
+    immutable entry fact is missing across every record, or two records disagree
+    on one. Deterministic; phase progression is intentionally NOT checked here."""
+    seen = {}
+    for r in records:
+        for k in _IMMUTABLE:
+            v = r.get(k)
+            if v is None:
+                continue
+            if k in seen and seen[k] != v:
+                return True
+            seen[k] = v
+    return any(k not in seen for k in _IMMUTABLE)
+
+
+def audit_ticket(records):
+    """The single ticket referenced by a (conflict-free) audit history, else None."""
+    tickets = {r.get("ticket") for r in records if r.get("ticket") is not None}
+    return next(iter(tickets)) if len(tickets) == 1 else None
 
 
 def market_from_truth(truth):
@@ -74,22 +115,3 @@ def _recover_instruction(paths, signal_id):
         if ok and isinstance(rec, dict) and rec.get("signal_id") == signal_id:
             return rec
     return None
-
-
-def _registration(pos, signal_id, ticket, instr):
-    try:
-        entry = float(instr["entry_price"])
-        initial_stop = float(instr["stop_loss"])
-        take_profit = float(instr["take_profit"])
-        direction = str(instr["direction"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return {
-        "signal_id": signal_id,
-        "ticket": ticket,
-        "symbol": getattr(pos, "symbol", instr.get("symbol")),
-        "direction": direction,
-        "entry": entry,
-        "initial_stop": initial_stop,
-        "take_profit": take_profit,
-    }

@@ -229,30 +229,28 @@ def test_adoption_recovers_initial_reference(tmp_path, client):
     client.positions = [SimpleNamespace(
         ticket=5000001, symbol="EURUSD", type=mc.POSITION_TYPE_BUY, volume=0.1,
         price_open=1.10002, sl=1.09800, tp=1.10600, price_current=1.10050, comment=SID)]
-    regs = adoption.discover_registrations(Mt5TruthSource(client), paths, [])
-    assert len(regs) == 1
-    r = regs[0]
+    positions = adoption.discover_positions(Mt5TruthSource(client))
+    assert len(positions) == 1 and positions[0]["signal_id"] == SID
+    r = adoption.enter_reference(paths, SID, positions[0]["ticket"],
+                                positions[0]["symbol"])
     assert r["signal_id"] == SID and r["initial_stop"] == 1.09800
     assert r["entry"] == 1.10000 and r["symbol"] == "EURUSD"
 
 
-def test_adoption_skips_untracked_without_reference(tmp_path, client):
+def test_adoption_new_position_without_reference_not_guessed(tmp_path, client):
     paths = BridgePaths(tmp_path / "bridge").ensure()      # no archived ENTER instr
-    client.positions = [SimpleNamespace(
-        ticket=5000001, symbol="EURUSD", type=mc.POSITION_TYPE_BUY, volume=0.1,
-        price_open=1.10002, sl=1.09800, tp=1.10600, price_current=1.10050, comment=SID)]
-    assert adoption.discover_registrations(Mt5TruthSource(client), paths, []) == []
+    r = adoption.enter_reference(paths, SID, 5000001, "EURUSD")
+    assert r is None                                       # fail closed: never guessed
 
 
-def test_adoption_skips_non_signal_comment_and_tracked(tmp_path, client):
-    paths = BridgePaths(tmp_path / "bridge").ensure()
-    _archive_enter(paths)
+def test_adoption_discover_skips_non_signal_comment(client):
     client.positions = [
         SimpleNamespace(ticket=1, symbol="EURUSD", type=0, volume=0.1, price_open=1.1,
                         sl=1.09, tp=1.11, price_current=1.10, comment="manual-note"),
         SimpleNamespace(ticket=2, symbol="EURUSD", type=0, volume=0.1, price_open=1.1,
                         sl=1.09, tp=1.11, price_current=1.10, comment=SID)]
-    assert adoption.discover_registrations(Mt5TruthSource(client), paths, [SID]) == []
+    found = adoption.discover_positions(Mt5TruthSource(client))
+    assert [p["signal_id"] for p in found] == [SID]        # non-signal comment skipped
 
 
 # --------------------------------------------------------------------------- #

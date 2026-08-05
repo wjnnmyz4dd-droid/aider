@@ -21,6 +21,7 @@ class ManagerService:
         self.health_path = health_path
         self._kill = kill_switch or (lambda now: False)
         self._last_error = None
+        self._recovery_reconcile = set()   # sids whose restart recovery is unresolved
 
     def register(self, signal_id, ticket, symbol, direction, entry, initial_stop,
                  take_profit, now):
@@ -58,6 +59,7 @@ class ManagerService:
 
     def status(self, now):
         inflight = dict(self.ledger.inflight)
+        recovery = sorted(self._recovery_reconcile)
         return {
             "service_state": "READY",
             "terminal_connected": self._safe_connected(),
@@ -65,6 +67,8 @@ class ManagerService:
             "in_flight_count": len(inflight),
             "in_flight": inflight,
             "unresolved_reconciliation_count": len(inflight),
+            "recovery_reconciliation_required": recovery,
+            "recovery_reconciliation_count": len(recovery),
             "tracked_signals": list(self.pm.states.keys()),
             "last_error": self._last_error,
             "timestamp": serialize.iso_utc(now),
@@ -82,22 +86,102 @@ class ManagerService:
         except Exception as exc:
             self._last_error = repr(exc)
 
-    # -- Phase 8D: autonomous demo wiring ----------------------------------
+    # -- Phase 8D/8E-R (G4): restart-safe autonomous adoption --------------
     def discover_and_register(self, now):
-        """Adopt open broker positions carrying a known ENTER signal_id into the
-        PositionManager, recovering their approved initial reference from the ENTER
-        bridge (fail closed per position). Read-only discovery; registers nothing it
-        cannot anchor to an approved trade. Returns the list of registrations made."""
+        """Adopt open broker positions into the PositionManager, RESTART-SAFE.
+
+        For each not-yet-tracked position with a valid signal_id comment:
+
+          * prior PM audit history -> :meth:`PositionManager.recover` (the SOLE
+            phase-recovery path: rebuilds the lifecycle phase from verified terminal
+            outcomes + broker truth, adopts a tighter broker stop, never loosens,
+            never guesses, and fails closed to PM_RECONCILIATION_REQUIRED on
+            conflict);
+          * manage-channel evidence but NO PM audit -> fail closed (corrupt history);
+          * genuinely new (no PM/manage history) -> :meth:`register` at INITIAL from
+            the approved ENTER immutable facts (skipped if unavailable — never
+            guessed).
+
+        Read-only discovery; emits no manage instruction. Returns per-position
+        outcome dicts."""
         from ..runtime import adoption
         truth = getattr(self, "_truth", None)
         enter_paths = getattr(self, "_enter_paths", None)
         if truth is None or enter_paths is None:
             return []
-        regs = adoption.discover_registrations(truth, enter_paths, self.pm.states.keys())
-        for r in regs:
-            self.register(r["signal_id"], r["ticket"], r["symbol"], r["direction"],
-                          r["entry"], r["initial_stop"], r["take_profit"], now)
-        return regs
+        outcomes = []
+        for pos in adoption.discover_positions(truth):
+            sid, ticket = pos["signal_id"], pos["ticket"]
+            if sid in self.pm.states:
+                continue                          # idempotent: already adopted this session
+            outcomes.append(self._adopt_one(sid, ticket, enter_paths, now))
+        return outcomes
+
+    def _adopt_one(self, sid, ticket, enter_paths, now):
+        from ..position.contract import PMReason
+        from ..runtime import adoption
+        # 1. trustworthy prior PM history -> recover phase (fail closed on malformed)
+        try:
+            records = self.pm.audit.records_for(sid)
+        except Exception:
+            return self._recovery_reconciliation(sid, "malformed_pm_audit")
+        if records:
+            if adoption.audit_immutable_conflict(records):
+                return self._recovery_reconciliation(sid, "conflicting_audit")
+            if adoption.audit_ticket(records) != ticket:
+                return self._recovery_reconciliation(sid, "ticket_mismatch")
+            try:
+                rec = self.pm.recover(sid, now)       # SOLE phase-recovery path
+            except Exception:
+                return self._recovery_reconciliation(sid, "recover_error")
+            if rec is None:
+                return self._recovery_reconciliation(sid, "recover_returned_none")
+            # recover()'s return type varies (state vs audit record); the
+            # authoritative outcome is the single audit record it just emitted.
+            reason = self._last_pm_reason(sid)
+            if reason in (PMReason.RECONCILIATION_REQUIRED, PMReason.DATA_STALE):
+                self._recovery_reconcile.add(sid)     # tracked, but flagged unresolved
+                return {"signal_id": sid, "mode": "recover",
+                        "reason_code": reason, "reconciliation": True}
+            self._recovery_reconcile.discard(sid)
+            return {"signal_id": sid, "mode": "recover", "reason_code": reason}
+        # 2. manage-channel evidence without PM audit -> corrupt/ambiguous history
+        if self._manage_history(ticket):
+            return self._recovery_reconciliation(sid, "manage_without_pm_audit")
+        # 3. genuinely new position -> register at INITIAL from approved ENTER facts
+        reg = adoption.enter_reference(enter_paths, sid, ticket)
+        if reg is None or reg["ticket"] != ticket:
+            return self._recovery_reconciliation(sid, "missing_immutable_entry")
+        self.register(reg["signal_id"], reg["ticket"], reg["symbol"], reg["direction"],
+                      reg["entry"], reg["initial_stop"], reg["take_profit"], now)
+        self._recovery_reconcile.discard(sid)
+        return {"signal_id": sid, "mode": "register"}
+
+    def _last_pm_reason(self, sid):
+        """The reason_code of the most recent PM audit record for ``sid`` (the one
+        recover() just emitted), or None. Read-only."""
+        try:
+            recs = self.pm.audit.records_for(sid)
+        except Exception:
+            return None
+        return recs[-1].get("reason_code") if recs else None
+
+    def _manage_history(self, ticket):
+        """True if the manage channel holds prior evidence for this ticket (an
+        in-flight instruction or a terminal result). Unreadable ledger -> True
+        (fail closed)."""
+        try:
+            if self.ledger.get_inflight(ticket) is not None:
+                return True
+            return self.ledger.last_terminal_seq(ticket) > 0
+        except Exception:
+            return True
+
+    def _recovery_reconciliation(self, sid, why):
+        """A restart position that cannot be safely recovered: adopt nothing, emit
+        no modification, surface it as unresolved recovery (fail closed)."""
+        self._recovery_reconcile.add(sid)
+        return {"signal_id": sid, "mode": "reconciliation_required", "why": why}
 
     def run_once(self, now):
         """One autonomous demo cycle: adopt new positions, then evaluate all tracked
