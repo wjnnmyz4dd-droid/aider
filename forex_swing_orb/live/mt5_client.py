@@ -25,9 +25,15 @@ POSITION_TYPE_BUY = 0
 POSITION_TYPE_SELL = 1
 
 
-def create_real_client():  # pragma: no cover - Windows/terminal deployment only
+def create_real_client(*, terminal_path=None, login=None, server=None,
+                       password=None):  # pragma: no cover - Windows/terminal only
     """Wrap the live MetaTrader5 package. Raises a clear error off-Windows / when
-    the package or terminal is unavailable. NEVER imported at module load."""
+    the package or terminal is unavailable. NEVER imported at module load.
+
+    Optional connection parameters (terminal path / login / server / password) are
+    forwarded to ``MetaTrader5.initialize`` when supplied; omitting them attaches to
+    an already-running, already-logged-in terminal. The password is used only for
+    the local IPC login and is never persisted or logged here."""
     try:
         import MetaTrader5 as _mt5  # noqa: N813
     except Exception as exc:
@@ -35,7 +41,16 @@ def create_real_client():  # pragma: no cover - Windows/terminal deployment only
             "MetaTrader5 package unavailable — live providers run only on a "
             "Windows host with MetaTrader5 installed and a terminal running "
             f"({exc!r})")
-    if not _mt5.initialize():
+    init_kwargs = {}
+    if terminal_path:
+        init_kwargs["path"] = terminal_path
+    if login is not None:
+        init_kwargs["login"] = int(login)
+    if server:
+        init_kwargs["server"] = server
+    if password:
+        init_kwargs["password"] = password
+    if not _mt5.initialize(**init_kwargs):
         raise RuntimeError(f"MetaTrader5.initialize() failed: {_mt5.last_error()!r}")
     return _RealMt5Client(_mt5)
 

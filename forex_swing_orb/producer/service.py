@@ -47,11 +47,13 @@ def write_health(health_path, dashboard, now):
 class ProducerService:
     """Background loop around :class:`ProducerRunner`. No console window required."""
 
-    def __init__(self, runner, log_path, health_path, now_fn=_utc_now):
+    def __init__(self, runner, log_path, health_path, now_fn=_utc_now,
+                 compliance_status_path=None):
         self.runner = runner
         self.logger = configure_logging(log_path)
         self.health_path = health_path
         self.dashboard = RunnerDashboard(runner)
+        self.compliance_status_path = compliance_status_path
         self._now = now_fn
         self._stop = False
 
@@ -85,11 +87,25 @@ class ProducerService:
                 self.runner._last_error = repr(exc)
                 self.logger.exception("cycle error")
             write_health(self.health_path, self.dashboard, now)
+            self._write_compliance_status(now)
             n += 1
             if max_cycles is not None and n >= max_cycles:
                 break
             self._sleep_until_next_bar(self._now())
         self.logger.info("producer service stopped gracefully")
+
+    def _write_compliance_status(self, now):
+        """Surface the FTMO compliance budget view as a read-only status file
+        (no HTTP/sockets). Informational only; never influences trading."""
+        if self.compliance_status_path is None:
+            return
+        try:
+            from .. runtime.status import compliance_status, write_status
+            acct = self.runner.account.snapshot(now)
+            status = compliance_status(self.runner.config.compliance, acct, now)
+            write_status(self.compliance_status_path, status)
+        except Exception as exc:                            # never crash the loop
+            self.logger.warning("compliance status write failed: %r", exc)
 
     def _sleep_until_next_bar(self, now):
         target = next_bar_close(now, self.runner.config.exec_timeframe)
@@ -98,7 +114,42 @@ class ProducerService:
         time.sleep(min(delay, float(self.runner.config.cadence_sec)))
 
 
-def build_from_env():   # pragma: no cover - real deployment wiring is a later phase
-    raise NotImplementedError(
-        "Live provider wiring (MT5-backed market/account, approved news adapter) "
-        "is out of scope for Phase 7A. Inject providers explicitly.")
+def build_from_env(env=None, config_path=None, client=None, now_fn=_utc_now):
+    """Construct a fully-wired, DEMO-ONLY :class:`ProducerService` from validated
+    configuration and the live MT5-backed providers. Fails closed on any missing /
+    invalid configuration or an unusable FTMO profile — never silently defaults a
+    safety-relevant value.
+
+    ``client`` is injected only by integration tests (a ``FakeMt5Client``); in
+    production it is created from config via the live MT5 client factory.
+    """
+    from ..bridge.paths import BridgePaths
+    from ..runtime import wiring
+    from ..runtime.config import load_config
+    from .runner import ProducerRunner
+
+    cfg = load_config(env=env, config_path=config_path)
+    cfg.ensure_runtime_dir()
+
+    if client is None:                                  # pragma: no cover - real terminal
+        client = wiring.build_client(cfg, env=env)
+
+    compliance = wiring.build_compliance_config(cfg)    # raises if profile unusable
+    runner_cfg = wiring.build_runner_config(cfg, compliance)
+    paths = BridgePaths(cfg.bridge_root).ensure()
+
+    runner = ProducerRunner(
+        runner_cfg, bridge_paths=paths,
+        market=wiring.build_market_provider(client, cfg),
+        account=wiring.build_account_provider(client, cfg),
+        news=wiring.build_news_provider(cfg),
+        broker=wiring.build_broker_provider(client, cfg),
+        strategy=wiring.build_strategy(cfg),
+        state_path=cfg.producer_state_path,
+        runner_audit_path=cfg.runner_audit_path,
+        compliance_audit_path=cfg.compliance_audit_path)
+
+    return ProducerService(
+        runner, log_path=cfg.producer_log_path,
+        health_path=cfg.producer_health_path, now_fn=now_fn,
+        compliance_status_path=cfg.compliance_status_path)

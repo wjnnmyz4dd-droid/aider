@@ -81,3 +81,69 @@ class ManagerService:
             atomic_write_text(self.health_path, serialize.canonical_json(self.status(now)))
         except Exception as exc:
             self._last_error = repr(exc)
+
+    # -- Phase 8D: autonomous demo wiring ----------------------------------
+    def discover_and_register(self, now):
+        """Adopt open broker positions carrying a known ENTER signal_id into the
+        PositionManager, recovering their approved initial reference from the ENTER
+        bridge (fail closed per position). Read-only discovery; registers nothing it
+        cannot anchor to an approved trade. Returns the list of registrations made."""
+        from ..runtime import adoption
+        truth = getattr(self, "_truth", None)
+        enter_paths = getattr(self, "_enter_paths", None)
+        if truth is None or enter_paths is None:
+            return []
+        regs = adoption.discover_registrations(truth, enter_paths, self.pm.states.keys())
+        for r in regs:
+            self.register(r["signal_id"], r["ticket"], r["symbol"], r["direction"],
+                          r["entry"], r["initial_stop"], r["take_profit"], now)
+        return regs
+
+    def run_once(self, now):
+        """One autonomous demo cycle: adopt new positions, then evaluate all tracked
+        tickets against current broker prices (read via the truth source). Structure/
+        bar context is not fed here (the manager never fabricates it), so structure-
+        based trailing simply does not trigger; price/kill/weekend/duration logic and
+        reconciliation run normally."""
+        from ..runtime import adoption
+        self.discover_and_register(now)
+        truth = getattr(self, "_truth", None)
+        market = adoption.market_from_truth(truth) if truth is not None else {}
+        return self.run_cycle(now, market=market)
+
+    @classmethod
+    def build_from_env(cls, env=None, config_path=None, client=None, now_fn=None):
+        """Construct a fully-wired, DEMO-ONLY ManagerService from validated config
+        and the live MT5-backed broker-truth source. Fails closed on any missing /
+        invalid configuration or an unusable FTMO profile. ``client`` is injected
+        only by integration tests (a ``FakeMt5Client``); production creates it from
+        config via the live MT5 client factory.
+        """
+        from datetime import datetime, timezone
+
+        from ..bridge.paths import BridgePaths
+        from ..ea_mt5.position_manager import PositionManager
+        from ..runtime import wiring
+        from ..runtime.config import load_config
+        from .adapter import BridgeMt5Adapter
+        from .paths import ManagePaths
+
+        cfg = load_config(env=env, config_path=config_path)
+        cfg.ensure_runtime_dir()
+        wiring.build_compliance_config(cfg)          # fail closed if profile unusable
+
+        if client is None:                            # pragma: no cover - real terminal
+            client = wiring.build_client(cfg, env=env)
+        if now_fn is None:
+            now_fn = lambda: datetime.now(timezone.utc)   # noqa: E731
+
+        truth = wiring.build_truth_source(client)
+        mpaths = ManagePaths(cfg.bridge_root).ensure()
+        adapter = BridgeMt5Adapter(truth, mpaths, now_fn=now_fn)
+        pm = PositionManager(adapter, cfg.pm_audit_path)
+        service = cls(pm, adapter, mpaths, now_fn=now_fn,
+                      health_path=cfg.manager_health_path)
+        service._truth = truth
+        service._enter_paths = BridgePaths(cfg.bridge_root).ensure()
+        service._cadence_sec = cfg.cadence_sec
+        return service

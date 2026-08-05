@@ -228,11 +228,15 @@ class BrokerHealthConfig:
 
 
 class Mt5BrokerHealthProvider(BrokerHealthProvider):
-    def __init__(self, client, cfg=None, symbol_map=None, missing_ack_count=0):
+    def __init__(self, client, cfg=None, symbol_map=None, missing_ack_count=0,
+                 slippage_source=None):
         self.client = client
         self.cfg = cfg or BrokerHealthConfig()
         self.map = symbol_map or SymbolMap()
         self._missing_ack_count = missing_ack_count
+        # optional broker-derived recent-slippage observation (Phase 8D, item 8);
+        # object exposing recent_points(symbol, now, point) -> float | None.
+        self._slippage_source = slippage_source
 
     def snapshot(self, symbol, now):
         broker = self.map.to_broker(symbol)
@@ -246,12 +250,15 @@ class Mt5BrokerHealthProvider(BrokerHealthProvider):
         quote_age = ((now - datetime.fromtimestamp(int(qt), tz=timezone.utc)).total_seconds()
                      if qt else self.cfg.max_quote_age_sec + 1)   # missing quote time -> stale
         stop_level_pts = float(getattr(si, "trade_stops_level", 0.0) or 0.0)
+        slippage_points = self._recent_slippage(symbol, now, point)
+        if slippage_points is None:
+            return None                                 # configured source failed -> fail closed
         return {
             "terminal_connected": connected,
             "bridge_healthy": True,                     # bridge health is supplied by the runner side
             "spread_points": float(getattr(si, "spread", 0.0) or 0.0),
             "max_spread_points": self.cfg.max_spread_points,
-            "recent_slippage_points": 0.0,              # deal-history slippage observation is a follow-up
+            "recent_slippage_points": slippage_points,  # broker-derived (ENTER fills) or 0.0 if none
             "max_slippage_points": self.cfg.max_slippage_points,
             "missing_ack_count": self._missing_ack_count,
             "quote_age_sec": quote_age,
@@ -268,6 +275,17 @@ class Mt5BrokerHealthProvider(BrokerHealthProvider):
             "tick_value": float(getattr(si, "trade_tick_value", 0.0) or 0.0),
             "broker_min_stop_distance": stop_level_pts * point,
         }
+
+    def _recent_slippage(self, symbol, now, point):
+        """Broker-derived recent slippage in points. Without a configured source,
+        report 0.0 (no observation). With a source, return its value or None (a
+        source that cannot produce a trustworthy value fails the snapshot closed)."""
+        if self._slippage_source is None:
+            return 0.0
+        try:
+            return self._slippage_source.recent_points(symbol, now, point)
+        except Exception:
+            return None
 
 
 # --------------------------------------------------------------------------- #

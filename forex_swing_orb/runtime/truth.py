@@ -1,0 +1,42 @@
+"""Read-only broker-truth adapter (Phase 8D) for the manage channel.
+
+The accepted :class:`BridgeMt5Adapter` depends on a narrow *truth* interface —
+``terminal_connected()`` / ``position_by_ticket(ticket)`` / ``symbol_info(symbol)``
+— to read broker state (its WRITE path always routes through the manage bridge to
+the EA, never here). In production that truth is the live MT5 terminal; this
+adapter exposes exactly that interface over the injected live MT5 client
+(:mod:`forex_swing_orb.live.mt5_client`) with NO trading capability. Off-Windows
+it is exercised with :class:`FakeMt5Client`. No networking beyond the client.
+"""
+
+from __future__ import annotations
+
+from ..live import mt5_client as mc
+
+
+class Mt5TruthSource:
+    """Adapts the live MT5 client to the manage adapter's read-only truth surface.
+
+    ``symbol`` values are broker symbols (the manager registers positions under the
+    broker symbol reported by the terminal), matching how the live client and the
+    EA address instruments.
+    """
+
+    def __init__(self, client):
+        self.client = client
+
+    def terminal_connected(self):
+        ti = self.client.terminal_info()
+        return bool(getattr(ti, "connected", False)) if ti is not None else False
+
+    def positions(self):
+        return list(self.client.positions_get() or ())
+
+    def position_by_ticket(self, ticket):
+        for p in self.positions():
+            if getattr(p, "ticket", None) == ticket and not getattr(p, "closed", False):
+                return p
+        return None
+
+    def symbol_info(self, symbol):
+        return self.client.symbol_info(symbol)
