@@ -150,6 +150,13 @@ inputs in the reference impl, so audit output is deterministic in tests.
   is missing you get `file '...SessionEdgeManageHandler.mqh' not found` plus
   cascade `undeclared identifier 'ManageRecover' / 'ManageProcessNext'` errors.
   (`Trade\Trade.mqh` is stock MQL5 and already present under `MQL5/Include/`.)
+- **Compile `SessionEdgeExecutionEA.mq5` only** — F7 builds the *active* file, and
+  only the `.mq5` produces a `.ex5`. The two `.mqh` files are include fragments,
+  never compiled directly. `SessionEdgeManageHandler.mqh` in particular relies on
+  `JsonBridge.mqh` being included first by the EA and deliberately does not
+  re-include it; compiling the header on its own therefore fails with
+  `undeclared identifier 'JsonGetLong' / 'JsonGetDouble'` and a syntax cascade.
+  Make the `SessionEdgeExecutionEA.mq5` tab active before pressing Compile.
 - MT5 file access is sandboxed: `BridgeRoot` must live under the terminal
   `MQL5/Files/` folder, or set `UseCommonFolder=true` for the shared Files
   folder. Point the strategy producer at the same `bridge_root`.
