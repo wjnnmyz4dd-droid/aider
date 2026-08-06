@@ -141,8 +141,15 @@ inputs in the reference impl, so audit output is deterministic in tests.
 
 ## Deployment notes (real terminal)
 
-- Copy `SessionEdgeExecutionEA.mq5` + `JsonBridge.mqh` into
-  `MQL5/Experts/SessionEdge/` and compile in MetaEditor.
+- Copy **all three** sources into the **same** folder
+  (`MQL5/Experts/SessionEdge/`) and compile `SessionEdgeExecutionEA.mq5` in
+  MetaEditor: `SessionEdgeExecutionEA.mq5`, `JsonBridge.mqh`, **and**
+  `SessionEdgeManageHandler.mqh`. The EA quote-includes both headers
+  (`#include "JsonBridge.mqh"`, `#include "SessionEdgeManageHandler.mqh"`),
+  which resolve relative to the `.mq5` folder — if `SessionEdgeManageHandler.mqh`
+  is missing you get `file '...SessionEdgeManageHandler.mqh' not found` plus
+  cascade `undeclared identifier 'ManageRecover' / 'ManageProcessNext'` errors.
+  (`Trade\Trade.mqh` is stock MQL5 and already present under `MQL5/Include/`.)
 - MT5 file access is sandboxed: `BridgeRoot` must live under the terminal
   `MQL5/Files/` folder, or set `UseCommonFolder=true` for the shared Files
   folder. Point the strategy producer at the same `bridge_root`.
