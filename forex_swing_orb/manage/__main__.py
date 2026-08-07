@@ -44,6 +44,12 @@ class _Loop:
                 self.service.run_once(now)
             except Exception as exc:                    # never crash the loop
                 self.service._last_error = repr(exc)
+            # PR-1: read-only outcome reconciliation runs in its OWN guard so it can
+            # never delay or affect the management cycle above.
+            try:
+                self.service.reconcile_outcomes(now)
+            except Exception as exc:                    # non-blocking; belt-and-suspenders
+                self.service._last_error = repr(exc)
             n += 1
             if max_cycles is not None and n >= max_cycles:
                 break

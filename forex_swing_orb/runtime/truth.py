@@ -40,3 +40,21 @@ class Mt5TruthSource:
 
     def symbol_info(self, symbol):
         return self.client.symbol_info(symbol)
+
+    def deals_for_position(self, position_id):
+        """READ-ONLY closed-deal history for one broker position id, or ``None``
+        when the capability/data is unavailable.
+
+        Used only by the non-authoritative outcome reconciler to confirm a close
+        and read exit prices — never by the trading/management path. ``None`` means
+        *unknown* (client lacks the method, the query raised, or the terminal
+        returned no data) and MUST NOT be read as a confirmed close; an empty list
+        means the query succeeded but reported no deals. No trading capability."""
+        getter = getattr(self.client, "history_deals_get", None)
+        if getter is None:
+            return None
+        try:
+            deals = getter(position=position_id)
+        except Exception:
+            return None
+        return list(deals) if deals is not None else None

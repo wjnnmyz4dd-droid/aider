@@ -216,6 +216,20 @@ class ManagerService:
         return self.run_cycle(now, market=market, swings=swings, structures=structures,
                               bars_since=bars_since, bars_open=bars_open)
 
+    def reconcile_outcomes(self, now):
+        """Read-only, NON-BLOCKING closed-trade outcome pass, run adjacent to the
+        management cycle. Records normalized realized R for truly-closed positions.
+        Any failure is swallowed here so outcome recording can NEVER delay or change
+        trading behavior. Returns the list of newly-written outcomes (or [])."""
+        reconciler = getattr(self, "_outcome_reconciler", None)
+        if reconciler is None:
+            return []
+        try:
+            return reconciler.run(now)
+        except Exception as exc:                # never propagate into the trading loop
+            self._last_error = repr(exc)
+            return []
+
     def _market_context(self, now, opens):
         """Assemble per-ticket structure + bars_open from the injected context
         provider (read-only). Fail-closed contexts contribute nothing (the PM then
@@ -251,11 +265,15 @@ class ManagerService:
         """
         from datetime import datetime, timezone
 
+        from pathlib import Path
+
+        from ..agents.memory import MemoryStore
         from ..bridge.paths import BridgePaths
         from ..ea_mt5.position_manager import PositionManager
         from ..runtime import wiring
         from ..runtime.config import load_config
         from .adapter import BridgeMt5Adapter
+        from .outcome import OutcomeReconciler
         from .paths import ManagePaths
 
         cfg = load_config(env=env, config_path=config_path)
@@ -280,4 +298,9 @@ class ManagerService:
         from ..session.capability import LONDON_ORB_CAPABILITY
         service._session_model = cfg.session_model()      # audit/reporting only
         service._capability = LONDON_ORB_CAPABILITY
+        # PR-1: read-only, non-blocking closed-trade outcome edge. Reads broker
+        # truth + PM audit history; writes only the shared MemoryStore. No trading.
+        memory = MemoryStore(str(Path(cfg.runtime_dir) / "memory"))
+        service._outcome_reconciler = OutcomeReconciler(
+            truth, pm.audit, memory, now_fn=now_fn)
         return service

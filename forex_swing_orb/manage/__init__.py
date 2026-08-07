@@ -17,6 +17,7 @@ from .producer import write_manage_instruction, ManageProducerError
 from .consumer import ManageConsumer
 from .adapter import BridgeMt5Adapter
 from .service import ManagerService
+from .outcome import OutcomeReconciler
 from . import ticks
 
 __all__ = [
@@ -24,5 +25,5 @@ __all__ = [
     "build_result", "compute_manage_id", "initial_r_digest", "validate_instruction",
     "ManagePaths", "instruction_name", "result_name", "ManageLedger",
     "write_manage_instruction", "ManageProducerError", "ManageConsumer",
-    "BridgeMt5Adapter", "ManagerService", "ticks",
+    "BridgeMt5Adapter", "ManagerService", "OutcomeReconciler", "ticks",
 ]

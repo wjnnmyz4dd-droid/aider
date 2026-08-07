@@ -23,6 +23,11 @@ SYMBOL_TRADE_MODE_DISABLED = 0
 SYMBOL_TRADE_MODE_FULL = 4
 POSITION_TYPE_BUY = 0
 POSITION_TYPE_SELL = 1
+# MetaTrader5 deal entry directions (history classification; READ-ONLY use only)
+DEAL_ENTRY_IN = 0
+DEAL_ENTRY_OUT = 1
+DEAL_ENTRY_INOUT = 2
+DEAL_ENTRY_OUT_BY = 3
 
 
 def create_real_client(*, terminal_path=None, login=None, server=None,
@@ -77,10 +82,45 @@ class _RealMt5Client:  # pragma: no cover - requires a live terminal
     def terminal_info(self):
         return self._mt5.terminal_info()
 
+    def history_deals_get(self, position=None):
+        """READ-ONLY: closed-deal history for one broker position id (no trading).
+
+        Delegates to ``MetaTrader5.history_deals_get(position=...)``, which selects
+        and returns every deal (entry + exit legs) belonging to that position id.
+        Returns the MT5 tuple, or ``None`` when the terminal reports no data /
+        the query is rejected — the caller MUST treat ``None`` as *unknown*, never
+        as a confirmed close."""
+        return self._mt5.history_deals_get(position=position)
+
 
 # --------------------------------------------------------------------------- #
 # Deterministic test double (mirrors the MetaTrader5 API surface used above).
 # --------------------------------------------------------------------------- #
+class _Deal:
+    """Deterministic stand-in for an MT5 history deal (read-only fields only)."""
+
+    __slots__ = ("ticket", "order", "position_id", "time", "type", "entry",
+                 "volume", "price", "symbol", "reason", "profit")
+
+    def __init__(self, position_id, entry, volume, price, *, deal_type=0,
+                 ticket=0, order=0, time=0, symbol="", reason=0, profit=0.0):
+        self.position_id = position_id
+        self.entry = entry
+        self.volume = volume
+        self.price = price
+        self.type = deal_type
+        self.ticket = ticket
+        self.order = order
+        self.time = time
+        self.symbol = symbol
+        self.reason = reason
+        self.profit = profit
+
+    def __getitem__(self, k):        # MT5 deals behave like structured records
+        return getattr(self, k)
+
+
+
 class _Rate:
     __slots__ = ("time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume")
 
@@ -100,6 +140,7 @@ class FakeMt5Client:
         self.symbols = {}        # symbol -> object with MT5 symbol_info fields
         self.account = None      # object with account_info fields
         self.positions = []      # list of objects with position fields
+        self.deals = {}          # position_id -> list[_Deal] (closed-deal history)
         self.terminal = type("T", (), {"connected": True, "trade_allowed": True})()
 
     def timeframe(self, label):
@@ -128,3 +169,15 @@ class FakeMt5Client:
 
     def terminal_info(self):
         return self.terminal
+
+    def add_deal(self, position_id, entry, volume, price, **kw):
+        """Record one closed deal for ``position_id`` (test helper; read-only API)."""
+        self.deals.setdefault(position_id, []).append(
+            _Deal(position_id, entry, volume, price, **kw))
+
+    def history_deals_get(self, position=None):
+        """READ-ONLY closed-deal history. Mirrors the MT5 tuple return; an unknown
+        position id yields an empty tuple (query succeeded, no deals)."""
+        if position is None:
+            return tuple(d for lst in self.deals.values() for d in lst)
+        return tuple(self.deals.get(position, ()))
