@@ -24,6 +24,7 @@ against already-stored outcomes, so a record is written at most once per signal.
 from __future__ import annotations
 
 import math
+import re
 
 from ..bridge import serialize
 from ..position import spec
@@ -45,6 +46,9 @@ OUTCOME_SCHEMA_VERSION = 1
 
 # immutable facts required (from the PM audit history) to normalize an outcome
 _REQUIRED = ("ticket", "symbol", "direction", "entry_price", "initial_stop")
+
+# a production signal_id is sha256[:16]; anything else is not a real candidate
+_SIGNAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 class OutcomeReconciler:
@@ -80,23 +84,39 @@ class OutcomeReconciler:
     # -- candidate discovery (durable, restart-safe) -----------------------
     def _known_signals(self):
         """Immutable facts per signal_id from the PM audit history — the durable
-        superset that survives a manager restart. Read-only; malformed history or
-        an unreadable log yields no candidates (fail closed)."""
+        superset that survives a manager restart.
+
+        Read at the observational boundary with PER-RECORD fault isolation
+        (OUT-1): a single malformed/torn audit line is skipped, and valid records
+        before AND after it remain usable, so one corrupt line can never suppress
+        reconciliation for otherwise-valid historical signals. Fields are only
+        USED when well-formed — an invalid signal_id / ticket / price / direction
+        is ignored, NEVER guessed from another record — so a corrupt record can
+        never fabricate a candidate. Read-only."""
+        facts = {}
+        for r in self._audit_records():
+            sid = r.get("signal_id")
+            if not _valid_sid(sid):
+                continue
+            cur = facts.setdefault(sid, {})
+            for k in _REQUIRED:                # immutable: first present value wins
+                if cur.get(k) is None and r.get(k) is not None:
+                    cur[k] = r.get(k)
+        return {sid: f for sid, f in facts.items() if _facts_valid(f)}
+
+    def _audit_records(self):
+        """PM audit records with per-line tolerance. Prefers the durable file path
+        exposed by the production ``PMAudit`` and parses each line independently
+        (skipping malformed/torn/non-dict/non-finite lines); falls back to a test
+        double's ``read_all()`` only when no path is exposed. Never raises."""
+        path = getattr(self._audit, "path", None)
+        if path is not None:
+            return _read_audit_file(path)
         try:
             records = self._audit.read_all()
         except Exception:
-            return {}
-        facts = {}
-        for r in records:
-            sid = r.get("signal_id")
-            if not isinstance(sid, str) or not sid:
-                continue
-            cur = facts.setdefault(sid, {})
-            for k in _REQUIRED:                # immutable: first non-null wins
-                if cur.get(k) is None and r.get(k) is not None:
-                    cur[k] = r.get(k)
-        return {sid: f for sid, f in facts.items()
-                if all(f.get(k) is not None for k in _REQUIRED)}
+            return []
+        return [r for r in (records or []) if isinstance(r, dict)]
 
     def _existing_outcomes(self):
         try:
@@ -236,3 +256,49 @@ def _num(v):
     if isinstance(v, (int, float)):
         return float(v) if math.isfinite(v) else None
     return None
+
+
+def _valid_sid(sid):
+    """A well-formed production signal_id (sha256[:16]); anything else is ignored."""
+    return isinstance(sid, str) and bool(_SIGNAL_ID_RE.match(sid))
+
+
+def _facts_valid(f):
+    """True iff every immutable fact is present AND well-typed — never fabricated.
+
+    A finite-but-equal entry/initial_stop is intentionally allowed: that is the
+    zero-risk R_UNDEFINED case, resolved deterministically downstream, not an
+    invalid record. Malformed/implausible values (non-numeric price, unknown
+    direction, non-int ticket, empty symbol) make the record ignorable so it can
+    never fabricate an outcome."""
+    ticket = f.get("ticket")
+    symbol = f.get("symbol")
+    direction = f.get("direction")
+    return (isinstance(ticket, int) and not isinstance(ticket, bool)
+            and isinstance(symbol, str) and bool(symbol)
+            and (_is_long(direction) or _is_short(direction))
+            and _num(f.get("entry_price")) is not None
+            and _num(f.get("initial_stop")) is not None)
+
+
+def _read_audit_file(path):
+    """Read a JSONL audit log with PER-RECORD fault isolation: parse each line
+    independently and skip malformed/torn/non-dict/non-finite lines, keeping every
+    valid record on either side of the corruption. Missing file -> []. Never raises.
+    Read-only — it never writes, truncates, or repairs the log."""
+    out = []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return out
+    except Exception:
+        return out
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        ok, rec = serialize.loads(raw)         # strict per-line; malformed -> skip
+        if ok:
+            out.append(rec)
+    return out

@@ -92,6 +92,29 @@ def _outcomes(memory, symbol=None):
     return memory.query(kind="execution_outcome", subject=symbol, limit=1_000_000)
 
 
+class FileAudit:
+    """Durable file-backed PM-audit double exposing ``.path`` like the production
+    ``PMAudit``. Its ``read_all()`` deliberately RAISES so any test that recovers
+    signals proves the reconciler used the per-line tolerant file reader, not an
+    all-or-nothing bulk read."""
+
+    def __init__(self, path):
+        self.path = str(path)
+
+    def read_all(self):                       # pragma: no cover - must not be called
+        raise AssertionError("reconciler must read the audit file per-line, "
+                             "not via read_all()")
+
+
+def _write_audit(path, *items):
+    """Write a JSONL audit log; str items are emitted verbatim (torn/raw lines),
+    dict items are canonical-JSON encoded like a real PM audit record."""
+    with open(path, "w", encoding="utf-8") as fh:
+        for item in items:
+            line = item if isinstance(item, str) else serialize.canonical_json(item)
+            fh.write(line + "\n")
+
+
 # --------------------------------------------------------------------------- #
 # Realized-R correctness
 # --------------------------------------------------------------------------- #
@@ -355,3 +378,194 @@ def test_consumer_contract_fields_present(tmp_path):
         assert key in content
     assert row["correlation_id"] == sid
     assert row["source"] == "outcome_reconciler"
+
+
+# --------------------------------------------------------------------------- #
+# PR-1A: OUT-1 per-record fault isolation of the durable PM-audit enumeration
+# --------------------------------------------------------------------------- #
+def _closing_deals(price_out=1.10400):
+    return [_deal(IN, 0.10, 1.10000), _deal(OUT, 0.10, price_out)]
+
+
+def test_malformed_middle_line_isolated(tmp_path):
+    """A: valid A, torn line, valid B -> both A and B still reconcile."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(
+        p,
+        _facts_record("aaaaaaaaaaaaaaaa", 8001, "EURUSD", "LONG", 1.10000, 1.09800),
+        "{this is a torn, unterminated line",
+        _facts_record("bbbbbbbbbbbbbbbb", 8002, "EURUSD", "SHORT", 1.10000, 1.10200))
+    truth = FakeTruth()
+    truth.deals[8001] = _closing_deals(1.10400)          # LONG winner
+    truth.deals[8002] = _closing_deals(1.10100)          # SHORT loser
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    written = rec.run(NOW)
+
+    assert {c["signal_id"] for c in written} == {"aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"}
+    assert len(_outcomes(memory)) == 2
+
+
+def test_malformed_first_line_isolated(tmp_path):
+    """B: torn first line, then a valid signal -> valid signal reconciles."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(
+        p,
+        "!!! not json at all",
+        _facts_record("cccccccccccccccc", 8003, "EURUSD", "LONG", 1.10000, 1.09800))
+    truth = FakeTruth()
+    truth.deals[8003] = _closing_deals()
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    written = rec.run(NOW)
+
+    assert [c["signal_id"] for c in written] == ["cccccccccccccccc"]
+
+
+def test_malformed_last_line_isolated(tmp_path):
+    """C: valid signal, then a torn last line -> valid signal reconciles."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(
+        p,
+        _facts_record("dddddddddddddddd", 8004, "EURUSD", "LONG", 1.10000, 1.09800),
+        "torn}{ half-written")
+    truth = FakeTruth()
+    truth.deals[8004] = _closing_deals()
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    written = rec.run(NOW)
+
+    assert [c["signal_id"] for c in written] == ["dddddddddddddddd"]
+
+
+def test_all_malformed_lines_no_outcome_no_crash(tmp_path):
+    """D: every line malformed -> no outcome, no crash, no fabricated candidate."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(p, "bad1", "{bad2", "]bad3[", "\"just a string\"", "[1,2,3]")
+    truth = FakeTruth()
+    truth.deals[8005] = _closing_deals()      # deal history exists but no valid signal
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    assert rec.run(NOW) == []
+    assert _outcomes(memory) == []
+
+
+def test_valid_json_but_invalid_records_ignored(tmp_path):
+    """E: valid-JSON records with invalid/plausible fields are ignored (never
+    fabricated), while a genuinely valid neighbor still reconciles."""
+    p = tmp_path / "pm_audit.jsonl"
+    good = _facts_record("ffffffffffffffff", 8006, "EURUSD", "LONG", 1.10000, 1.09800)
+    bad_sid = _facts_record("NOT-HEX-SIGNALID", 8007, "EURUSD", "LONG", 1.10000, 1.09800)
+    bad_dir = {"signal_id": "1010101010101010", "ticket": 8008, "symbol": "EURUSD",
+               "direction": "SIDEWAYS", "entry_price": 1.10000, "initial_stop": 1.09800}
+    bad_price = {"signal_id": "2020202020202020", "ticket": 8009, "symbol": "EURUSD",
+                 "direction": "LONG", "entry_price": "oops", "initial_stop": 1.09800}
+    _write_audit(p, good, bad_sid, bad_dir, bad_price)
+    truth = FakeTruth()
+    for t in (8006, 8007, 8008, 8009):        # deal history present for ALL of them
+        truth.deals[t] = _closing_deals()
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    written = rec.run(NOW)
+
+    assert {c["signal_id"] for c in written} == {"ffffffffffffffff"}
+    assert len(_outcomes(memory)) == 1
+
+
+def test_delayed_history_then_write(tmp_path):
+    """F: history unavailable in cycle 1 (no write), available in cycle 2 (one write)."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(p, _facts_record("3030303030303030", 8010, "EURUSD", "LONG",
+                                  1.10000, 1.09800))
+    truth = FakeTruth()                        # deals[8010] absent -> unavailable (None)
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    assert rec.run(NOW) == []                  # cycle 1: history unavailable
+    assert _outcomes(memory) == []
+
+    truth.deals[8010] = _closing_deals()
+    written = rec.run(NOW)                      # cycle 2: history available
+
+    assert len(written) == 1
+    assert len(_outcomes(memory)) == 1
+
+
+def test_memory_write_failure_then_retry(tmp_path):
+    """G: a failed MemoryStore write leaves no dedup state -> the outcome retries
+    and is written exactly once on the next cycle. Trading is never involved."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(p, _facts_record("4040404040404040", 8011, "EURUSD", "LONG",
+                                  1.10000, 1.09800))
+    truth = FakeTruth()
+    truth.deals[8011] = _closing_deals()
+    memory = MemoryStore(str(tmp_path / "memory"))
+    real_write = memory.write_raw
+    state = {"n": 0}
+
+    def flaky_write(*a, **k):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("disk full")
+        return real_write(*a, **k)
+
+    memory.write_raw = flaky_write
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    assert rec.run(NOW) == []                   # cycle 1: write failed
+    assert _outcomes(memory) == []             # nothing persisted, no dedup marker
+
+    written = rec.run(NOW)                       # cycle 2: write succeeds
+    assert len(written) == 1
+    assert len(_outcomes(memory)) == 1
+
+
+def test_exact_breakeven_zero_r_won_false(tmp_path):
+    """H: exit == entry -> r_multiple == 0.0; documented convention won := r>0,
+    so an exact breakeven is recorded won=False with status CLOSED."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(p, _facts_record("5050505050505050", 8012, "EURUSD", "LONG",
+                                  1.10000, 1.09800))
+    truth = FakeTruth()
+    truth.deals[8012] = [_deal(IN, 0.10, 1.10000), _deal(OUT, 0.10, 1.10000)]
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    c = rec.run(NOW)[0]
+
+    assert c["r_multiple"] == 0.0
+    assert c["won"] is False                    # convention: won := (r_multiple > 0)
+    assert c["status"] == "CLOSED"
+
+
+def test_malformed_deal_values_never_false_close(tmp_path):
+    """I: None/non-finite/zero-volume deal data must not confirm a full close."""
+    p = tmp_path / "pm_audit.jsonl"
+    _write_audit(
+        p,
+        _facts_record("6060606060606060", 8013, "EURUSD", "LONG", 1.10000, 1.09800),
+        _facts_record("7070707070707070", 8014, "EURUSD", "LONG", 1.10000, 1.09800),
+        _facts_record("8080808080808080", 8015, "EURUSD", "LONG", 1.10000, 1.09800))
+    truth = FakeTruth()
+    truth.deals[8013] = [_deal(IN, 0.10, 1.10000), _deal(OUT, 0.0, 1.10400)]        # zero-vol exit
+    truth.deals[8014] = [_deal(IN, 0.10, 1.10000), _deal(OUT, 0.10, float("inf"))]  # non-finite price
+    truth.deals[8015] = [_deal(IN, None, 1.10000), _deal(OUT, 0.10, 1.10400)]       # missing entry vol
+    memory = MemoryStore(str(tmp_path / "memory"))
+    rec = OutcomeReconciler(truth, FileAudit(p), memory, now_fn=lambda: NOW)
+
+    assert rec.run(NOW) == []
+    assert _outcomes(memory) == []
+
+
+def test_hardening_adds_no_trading_authority():
+    """J: static authority regression over the outcome production source."""
+    src = (Path(__file__).resolve().parents[1] / "outcome.py").read_text()
+    for token in ("order_send", "order_check", "position_close", "PositionClose",
+                  "PositionModify", "modify_stop", "write_instruction",
+                  "build_instruction", "CTrade", ".Buy(", ".Sell("):
+        assert token not in src
