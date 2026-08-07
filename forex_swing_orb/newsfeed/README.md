@@ -65,9 +65,18 @@ Additive to the v1 bundle the gate already reads — every extra key is ignored 
 - **Freshness (fail closed):** missing/future/stale source timestamps, empty/
   malformed payloads, invalid currency/impact/timestamp, non-finite result values,
   duplicate conflicts — all raise and **preserve the last-known-good file**.
-- **Staleness still blocks:** `as_of` is the acquisition time, so a preserved
-  last-known-good file eventually ages past the compliance `max_age` and the
-  existing gate fails closed. Preservation can never keep trading on stale news.
+- **Freshness is earned, not assumed (F-2):** the bundle's authoritative `as_of`
+  is the **effective calendar freshness**, not the download time. It is derived from
+  an upstream generated timestamp when present, otherwise from the fetch time **only
+  after a COVERAGE check proves the payload is the calendar for the current period**
+  (its event span, day-snapped, must include `now`). A successfully-downloaded
+  **wrong-week** calendar → `COVERAGE_INVALID` fail closed; freshness that cannot be
+  established → `SOURCE_FRESHNESS_UNESTABLISHED` fail closed. In both cases the
+  last-known-good file is left untouched, ages past the compliance `max_age`, and the
+  existing gate blocks. A repeated HTTP 200 of stale (wrong-week) content can never
+  keep trading enabled. A `content_hash` (current/previous/changed/last-change) is
+  recorded as provenance — unchanged content is NOT treated as automatically stale
+  (weekly calendars legitimately don't change).
 - **Completeness (D-3):** reported honestly (`unestablished` for the weekly feed) —
   never claimed just because a fetch succeeded. Cross-source verification is
   wired as an architectural seam (`corroborators`), unused by default.
@@ -100,9 +109,62 @@ Set `SESSION_EDGE_CALENDAR_ENABLED=false` (default). The service does nothing an
 the **existing manual `FileNewsDataProvider` workflow is untouched** — a
 hand-maintained news file still reads and gates exactly as before.
 
+## Deployment & supervision (F-4)
+
+The acquirer is a **separate process** from the trading producer (networking must
+never be embedded in strategy/compliance/producer). Deploy it under an OS supervisor
+that restarts it after a crash and bounds restarts:
+
+- **Windows/VPS (recommended):** a Task Scheduler task running
+  `python -m forex_swing_orb.newsfeed` at logon, with *Restart on failure* (e.g.
+  every 1 min, up to 3 attempts) and *Do not start a new instance if running*.
+  A `single-instance lock` (`calendar_acq.lock`, `SESSION_EDGE_CALENDAR_LOCK_FILE`)
+  additionally guarantees at most one instance even if two are launched.
+- **Linux:** a `systemd` unit with `Restart=on-failure`, `RestartSec`, and
+  `StartLimitBurst`.
+
+Set the refresh interval **below** the compliance `max_age` (default 3600s) so a
+coverage-valid calendar stays fresh between refreshes; if the service dies, the file
+ages and compliance blocks.
+
+## Operational health (F-6)
+
+`SESSION_EDGE_CALENDAR_HEALTH_FILE` is written atomically each cycle with a single
+`status`: `HEALTHY` / `PROVIDER_FAILURE` / `SOURCE_STALE` /
+`SOURCE_FRESHNESS_UNESTABLISHED` / `FILE_WRITE_FAILURE`, plus `last_attempt/
+last_success/last_failure/last_failure_reason`, `fetched_at`, `source_as_of`,
+`effective_calendar_as_of`, `coverage_start/end/verified`, `content_hash`,
+`last_content_change`, `event_count`, `high_event_count`, `next_refresh`. A **dead
+service** cannot self-report; `derive_service_status(status, now)` returns
+`SERVICE_STALE` when `now - last_attempt > 2 * refresh_sec` (rule embedded in the
+file as `service_stale_rule`). No credentials are ever written (asserted).
+
+## Live validation (F-1)
+
+`tests/test_newsfeed_9dr1r.py::test_live_forexfactory_probe` contacts the **real**
+endpoint through the production hardened fetcher — run only when explicitly enabled:
+
+```
+SESSION_EDGE_CALENDAR_LIVE_PROBE=1 pytest \
+  forex_swing_orb/newsfeed/tests/test_newsfeed_9dr1r.py::test_live_forexfactory_probe
+```
+
+Observed live: HTTP 200 `application/json`, ~99 events, fields
+`title/country/impact/date/forecast/previous` (no `actual`/`revision`/generated
+timestamp), impacts `High/Medium/Low/Holiday`, current-week coverage verified.
+
+## Completeness (F-3)
+
+`completeness = "unestablished"` and `single_source_completeness_not_provable = true`
+for the single free source: a valid current-week calendar can still omit an event,
+and that omission is undetectable without a second source. The `corroborators` seam
+supports cross-source verification; **SINGLE_SOURCE_COMPLETENESS_NOT_PROVABLE** until
+a second source is added (recommended before fully-unattended reliance).
+
 ## Tests
 
-`tests/test_newsfeed_9dr1.py` — 64 deterministic tests (no internet): normalization
+`tests/test_newsfeed_9dr1.py` (64) + `tests/test_newsfeed_9dr1r.py` (26, incl. 1
+gated live probe) — deterministic, no internet by default: normalization
 & impact, provenance & integrity, freshness, every failure mode, atomic write &
 last-known-good, restart, retries/backoff/shutdown, config fail-closed, the
 network/authority/security boundaries, and the end-to-end integration through the

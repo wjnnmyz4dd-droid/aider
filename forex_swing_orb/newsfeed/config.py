@@ -37,6 +37,9 @@ _ENV = {
     "retries": "SESSION_EDGE_CALENDAR_RETRIES",
     "backoff_sec": "SESSION_EDGE_CALENDAR_BACKOFF_SEC",
     "log_file": "SESSION_EDGE_CALENDAR_LOG_FILE",
+    "coverage_grace_sec": "SESSION_EDGE_CALENDAR_COVERAGE_GRACE_SEC",
+    "max_response_bytes": "SESSION_EDGE_CALENDAR_MAX_RESPONSE_BYTES",
+    "lock_file": "SESSION_EDGE_CALENDAR_LOCK_FILE",
 }
 _CONFIG_PATH_ENV = "SESSION_EDGE_CONFIG"
 
@@ -56,6 +59,9 @@ class CalendarConfig:
     retries: int = 2
     backoff_sec: float = 2.0
     log_file: str = None
+    coverage_grace_sec: int = 0             # tolerance at weekly coverage boundaries
+    max_response_bytes: int = 5_000_000     # reject oversized responses (F-5)
+    lock_file: str = None                   # single-instance lock (F-4)
 
     def public_dict(self):
         """Redacted, JSON-safe view (no secrets exist on this object by design)."""
@@ -65,6 +71,8 @@ class CalendarConfig:
             "refresh_sec": self.refresh_sec,
             "max_source_age_sec": self.max_source_age_sec,
             "max_clock_skew_sec": self.max_clock_skew_sec,
+            "coverage_grace_sec": self.coverage_grace_sec,
+            "max_response_bytes": self.max_response_bytes,
             "source_file": self.source_file, "static_trusted": self.static_trusted,
             "timeout_sec": self.timeout_sec, "retries": self.retries,
             "backoff_sec": self.backoff_sec,
@@ -154,16 +162,23 @@ def load_calendar_config(env=None, config_path=None):
     retries = _as_int("retries", merged.get("retries", 2))
     backoff = _as_float("backoff_sec", merged.get("backoff_sec", 2.0))
     timeout = _as_float("timeout_sec", merged.get("timeout_sec", 12.0))
-    if refresh_sec <= 0 or max_source_age <= 0 or timeout <= 0:
+    coverage_grace = _as_int("coverage_grace_sec", merged.get("coverage_grace_sec", 0))
+    max_bytes = _as_int("max_response_bytes", merged.get("max_response_bytes", 5_000_000))
+    if refresh_sec <= 0 or max_source_age <= 0 or timeout <= 0 or max_bytes <= 0:
         raise AcquisitionError(Reason.CONFIG_ERROR, {"positive_required":
-                               ["refresh_sec", "max_source_age_sec", "timeout_sec"]})
-    if max_skew < 0 or retries < 0 or backoff < 0:
+                               ["refresh_sec", "max_source_age_sec", "timeout_sec",
+                                "max_response_bytes"]})
+    if max_skew < 0 or retries < 0 or backoff < 0 or coverage_grace < 0:
         raise AcquisitionError(Reason.CONFIG_ERROR, {"non_negative_required":
-                               ["max_clock_skew_sec", "retries", "backoff_sec"]})
+                               ["max_clock_skew_sec", "retries", "backoff_sec",
+                                "coverage_grace_sec"]})
 
     health_file = merged.get("health_file")
     if not health_file and output_file:
         health_file = str(Path(output_file).parent / "calendar_acq_status.json")
+    lock_file = merged.get("lock_file")
+    if not lock_file and output_file:
+        lock_file = str(Path(output_file).parent / "calendar_acq.lock")
 
     return CalendarConfig(
         enabled=enabled, provider=provider, output_file=output_file or "",
@@ -172,4 +187,6 @@ def load_calendar_config(env=None, config_path=None):
         source_file=(str(merged["source_file"]) if merged.get("source_file") else None),
         static_trusted=_as_bool("static_trusted", merged.get("static_trusted", False)),
         timeout_sec=timeout, retries=retries, backoff_sec=backoff,
+        coverage_grace_sec=coverage_grace, max_response_bytes=max_bytes,
+        lock_file=(lock_file or None),
         log_file=(str(merged["log_file"]) if merged.get("log_file") else None))

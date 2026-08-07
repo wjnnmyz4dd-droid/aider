@@ -32,11 +32,23 @@ CANONICAL_IMPACTS = (IMPACT_HIGH, IMPACT_MEDIUM, IMPACT_LOW)
 # INFORMATIONAL ONLY in this phase — no gate/strategy/risk logic reads them.
 RESULT_FIELDS = ("previous", "forecast", "actual", "revision")
 
-# Completeness classifications reported honestly (audit gap D-3). We never claim a
-# calendar is complete merely because a fetch succeeded.
+# Completeness classifications reported honestly (audit gap D-3/F-3). We never claim
+# a calendar is complete merely because a fetch succeeded.
 COMPLETENESS_UNESTABLISHED = "unestablished"     # source gives no completeness guarantee
 COMPLETENESS_SOURCE_DECLARED = "source_declared"  # source explicitly declared it complete
 COMPLETENESS_CROSS_VERIFIED = "cross_verified"    # corroborated across >1 source
+
+# Coverage basis: how the calendar's coverage interval was derived (F-2/F-3).
+COVERAGE_EVENT_SPAN = "event_span_day_snapped"   # derived from earliest/latest events
+COVERAGE_SOURCE_DECLARED = "source_declared"     # source declared coverage_start/end
+
+# Operational health status (F-6). SERVICE_STALE is derived EXTERNALLY (see health.py).
+HEALTH_HEALTHY = "HEALTHY"
+HEALTH_PROVIDER_FAILURE = "PROVIDER_FAILURE"
+HEALTH_SOURCE_STALE = "SOURCE_STALE"
+HEALTH_FRESHNESS_UNESTABLISHED = "SOURCE_FRESHNESS_UNESTABLISHED"
+HEALTH_FILE_WRITE_FAILURE = "FILE_WRITE_FAILURE"
+HEALTH_SERVICE_STALE = "SERVICE_STALE"
 
 
 # Deterministic acquisition reason codes (fail-closed taxonomy).
@@ -49,6 +61,11 @@ class Reason:
     MISSING_SOURCE_TIME = "ACQ_MISSING_SOURCE_TIME"
     FUTURE_SOURCE_TIME = "ACQ_FUTURE_SOURCE_TIME"
     STALE_SOURCE = "ACQ_STALE_SOURCE"
+    FRESHNESS_UNESTABLISHED = "ACQ_SOURCE_FRESHNESS_UNESTABLISHED"  # F-2
+    COVERAGE_INVALID = "ACQ_COVERAGE_INVALID"                      # wrong week (F-2)
+    OVERSIZED_RESPONSE = "ACQ_OVERSIZED_RESPONSE"                  # F-5
+    BAD_CONTENT_TYPE = "ACQ_BAD_CONTENT_TYPE"                      # F-5
+    INSECURE_SCHEME = "ACQ_INSECURE_SCHEME"                        # F-5
     MISSING_FIELD = "ACQ_MISSING_FIELD"
     INVALID_CURRENCY = "ACQ_INVALID_CURRENCY"
     INVALID_IMPACT = "ACQ_INVALID_IMPACT"
@@ -87,6 +104,8 @@ class RawCalendar:
     provider_version: str
     fetched_at: object                 # datetime, tz-aware UTC
     events: tuple = ()
-    source_as_of: object = None        # datetime tz-aware UTC or None
+    source_as_of: object = None        # datetime tz-aware UTC or None (upstream generated ts)
     complete: object = None            # True / False / None
     trusted: bool = False
+    coverage_start: object = None      # datetime tz-aware UTC or None (source-declared)
+    coverage_end: object = None        # datetime tz-aware UTC or None (source-declared)

@@ -1,17 +1,16 @@
-"""Autonomous calendar-acquisition refresh service (§7) — DATA ONLY.
+"""Autonomous calendar-acquisition refresh service (Phase 9D-R1-R) — DATA ONLY.
 
-A background loop that periodically acquires, validates, normalizes, and atomically
-writes the news file the existing compliance layer already reads. It runs as its OWN
-process (separate from the producer), so acquisition failure can never crash the
-producer runner. Even in-process, every failure is caught: the service records
-unhealthy, PRESERVES the last-known-good file, and lets the existing compliance
-freshness rule eventually block trading — it never fabricates calendar data and has
-no trade authority.
+A background loop that periodically acquires, validates (coverage/effective
+freshness), normalizes, and atomically writes the news file the existing compliance
+layer reads. Runs as its OWN process (separate from the producer), so acquisition
+failure can never crash trading. Every failure is caught: it records the operational
+status, PRESERVES last-known-good, and lets the existing compliance freshness rule
+eventually block trading — it never fabricates data and has no trade authority.
 
-Properties: configurable interval, bounded retries + bounded backoff, clean
-shutdown on SIGINT/SIGTERM, health reporting, no busy loop, no overlapping refresh
-(single-threaded, sequential). ``now_fn`` and ``sleep_fn`` are injected for
-deterministic tests.
+Properties: configurable interval, bounded retries + capped backoff, clean SIGINT/
+SIGTERM shutdown, health reporting, no busy loop, no overlapping refresh (single-
+threaded), and a single-instance lock so a duplicate process cannot start. ``now_fn``
+and ``sleep_fn`` are injected for deterministic tests.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from . import health as health_mod
 from . import writer
 from .acquire import CalendarAcquirer
 from .contract import AcquisitionError, Reason
+from .supervisor import LockHeld, SingleInstanceLock
 
 
 def _utc_now():
@@ -43,8 +43,6 @@ def _configure_logging(log_path):
 
 
 class CalendarAcquisitionService:
-    """Owns the refresh loop around a :class:`CalendarAcquirer`."""
-
     def __init__(self, acquirer, cfg, *, now_fn=_utc_now, sleep_fn=time.sleep,
                  logger=None):
         self.acquirer = acquirer
@@ -53,16 +51,15 @@ class CalendarAcquisitionService:
         self._sleep = sleep_fn
         self.logger = logger or _configure_logging(cfg.log_file)
         self.health = health_mod.HealthState(
-            enabled=cfg.enabled, provider=cfg.provider, file_path=cfg.output_file)
+            enabled=cfg.enabled, provider=cfg.provider, file_path=cfg.output_file,
+            refresh_sec=cfg.refresh_sec)
         self._stop = False
-        self._busy = False               # guards against overlapping refresh
+        self._busy = False
+        self._last_content_hash = None       # for content_changed diagnostics
 
     # -- one refresh attempt (bounded retries; never raises) -----------------
     def refresh_once(self, now):
-        """Acquire + write once. Returns True on success. On failure records
-        unhealthy, preserves the last-known-good file, and returns False. Never
-        raises — a failure must not crash the loop or the producer."""
-        if self._busy:                   # no overlapping refresh operations
+        if self._busy:
             return False
         self._busy = True
         try:
@@ -75,7 +72,7 @@ class CalendarAcquisitionService:
                 self.health.record_failure(now_iso=now_iso, reason=exc.reason,
                                            next_refresh_iso=next_iso)
                 self._write_health()
-                self.logger.warning("acquisition failed (last-known-good preserved): %s",
+                self.logger.warning("acquisition failed (%s); last-known-good preserved",
                                     exc.reason)
                 return False
             try:
@@ -84,31 +81,32 @@ class CalendarAcquisitionService:
                 self.health.record_failure(now_iso=now_iso, reason=Reason.WRITE_FAILED,
                                            next_refresh_iso=next_iso)
                 self._write_health()
-                self.logger.error("news-file write failed (last-known-good preserved): %r",
+                self.logger.error("news-file write failed (%r); last-known-good preserved",
                                   exc)
                 return False
+            self._last_content_hash = bundle["provenance"].get("content_hash")
             self.health.record_success(now_iso=now_iso, bundle=bundle,
                                        next_refresh_iso=next_iso)
             self._write_health()
-            self.logger.info("calendar refreshed: %d events, as_of=%s",
-                             bundle["provenance"]["event_count"], bundle["as_of"])
+            self.logger.info("calendar refreshed: %d events (%d HIGH), as_of=%s, coverage=%s..%s",
+                             bundle["provenance"]["event_count"],
+                             bundle["provenance"]["high_event_count"], bundle["as_of"],
+                             bundle["provenance"]["coverage_start"],
+                             bundle["provenance"]["coverage_end"])
             return True
         finally:
             self._busy = False
 
     def _acquire_with_retries(self, now):
-        """Bounded retries with bounded (capped) backoff. Raises the last
-        AcquisitionError if all attempts fail."""
         attempts = self.cfg.retries + 1
         last = None
         for i in range(attempts):
             try:
-                return self.acquirer.refresh(now)
+                return self.acquirer.refresh(now, previous_content_hash=self._last_content_hash)
             except AcquisitionError as exc:
                 last = exc
                 if i < attempts - 1:
-                    delay = min(self.cfg.backoff_sec * (2 ** i), 60.0)
-                    self._sleep(delay)
+                    self._sleep(min(self.cfg.backoff_sec * (2 ** i), 60.0))
         raise last
 
     def _write_health(self):
@@ -124,32 +122,41 @@ class CalendarAcquisitionService:
             signal.signal(signal.SIGINT, self._handle_signal)
             signal.signal(signal.SIGTERM, self._handle_signal)
         except (ValueError, AttributeError):
-            pass                          # not main thread / platform w/o SIGTERM
+            pass
 
     def _handle_signal(self, *_):
         self.logger.info("shutdown signal received; stopping after current refresh")
         self._stop = True
 
     def run_forever(self, max_cycles=None):
-        """Refresh, then sleep the configured interval, repeatedly. No busy loop:
-        a single bounded sleep between refreshes; clean shutdown on signal."""
+        """Refresh, then sleep the interval, repeatedly. Guarded by a single-instance
+        lock so a duplicate process refuses to start. No busy loop; clean shutdown."""
         if not self.cfg.enabled:
             self.logger.info("calendar acquisition disabled; not starting")
             return
-        self._install_signals()
-        self.logger.info("calendar acquisition service started (DEMO, data-only)")
-        n = 0
-        while not self._stop:
-            self.refresh_once(self._now())
-            n += 1
-            if max_cycles is not None and n >= max_cycles:
-                break
-            self._sleep_interval()
-        self.logger.info("calendar acquisition service stopped gracefully")
+        lock = SingleInstanceLock(self.cfg.lock_file) if self.cfg.lock_file else None
+        if lock is not None:
+            try:
+                lock.acquire()
+            except LockHeld:
+                self.logger.error("another acquisition instance is running; refusing to start")
+                return
+        try:
+            self._install_signals()
+            self.logger.info("calendar acquisition service started (DEMO, data-only)")
+            n = 0
+            while not self._stop:
+                self.refresh_once(self._now())
+                n += 1
+                if max_cycles is not None and n >= max_cycles:
+                    break
+                self._sleep_interval()
+            self.logger.info("calendar acquisition service stopped gracefully")
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _sleep_interval(self):
-        """Sleep the refresh interval in bounded slices so shutdown latency stays
-        low (no busy-wait)."""
         remaining = float(self.cfg.refresh_sec)
         while remaining > 0 and not self._stop:
             slice_s = min(remaining, 5.0)
@@ -158,13 +165,12 @@ class CalendarAcquisitionService:
 
 
 def build_provider(cfg, *, now_fn=_utc_now, fetcher=None):
-    """Construct the configured provider (no silent selection). ``fetcher`` is an
-    optional injected HTTP callable for the network provider (tests)."""
     if cfg.provider in ("forexfactory", "forexfactory_nextweek"):
         from .http_provider import ForexFactoryCalendarProvider
         window = "nextweek" if cfg.provider == "forexfactory_nextweek" else "thisweek"
         return ForexFactoryCalendarProvider(window=window, timeout=cfg.timeout_sec,
-                                            fetcher=fetcher, now_fn=now_fn)
+                                            fetcher=fetcher, now_fn=now_fn,
+                                            max_response_bytes=cfg.max_response_bytes)
     if cfg.provider == "static":
         from .provider import StaticFileCalendarProvider
         return StaticFileCalendarProvider(cfg.source_file, trusted=cfg.static_trusted,
@@ -174,8 +180,6 @@ def build_provider(cfg, *, now_fn=_utc_now, fetcher=None):
 
 def build_from_env(env=None, config_path=None, *, now_fn=_utc_now, sleep_fn=time.sleep,
                    fetcher=None):
-    """Build a fully-wired :class:`CalendarAcquisitionService` from validated env/JSON
-    configuration. Fails closed on invalid configuration."""
     from .config import load_calendar_config
     cfg = load_calendar_config(env=env, config_path=config_path)
     provider = build_provider(cfg, now_fn=now_fn, fetcher=fetcher)

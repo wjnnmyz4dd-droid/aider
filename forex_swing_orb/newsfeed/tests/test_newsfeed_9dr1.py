@@ -255,14 +255,14 @@ def test_injected_timeout_propagates(now):
 # --------------------------------------------------------------------------- #
 def test_forexfactory_parses_injected_payload(now):
     prov = ForexFactoryCalendarProvider(
-        fetcher=lambda url, timeout: json.dumps(raw_rows()), now_fn=lambda: now)
+        fetcher=lambda url, timeout, max_bytes: json.dumps(raw_rows()), now_fn=lambda: now)
     raw = prov.fetch(now)
     assert raw.source_name == "forexfactory" and raw.trusted is True
     assert raw.complete is None and len(raw.events) == 2
 
 
 def test_forexfactory_malformed_payload_fails_closed(now):
-    prov = ForexFactoryCalendarProvider(fetcher=lambda url, timeout: "<<garbage",
+    prov = ForexFactoryCalendarProvider(fetcher=lambda url, timeout, max_bytes: "<<garbage",
                                         now_fn=lambda: now)
     with pytest.raises(AcquisitionError) as e:
         prov.fetch(now)
@@ -270,7 +270,7 @@ def test_forexfactory_malformed_payload_fails_closed(now):
 
 
 def test_forexfactory_fetcher_error_fails_closed(now):
-    def boom(url, timeout):
+    def boom(url, timeout, max_bytes):
         raise OSError("connection refused")
     prov = ForexFactoryCalendarProvider(fetcher=boom, now_fn=lambda: now)
     with pytest.raises(AcquisitionError) as e:
@@ -281,7 +281,7 @@ def test_forexfactory_fetcher_error_fails_closed(now):
 def test_default_fetcher_rejects_disallowed_host_without_network():
     # Non-allowlisted host must raise before any network I/O is attempted.
     with pytest.raises(AcquisitionError) as e:
-        _default_fetcher("https://evil.example.com/x.json", 1.0)
+        _default_fetcher("https://evil.example.com/x.json", 1.0, 1000)
     assert e.value.reason == Reason.SOURCE_ERROR
     assert _ALLOWED_HOST == "nfs.faireconomy.media"
 

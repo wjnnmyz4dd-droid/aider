@@ -138,8 +138,13 @@ def normalize_event(row, source_name, trusted):
 
 def normalize_events(raw_calendar):
     """Normalize + de-duplicate all rows. Identical duplicates collapse; a repeated
-    ``event_id`` with DIFFERING content fails closed (never silently merged, §4).
-    Returns ``(events_sorted, warnings)``."""
+    ``event_id`` with a DIFFERING LOCKOUT-IDENTITY (timestamp/impact/currency/name)
+    fails closed — never silently merged in a way that could weaken the HIGH lockout
+    (§4/§8). A repeated id whose lockout-identity matches but whose INFORMATIONAL
+    result field (previous/forecast/actual/revision) differs is recorded as a
+    deterministic conflict (F-7): the conflicting field is nulled on the retained
+    event and a warning is emitted — it never affects the lockout. Returns
+    ``(events_sorted, warnings)``."""
     by_id = {}
     warnings = []
     for row in raw_calendar.events:
@@ -148,13 +153,22 @@ def normalize_events(raw_calendar):
             warnings.append(warning)
         eid = ev["event_id"]
         prior = by_id.get(eid)
-        if prior is not None and _content_key(prior) != _content_key(ev):
+        if prior is None:
+            by_id[eid] = ev
+            continue
+        if _content_key(prior) != _content_key(ev):
+            # lockout-relevant conflict -> fail closed (never weaken the lockout)
             raise AcquisitionError(Reason.DUPLICATE_CONFLICT, {"event_id": eid})
-        by_id[eid] = ev
+        # same lockout identity: reconcile informational result fields deterministically
+        for f in RESULT_FIELDS:
+            if prior.get(f) != ev.get(f):
+                prior[f] = None                    # do not silently pick a winner
+                warnings.append(f"result_conflict_{f}_{eid}")
     events = sorted(by_id.values(), key=lambda e: (e["event_timestamp"], e["event_id"]))
     return events, warnings
 
 
 def _content_key(ev):
-    """The identity-defining content of an event for conflict detection."""
+    """The LOCKOUT-defining identity of an event for conflict detection (excludes the
+    informational result fields, which cannot affect the news lockout)."""
     return (ev["event_timestamp"], ev["impact"], ev["currency"], ev["event_name"])

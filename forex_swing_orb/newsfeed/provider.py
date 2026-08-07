@@ -67,10 +67,13 @@ class StaticFileCalendarProvider(CalendarProvider):
 
         if isinstance(obj, list):
             rows, source_as_of, complete = obj, None, None
+            cov_start = cov_end = None
         elif isinstance(obj, dict):
             rows = obj.get("events")
             source_as_of = serialize.parse_iso(obj.get("source_as_of"))
             complete = obj.get("complete")
+            cov_start = serialize.parse_iso(obj.get("coverage_start"))
+            cov_end = serialize.parse_iso(obj.get("coverage_end"))
         else:
             raise AcquisitionError(Reason.MALFORMED_PAYLOAD, {"type": type(obj).__name__})
         if not isinstance(rows, list):
@@ -80,7 +83,7 @@ class StaticFileCalendarProvider(CalendarProvider):
             source_name=self.name, source_identifier=Path(self.path).name,
             provider_version=self.version, fetched_at=self._now(),
             events=tuple(rows), source_as_of=source_as_of, complete=complete,
-            trusted=self.trusted)
+            trusted=self.trusted, coverage_start=cov_start, coverage_end=cov_end)
 
 
 class InjectableCalendarProvider(CalendarProvider):
