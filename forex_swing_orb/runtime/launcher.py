@@ -27,6 +27,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ..live import mt5_client as mc
@@ -166,9 +167,17 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                    help="override account currency (default: read from account)")
     p.add_argument("--runtime-dir", default=None,
                    help="override runtime dir (default: under the terminal Files folder)")
+    p.add_argument("--wait-for-terminal", type=int, default=0,
+                   help="seconds to keep retrying the MT5 connection before giving up "
+                        "(use for auto-start at logon, e.g. 900)")
     args = p.parse_args(argv)
 
+    deadline = time.time() + max(0, args.wait_for_terminal)
     mt5 = _connect()
+    while mt5 is None and time.time() < deadline:
+        print("Session Edge launcher: waiting for the MT5 terminal...", file=sys.stderr)
+        time.sleep(5)
+        mt5 = _connect()
     if mt5 is None:
         print("Session Edge launcher: MetaTrader5 unavailable — open the terminal, "
               "log into your DEMO account, and `pip install MetaTrader5`.", file=sys.stderr)
