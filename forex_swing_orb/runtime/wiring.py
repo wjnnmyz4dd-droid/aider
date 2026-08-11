@@ -79,8 +79,31 @@ def symbol_map(cfg):
     return SymbolMap(suffix=cfg.symbol_suffix)
 
 
+# B1 — production market-data history depth (single authoritative setting).
+#
+# The frozen SignalEngine derives H4/D1 bias by resampling the M15 execution frame
+# INTERNALLY (H4/D1 are never fetched independently), so the M15 window must be deep
+# enough to yield sufficient COMPLETE D1 bars for the engine's confirmed-pivot trend
+# AND health. With pivot_k=2, D1 trend needs >=2 confirmed highs and >=2 lows, and D1
+# HEALTH needs >=3 confirmed highs and >=3 lows. htf_bars keeps one complete D1 bucket
+# per fully-elapsed UTC day, i.e. ~5 D1 bars per trading week.
+#
+# Requirement (derived from source): comfortably clear the 3+3 confirmed-D1-pivot
+# health floor with warm-up + weekend-gap margin -> target ~>=60 complete D1 bars.
+# At ~5 trading days/week * 96 M15 bars = ~480 M15 bars/week, ~16 weeks -> ~80 D1
+# bars. 8000 M15 bars provides that margin at negligible copy_rates/resample cost.
+# The old default of 300 M15 bars yielded only ~3 complete D1 bars, MATHEMATICALLY
+# guaranteeing trend_d1 == NEUTRAL and thus no signal — the B1 defect this fixes.
+#
+# Fail-closed is preserved: if the terminal returns fewer bars than requested,
+# validate_bars/the engine simply reject (no signal); history is never fabricated,
+# padded, or forward-filled.
+PRODUCTION_MARKET_HISTORY_BARS = 8000
+
+
 def build_market_provider(client, cfg):
-    return Mt5MarketDataProvider(client, symbol_map=symbol_map(cfg))
+    return Mt5MarketDataProvider(client, symbol_map=symbol_map(cfg),
+                                 history=PRODUCTION_MARKET_HISTORY_BARS)
 
 
 def build_account_provider(client, cfg):
