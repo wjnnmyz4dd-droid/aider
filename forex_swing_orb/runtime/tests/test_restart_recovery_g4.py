@@ -271,13 +271,17 @@ def test_manage_terminal_without_pm_audit_fails_closed(env_config):
     assert SID in mgr._recovery_reconcile
 
 
-def test_pm_completion_audit_without_broker_truth_recovers_closed(env_config):
-    # audit says BREAKEVEN but the broker no longer holds the ticket -> CLOSED
+def test_pm_recover_absent_position_unconfirmed_is_reconciliation(env_config):
+    # H1: audit says BREAKEVEN and the broker no longer holds the ticket, but there
+    # is NO positive closure evidence (no confirming deal history) -> the recover
+    # must NOT mark CLOSED; it flags reconciliation and never sticks a false close.
     mgr, _ = _manager(env_config, [], [
         _rec(StopPhase.INITIAL, PMReason.INITIAL, ISTOP),
         _rec(StopPhase.BREAKEVEN, PMReason.BREAKEVEN_SET, BE, broker_result="DONE")])
-    rec = mgr.pm.recover(SID, NOW)                        # direct: broker truth wins
-    assert rec["phase"] == StopPhase.CLOSED
+    rec = mgr.pm.recover(SID, NOW)
+    assert rec["reason_code"] == PMReason.RECONCILIATION_REQUIRED
+    assert rec["reconciliation_status"] == "no_position_unconfirmed"
+    assert rec["phase"] != StopPhase.CLOSED
 
 
 # --------------------------------------------------------------------------- #

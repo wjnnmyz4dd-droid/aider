@@ -23,6 +23,7 @@ from ..bridge import serialize
 from ..bridge.atomic import append_line_fsync
 from ..position import contract as PC
 from ..position import spec
+from ..position.closure import confirm_full_close
 from ..position.contract import (StopPhase, PMReason, ManualAction,
                                  DEFAULT_PM_CONFIG, build_audit_record,
                                  stop_move_is_legal, risk_not_increased,
@@ -139,6 +140,25 @@ class PositionManager:
         return self._manage(st, market_price, confirmed_swing, structure_reference,
                             bars_since_swing, R, now)
 
+    # -- H1: positive closure confirmation (read-only) ----------------------
+    def _confirmed_closed(self, ticket):
+        """True iff MT5 deal history POSITIVELY confirms a full netted-flat close
+        for ``ticket``. Uses the shared source of truth (position.closure). Missing
+        capability / unavailable history / broker error / partial history -> False
+        (fail closed: never infer a close from absence)."""
+        getter = getattr(self.mt5, "deals_for_position", None)
+        if getter is None:
+            return False
+        try:
+            deals = getter(ticket)
+        except mt5c.MT5Disconnected:
+            return False
+        except Exception:
+            return False
+        if deals is None:
+            return False
+        return confirm_full_close(deals) is not None
+
     # -- reconciliation (F6) ------------------------------------------------
     def _reconcile(self, st, now):
         try:
@@ -149,10 +169,18 @@ class PositionManager:
         except mt5c.MT5Disconnected:
             return self._emit(st, PMReason.DATA_STALE, now,
                               reconciliation_status="terminal_disconnected")
-        if pos is None:                                  # no broker position -> CLOSED
-            st["phase"] = StopPhase.CLOSED
-            return self._emit(st, PMReason.POSITION_CLOSED, now,
-                              reconciliation_status="no_position")
+        if pos is None:                                  # broker shows no position
+            # H1: absence is NOT proof of closure. Mark CLOSED only with positive
+            # closure evidence (a netted-flat deal set); otherwise treat as an
+            # unresolved reconciliation and take NO action (retry next cycle). This
+            # prevents a transient connected-but-empty read from permanently
+            # abandoning a live position.
+            if self._confirmed_closed(st["ticket"]):
+                st["phase"] = StopPhase.CLOSED
+                return self._emit(st, PMReason.POSITION_CLOSED, now,
+                                  reconciliation_status="no_position_confirmed")
+            return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
+                              reconciliation_status="position_absent_unconfirmed")
         if pos.symbol != st["symbol"]:                   # symbol mismatch -> fail closed
             return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
                               reconciliation_status="symbol_mismatch")
@@ -400,8 +428,14 @@ class PositionManager:
         last = recs[-1]
         entry, istop = last["entry_price"], last["initial_stop"]
         direction, symbol, ticket = last["direction"], last["symbol"], last["ticket"]
-        phase = max((r["phase"] for r in recs if r.get("phase") in StopPhase.ORDER),
-                    key=lambda p: StopPhase.ORDER.index(p), default=StopPhase.INITIAL)
+        # H1: recover the highest NON-CLOSED phase from the audit. CLOSED is never
+        # trusted from the log alone — it is re-derived below only from confirmed
+        # broker truth — so a stale/false CLOSED record cannot make the state
+        # permanently sticky when the broker still shows the position open.
+        open_phase = max(
+            (r["phase"] for r in recs
+             if r.get("phase") in StopPhase.ORDER and r["phase"] != StopPhase.CLOSED),
+            key=lambda p: StopPhase.ORDER.index(p), default=StopPhase.INITIAL)
         audited_stop = next((r["applied_stop"] for r in reversed(recs)
                              if r.get("applied_stop") is not None), istop)
         try:
@@ -410,17 +444,28 @@ class PositionManager:
         except mt5c.MT5Disconnected:
             connected, pos = False, None
         st = PC.build_state(signal_id, ticket, symbol, direction, entry, istop,
-                            last.get("take_profit"), last["evaluation_timestamp"], phase=phase)
+                            last.get("take_profit"), last["evaluation_timestamp"],
+                            phase=open_phase)
         st["last_structure_ref"] = last.get("structure_reference")
         if not connected:
             self.states[signal_id] = st
             return self._emit(st, PMReason.DATA_STALE, now, restart_source="pm_audit_log",
                               reconciliation_status="terminal_disconnected")
         if pos is None:
-            st["phase"] = StopPhase.CLOSED
+            # H1: adopt the terminal CLOSED phase only with positive closure
+            # evidence; otherwise flag reconciliation (never infer a close from an
+            # absent position). A live broker position takes the active branch below
+            # with the recovered non-CLOSED phase, correcting any false CLOSED.
+            if self._confirmed_closed(ticket):
+                st["phase"] = StopPhase.CLOSED
+                self.states[signal_id] = st
+                return self._emit(st, PMReason.POSITION_CLOSED, now,
+                                  restart_source="mt5_terminal",
+                                  reconciliation_status="no_position_confirmed")
             self.states[signal_id] = st
-            return self._emit(st, PMReason.POSITION_CLOSED, now,
-                              restart_source="mt5_terminal", reconciliation_status="no_position")
+            return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
+                              restart_source="mt5_terminal",
+                              reconciliation_status="no_position_unconfirmed")
         broker_sl = pos.sl
         if self._legal_q(direction, audited_stop, broker_sl, symbol):   # broker >= audited (tighter)
             st["current_stop"] = self._q(broker_sl, symbol)

@@ -101,6 +101,22 @@ def build_env(base_env, *, bridge_root, runtime_dir, news_file, symbols,
     return env
 
 
+def resolve_initial_balance(cli_initial, live_balance=None):
+    """H3: the FTMO initial balance (challenge starting capital) is the operator-
+    attested value ONLY. It is NEVER derived from the live account balance — doing
+    so would drift the static max-loss floor downward after any drawdown on every
+    restart. Returns the pinned initial, or None (fail closed) when it is not
+    explicitly provided or is invalid. ``live_balance`` is accepted purely to make
+    explicit that it is deliberately IGNORED."""
+    if cli_initial is None:
+        return None
+    try:
+        v = float(cli_initial)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
 def attestation_ok(*, flag, tty_confirm=None):
     """The operator has attested the FTMO profile iff the flag was passed OR an
     interactive confirmation returned the exact word VERIFIED."""
@@ -162,7 +178,8 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                         "(.FX suffix added automatically)")
     p.add_argument("--symbol-suffix", default="", help="broker symbol suffix, if any")
     p.add_argument("--initial-balance", type=float, default=None,
-                   help="override FTMO starting capital (default: read from account)")
+                   help="REQUIRED: true FTMO challenge starting capital (pinned; "
+                        "never read from the live account)")
     p.add_argument("--currency", default=None,
                    help="override account currency (default: read from account)")
     p.add_argument("--runtime-dir", default=None,
@@ -218,12 +235,27 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     news_file = runtime_dir / "news_bundle.json"
 
     symbols = canonical_symbols(args.symbols.split(","))
-    balance = args.initial_balance if args.initial_balance is not None else disc.get("balance")
-    currency = args.currency or disc.get("currency")
-    if not balance or not currency:
-        print("Session Edge launcher: could not determine balance/currency; pass "
-              "--initial-balance and --currency.", file=sys.stderr)
+    # H3: the FTMO initial balance (challenge starting capital) MUST be explicitly
+    # attested and pinned. It is NEVER re-anchored from the current live balance —
+    # doing so would drift the static max-loss floor downward after any drawdown on
+    # every restart. Fail closed if not provided; do not guess.
+    balance = resolve_initial_balance(args.initial_balance, disc.get("balance"))
+    if balance is None:
+        print("Session Edge launcher: --initial-balance is REQUIRED (the true FTMO "
+              "challenge starting capital, e.g. --initial-balance 50000). It is "
+              "never read from the live account. Nothing started.", file=sys.stderr)
         return 7
+    currency = args.currency or disc.get("currency")
+    if not currency:
+        print("Session Edge launcher: could not determine account currency; pass "
+              "--currency. Nothing started.", file=sys.stderr)
+        return 7
+    live_bal = disc.get("balance")
+    if isinstance(live_bal, (int, float)) and live_bal and float(live_bal) != float(balance):
+        where = "below" if float(live_bal) < float(balance) else "above"
+        print(f"Session Edge launcher: live balance ({live_bal}) is {where} the "
+              f"attested initial ({balance}); keeping initial PINNED — the max-loss "
+              f"floor is unchanged.", file=sys.stderr)
 
     env = build_env(
         os.environ, bridge_root=bridge_root, runtime_dir=str(runtime_dir),
@@ -234,7 +266,8 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
 
     print("=" * 66)
     print(" Session Edge — automatic DEMO launcher")
-    print(f"  account   : DEMO ({disc.get('server')})   {currency}  bal~{balance}")
+    print(f"  account   : DEMO ({disc.get('server')})   {currency}")
+    print(f"  ftmo init : {balance} (pinned, attested)")
     print(f"  symbols   : {', '.join(symbols)}")
     print(f"  bridge    : {bridge_root}")
     print(f"  runtime   : {runtime_dir}")

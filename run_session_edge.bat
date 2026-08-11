@@ -15,7 +15,11 @@ REM  attests the FTMO 2-Step Swing profile for this DEMO run (--ftmo-verified
 REM  below). The DEMO-account safety check is always enforced: the launcher
 REM  refuses to start on anything but a connected demo account.
 REM
-REM  Add symbols if you like:  run_session_edge.bat --symbols EURUSD,GBPUSD
+REM  REQUIRED: pass your true FTMO challenge starting capital, e.g.
+REM     run_session_edge.bat --initial-balance 50000
+REM  It is pinned and never read from the live account (so a drawdown can
+REM  never weaken your max-loss floor). Add symbols if you like:
+REM     run_session_edge.bat --initial-balance 50000 --symbols EURUSD,GBPUSD
 REM ===================================================================
 setlocal
 cd /d "%~dp0"

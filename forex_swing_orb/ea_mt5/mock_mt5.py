@@ -24,6 +24,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..position.closure import DEAL_ENTRY_IN as _DEAL_ENTRY_IN
+from ..position.closure import DEAL_ENTRY_OUT as _DEAL_ENTRY_OUT
+
 # -- real MT5 return codes (MqlTradeResult.retcode) -------------------------
 TRADE_RETCODE_REQUOTE = 10004
 TRADE_RETCODE_REJECT = 10006
@@ -124,6 +127,7 @@ class MockMT5:
     terminal_id: str = "MOCK-TERMINAL-1"
     _next_ticket: int = 5_000_000
     positions: dict = field(default_factory=dict)     # ticket -> Position
+    _hidden: set = field(default_factory=set)          # tickets transiently invisible (H1 test)
     order_log: list = field(default_factory=list)     # every order_send request seen
     modify_outcomes: list = field(default_factory=list)  # scripted stop-modify results
     modify_log: list = field(default_factory=list)    # every modify_stop attempt seen
@@ -192,8 +196,35 @@ class MockMT5:
                 return p
         return None
 
+    def hide(self, ticket):
+        """Make an OPEN position transiently invisible to position_by_ticket /
+        deals_for_position, without closing it — models a connected-but-empty
+        broker read (H1 transient-absence scenario). Reversed by ``unhide``."""
+        self._hidden.add(ticket)
+
+    def unhide(self, ticket):
+        self._hidden.discard(ticket)
+
+    def deals_for_position(self, ticket):
+        """READ-ONLY synthesized deal history (H1 closure confirmation). A CLOSED
+        position yields a netted-flat IN+OUT set (confirmed closed); an OPEN one
+        yields IN-only (not confirmed); a hidden/absent ticket yields None
+        (unknown -> never confirmed closed)."""
+        if ticket in self._hidden:
+            return None
+        p = self.positions.get(ticket)
+        if p is None:
+            return None
+        deals = [{"entry": _DEAL_ENTRY_IN, "volume": p.volume, "price": p.price_open}]
+        if p.closed:
+            deals.append({"entry": _DEAL_ENTRY_OUT, "volume": p.volume,
+                          "price": (p.close_price or p.price_open)})
+        return deals
+
     def position_by_ticket(self, ticket):
-        """Return the open position for a ticket (None if absent/closed)."""
+        """Return the open position for a ticket (None if absent/closed/hidden)."""
+        if ticket in self._hidden:
+            return None
         p = self.positions.get(ticket)
         return p if (p is not None and not p.closed) else None
 

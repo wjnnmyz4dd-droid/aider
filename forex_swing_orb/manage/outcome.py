@@ -28,6 +28,7 @@ import re
 
 from ..bridge import serialize
 from ..position import spec
+from ..position.closure import confirm_full_close
 from ..position.contract import _is_long, _is_short
 
 # MT5 deal entry classification (READ-ONLY history semantics). Exit legs net the
@@ -155,29 +156,9 @@ class OutcomeReconciler:
 
     def _closed_exit(self, deals):
         """``(weighted_close, out_volume, deal_count)`` iff the deal set confirms a
-        FULL close — an entry leg, one or more exit legs, netted flat — else None.
-        The exit price is volume-weighted across any partial closes; requiring both
-        an IN and matching OUT volume guards against a partial history snapshot
-        being mistaken for a completed round trip."""
-        in_vol = out_vol = notional = 0.0
-        n = 0
-        for d in deals:
-            n += 1
-            entry = getattr(d, "entry", None)
-            vol = _num(getattr(d, "volume", None))
-            price = _num(getattr(d, "price", None))
-            if vol is None:
-                continue
-            if entry == _ENTRY_IN:
-                in_vol += vol
-            elif entry in _EXITS and price is not None:
-                out_vol += vol
-                notional += price * vol
-        if in_vol <= 0 or out_vol <= 0:        # need both sides of a round trip
-            return None
-        if abs(in_vol - out_vol) > _VOL_TOL:   # not netted flat -> still partial, hold
-            return None
-        return notional / out_vol, out_vol, n
+        FULL netted-flat close, else None. Delegates to the single source of truth
+        (``position.closure.confirm_full_close``) shared with the Position Manager."""
+        return confirm_full_close(deals, entry_in=_ENTRY_IN, exits=_EXITS, tol=_VOL_TOL)
 
     # -- record construction + write ---------------------------------------
     def _write(self, sid, f, weighted_close, closed_volume, deal_count, now):

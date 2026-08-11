@@ -318,8 +318,9 @@ def ftmo_levels(account_state, profile, cfg):
     BALANCE (M1/M3). Internal thresholds are strictly safer (trigger first).
     Returns a dict, or (None, reason) semantics via caller checks.
 
-    Official daily level  = day_start_balance − daily_loss_pct × initial_balance
-    Official max level     = initial_balance   − maximum_loss_pct × initial_balance (static)
+    day_start_reference   = max(day_start_balance, day_start_equity)   (H2)
+    Official daily level  = day_start_reference − daily_loss_pct × initial_balance
+    Official max level     = initial_balance    − maximum_loss_pct × initial_balance (static)
     Breach iff current equity < level (equality = safe).
     """
     day_start_balance = finite(account_state.get("day_start_balance"))
@@ -328,6 +329,15 @@ def ftmo_levels(account_state, profile, cfg):
         return None
     if day_start_balance is None or day_start_balance <= 0:
         return None
+    # H2: FTMO's daily-loss reference is the HIGHER of the day-start balance and
+    # day-start equity (a Swing account holding a floating winner across the
+    # Prague rollover carries day-start equity > balance). Using balance-only
+    # under-states the level and is fail-open. When day_start_equity is present
+    # (the anchor now captures it) use max(balance, equity); it falls back to
+    # balance only for legacy anchors that predate equity capture.
+    day_start_equity = finite(account_state.get("day_start_equity"))
+    day_start_reference = (day_start_balance if day_start_equity is None
+                           else max(day_start_balance, day_start_equity))
     keep = 1.0 - cfg.safety_buffer_fraction
     official_daily_amount = profile.daily_loss_pct * initial
     internal_daily_amount = official_daily_amount * keep
@@ -336,10 +346,12 @@ def ftmo_levels(account_state, profile, cfg):
     return {
         "initial_balance": initial,
         "day_start_balance": day_start_balance,
+        "day_start_equity": day_start_equity,
+        "day_start_reference": day_start_reference,
         "official_daily_amount": official_daily_amount,
         "internal_daily_amount": internal_daily_amount,
-        "official_daily_level": day_start_balance - official_daily_amount,
-        "internal_daily_level": day_start_balance - internal_daily_amount,   # higher/safer
+        "official_daily_level": day_start_reference - official_daily_amount,
+        "internal_daily_level": day_start_reference - internal_daily_amount,  # higher/safer
         "official_max_amount": official_max_amount,
         "internal_max_amount": internal_max_amount,
         "official_max_level": initial - official_max_amount,                  # static (no trailing)

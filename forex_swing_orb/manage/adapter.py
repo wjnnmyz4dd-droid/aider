@@ -61,6 +61,12 @@ class BridgeMt5Adapter:
     def position_by_ticket(self, ticket):
         return self.truth.position_by_ticket(ticket)
 
+    def deals_for_position(self, position_id):
+        # H1: read-only pass-through so the PM can positively confirm a close from
+        # deal history. Absent capability -> None (never inferred as closed).
+        getter = getattr(self.truth, "deals_for_position", None)
+        return getter(position_id) if getter is not None else None
+
     def symbol_info(self, symbol):
         return self.truth.symbol_info(symbol)
 

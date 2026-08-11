@@ -43,10 +43,11 @@ class SymbolMap:
 # Daily-anchor bookkeeping (capture-at-rollover; NOT a calculation/decision)
 # --------------------------------------------------------------------------- #
 class DailyAnchorTracker:
-    """M2/M3: persists the day-start BALANCE captured at the first snapshot of each
-    FTMO trading day (00:00 Europe/Prague, DST-aware). Balance excludes floating
-    P/L. Idempotent per day; conflict-detected via integrity digest; survives
-    restart. Never captures equity."""
+    """M2/M3/H2: persists the day-start BALANCE and day-start EQUITY captured at the
+    first snapshot of each FTMO trading day (00:00 Europe/Prague, DST-aware).
+    Balance excludes floating P/L; equity includes it. FTMO's daily-loss reference
+    is the higher of the two. Idempotent per day; conflict-detected via integrity
+    digest; survives restart."""
 
     def __init__(self, path, reset_timezone="Europe/Prague"):
         self.path = path
@@ -64,11 +65,12 @@ class DailyAnchorTracker:
         from ..compliance.contract import prague_trading_day
         return prague_trading_day(now, self.reset_timezone)
 
-    def record(self, now, balance, *, initial_balance=None, daily_loss_pct=None,
-               account_id=None, profile_id=None, source_snapshot_id=None,
-               safety_buffer_fraction=0.20):
+    def record(self, now, balance, *, equity=None, initial_balance=None,
+               daily_loss_pct=None, account_id=None, profile_id=None,
+               source_snapshot_id=None, safety_buffer_fraction=0.20):
         """Return the anchor record for the current Prague trading day, capturing
-        the day-start BALANCE on first sight. Idempotent; flags conflict on tamper."""
+        the day-start BALANCE and day-start EQUITY on first sight (H2: FTMO's daily
+        reference is the higher of the two). Idempotent; flags conflict on tamper."""
         tday = self._trading_day(now)
         if tday is None:
             return None                                # tz unloadable -> caller fails closed
@@ -85,6 +87,7 @@ class DailyAnchorTracker:
             "anchor_timestamp_utc": serialize.iso_utc(now),
             "anchor_timestamp_prague": now.astimezone(ZoneInfo(self.reset_timezone)).strftime("%Y-%m-%dT%H:%M:%S"),
             "day_start_balance": float(balance),
+            "day_start_equity": (float(equity) if equity is not None else None),
             "initial_balance": (float(initial_balance) if initial_balance is not None else None),
             "daily_loss_pct": daily_loss_pct,
             "official_loss_amount": (daily_loss_pct * initial_balance
@@ -161,8 +164,9 @@ class Mt5AccountStateProvider(AccountStateProvider):
         positions = self.client.positions_get() or ()
         balance = float(ai.balance)
         equity = float(ai.equity)
-        # M3: anchor the day-start BALANCE at the Prague rollover (not equity)
-        rec = self.anchor.record(now, balance, initial_balance=self.initial_balance,
+        # M3/H2: anchor day-start BALANCE and EQUITY at the Prague rollover.
+        rec = self.anchor.record(now, balance, equity=equity,
+                                 initial_balance=self.initial_balance,
                                  daily_loss_pct=self.daily_loss_pct,
                                  account_id=getattr(ai, "login", None))
         if rec is None:
@@ -173,6 +177,7 @@ class Mt5AccountStateProvider(AccountStateProvider):
             "equity": equity,
             "initial_balance": self.initial_balance,
             "day_start_balance": rec["day_start_balance"],   # M3: balance anchor
+            "day_start_equity": rec.get("day_start_equity"),  # H2: equity anchor
             "trading_day": rec["trading_day"],
             "daily_anchor_conflict": bool(rec.get("daily_anchor_conflict")),
             "anchor_snapshot_id": rec.get("integrity_digest"),

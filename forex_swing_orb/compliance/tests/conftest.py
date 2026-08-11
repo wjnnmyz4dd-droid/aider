@@ -73,6 +73,10 @@ def make_account():
             "open_symbols": (),
         }
         a.update(over)
+        # H2: day-start equity defaults to the (possibly overridden) day-start
+        # balance — the realistic "no floating P/L at rollover" case — so the
+        # max(balance, equity) reference stays consistent unless a test sets it.
+        a.setdefault("day_start_equity", a["day_start_balance"])
         return a
     return _make
 
