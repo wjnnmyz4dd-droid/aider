@@ -65,14 +65,31 @@ def _account(client, tmp_path, initial_balance=100000.0):
                                    anchor_tracker=tracker)
 
 
+# PR-3A.1: a within-rollover-window observation captures the day anchor; the
+# mid-day NOW then reuses it (a fresh mid-day cold start no longer auto-captures).
+ROLL = NOW - timedelta(hours=11)                         # Prague ~00:00 (within window)
+
+
 def test_account_snapshot_valid(client, tmp_path):
-    snap = _account(client, tmp_path).snapshot(NOW)
+    prov = _account(client, tmp_path)
+    prov.snapshot(ROLL)                                  # capture at the rollover window
+    snap = prov.snapshot(NOW)                            # reuse mid-day
     ok, reason = validate_account(snap, NOW, 60)
     assert ok, reason
     assert snap["is_demo"] is True and snap["account_type"] == "DEMO"
     assert snap["account_currency"] == "USD" and snap["leverage"] == 100
     assert snap["day_start_balance"] == 100000.0        # M3: balance anchor
+    assert snap["day_start_equity"] == 100000.0         # H2: equity anchor
     assert snap["trading_day"] is not None
+
+
+def test_account_midday_cold_start_without_anchor_fails_closed(client, tmp_path):
+    # P3A-1: no persisted anchor + mid-day start -> anchor unavailable -> fail closed
+    snap = _account(client, tmp_path).snapshot(NOW)
+    assert snap["daily_anchor_unavailable"] is True
+    assert snap["day_start_balance"] is None
+    ok, reason = validate_account(snap, NOW, 60)
+    assert ok is False
 
 
 def test_account_none_when_unavailable(client, tmp_path):
@@ -88,13 +105,13 @@ def test_account_disconnect_reflected(client, tmp_path):
 
 def test_account_balance_anchor_persists_and_ignores_equity(client, tmp_path):
     prov = _account(client, tmp_path)
-    prov.snapshot(NOW)                                    # day-start BALANCE captured @ 100000
+    prov.snapshot(ROLL)                                  # day-start BALANCE captured @ 100000
     client.account.equity = 96000.0                      # equity (floating) dropped intraday
     client.account.balance = 100000.0                    # balance unchanged (no closed trades)
-    snap = prov.snapshot(NOW)
+    snap = prov.snapshot(NOW)                            # mid-day: reuse persisted anchor
     assert snap["day_start_balance"] == 100000.0          # anchor is balance, unchanged by equity
     assert snap["equity"] == 96000.0                      # equity tracked separately for breach
-    # "restart": new tracker over same file -> balance anchor survives
+    # "restart" mid-day: new tracker over same file -> anchor reused, NOT recaptured
     prov2 = _account(client, tmp_path)
     assert prov2.snapshot(NOW)["day_start_balance"] == 100000.0
 

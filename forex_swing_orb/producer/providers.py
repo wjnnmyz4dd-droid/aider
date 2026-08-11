@@ -144,6 +144,10 @@ def validate_account(snap, now, max_age_sec):
     """Return (ok, reason_code). Fail closed on missing/stale/unverified."""
     if not isinstance(snap, dict):
         return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
+    # P3A-1: no valid rollover anchor for the current trading day (mid-day cold
+    # start) -> fail closed with a clear, dedicated reason before any FTMO math.
+    if snap.get("daily_anchor_unavailable"):
+        return (False, RunnerReason.ACCOUNT_ANCHOR_UNAVAILABLE)
     for k in ("balance", "equity", "initial_balance", "day_start_balance",
               "open_position_count", "open_symbols", "terminal_connected", "as_of"):
         if snap.get(k) is None:

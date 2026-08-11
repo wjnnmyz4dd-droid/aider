@@ -60,10 +60,10 @@ def test_floating_loser_uses_balance_not_lower_equity():
     assert lv["official_daily_level"] == 95000.0
 
 
-def test_legacy_anchor_without_equity_falls_back_to_balance():
-    lv = _lv(day_start_balance=100000.0)                           # no day_start_equity
-    assert lv["day_start_reference"] == 100000.0
-    assert lv["official_daily_level"] == 95000.0
+def test_legacy_anchor_without_equity_fails_closed():
+    # P3A-3: an incomplete (legacy) anchor lacking day_start_equity is NOT
+    # authorizable — fail closed rather than revert to the old balance-only rule.
+    assert _lv(day_start_balance=100000.0) is None                 # no day_start_equity
 
 
 def test_threshold_boundaries_one_unit_each_side():
@@ -86,7 +86,7 @@ def test_nan_inf_balance_fails_closed():
     assert _lv(day_start_balance=float("inf"), day_start_equity=100000.0) is None
 
 
-def test_nan_equity_falls_back_to_balance_not_open():
-    # a non-finite equity must not corrupt the reference — it falls back to balance
-    lv = _lv(day_start_balance=100000.0, day_start_equity=float("nan"))
-    assert lv is not None and lv["day_start_reference"] == 100000.0
+def test_nan_equity_fails_closed():
+    # P3A-3: a non-finite day-start equity is an invalid/incomplete anchor -> None
+    assert _lv(day_start_balance=100000.0, day_start_equity=float("nan")) is None
+    assert _lv(day_start_balance=100000.0, day_start_equity=float("inf")) is None

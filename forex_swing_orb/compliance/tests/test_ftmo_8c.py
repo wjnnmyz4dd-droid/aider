@@ -21,7 +21,9 @@ from conftest import NOW, verified_config, verified_profile
 def _acct(**over):
     a = {"day_start_balance": 100000.0, "initial_balance": 100000.0, "equity": 100000.0,
          "trading_day": None, "open_position_count": 0, "open_symbols": ()}
-    a.update(over); return a
+    a.update(over)
+    a.setdefault("day_start_equity", a["day_start_balance"])   # H2/P3A-3 complete anchor
+    return a
 
 
 def _cand(**over):

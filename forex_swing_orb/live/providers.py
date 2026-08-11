@@ -49,9 +49,17 @@ class DailyAnchorTracker:
     is the higher of the two. Idempotent per day; conflict-detected via integrity
     digest; survives restart."""
 
+    # P3A-1: a new day anchor may be first-captured only within this many minutes
+    # after the Prague midnight rollover (a fresh start near the boundary), or via
+    # observed continuity across the boundary (see record()). >= producer cadence
+    # so a continuously-running process always captures; small enough that a fresh
+    # in-window capture carries negligible intraday drift from the true day-start.
+    ROLLOVER_CAPTURE_WINDOW_MIN = 60
+
     def __init__(self, path, reset_timezone="Europe/Prague"):
         self.path = path
         self.reset_timezone = reset_timezone
+        self._last_seen = None          # in-memory: last trading_day observed THIS run
         self._records = {}          # trading_day -> anchor record
         try:
             with open(self.path, "r", encoding="utf-8") as f:
@@ -65,6 +73,18 @@ class DailyAnchorTracker:
         from ..compliance.contract import prague_trading_day
         return prague_trading_day(now, self.reset_timezone)
 
+    def _within_capture_window(self, now):
+        """True iff ``now`` is within the rollover-capture window just after Prague
+        midnight (DST-aware). None/naive/tz-unloadable -> False (fail closed)."""
+        try:
+            from zoneinfo import ZoneInfo
+            if now is None or now.tzinfo is None:
+                return False
+            p = now.astimezone(ZoneInfo(self.reset_timezone))
+            return (p.hour * 60 + p.minute) < self.ROLLOVER_CAPTURE_WINDOW_MIN
+        except Exception:
+            return False
+
     def record(self, now, balance, *, equity=None, initial_balance=None,
                daily_loss_pct=None, account_id=None, profile_id=None,
                source_snapshot_id=None, safety_buffer_fraction=0.20):
@@ -74,14 +94,28 @@ class DailyAnchorTracker:
         tday = self._trading_day(now)
         if tday is None:
             return None                                # tz unloadable -> caller fails closed
+        prev_seen = self._last_seen
+        self._last_seen = tday                 # remember for the next call (this run)
         existing = self._records.get(tday)
         if existing is not None:
-            # idempotent; verify integrity (tamper/conflict detection)
+            # idempotent; verify integrity (tamper/conflict detection). Reused as-is
+            # on a mid-day restart (never recaptured from current account state).
             if not _digest_ok(existing):
                 existing = dict(existing); existing["daily_anchor_conflict"] = True
             return existing
+        # P3A-1: first-capture a NEW day anchor ONLY when the observation provably
+        # corresponds to the trading-day rollover — either a continuously-running
+        # process that already observed a prior trading day THIS run (crossed the
+        # boundary live), or a start within the bounded rollover window just after
+        # Prague midnight. Otherwise FAIL CLOSED: never invent day-start balance/
+        # equity from a mid-day cold-start snapshot.
+        continuous = prev_seen is not None and prev_seen != tday
+        if not (continuous or self._within_capture_window(now)):
+            return {"trading_day": tday, "anchor_unavailable": True,
+                    "anchor_reason": "no_valid_anchor_midday_cold_start"}
         from zoneinfo import ZoneInfo
         rec = {
+            "anchor_schema_version": 2,        # complete format: balance + equity
             "profile_id": profile_id, "account_id": account_id,
             "trading_day": tday, "timezone": self.reset_timezone,
             "anchor_timestamp_utc": serialize.iso_utc(now),
@@ -176,9 +210,13 @@ class Mt5AccountStateProvider(AccountStateProvider):
             "current_balance": balance,
             "equity": equity,
             "initial_balance": self.initial_balance,
-            "day_start_balance": rec["day_start_balance"],   # M3: balance anchor
-            "day_start_equity": rec.get("day_start_equity"),  # H2: equity anchor
+            "day_start_balance": rec.get("day_start_balance"),   # M3: balance anchor
+            "day_start_equity": rec.get("day_start_equity"),      # H2: equity anchor
             "trading_day": rec["trading_day"],
+            # P3A-1: explicit flag when no valid rollover anchor exists (mid-day cold
+            # start) -> the account validation fails closed with a clear reason.
+            "daily_anchor_unavailable": bool(rec.get("anchor_unavailable")),
+            "daily_anchor_reason": rec.get("anchor_reason"),
             "daily_anchor_conflict": bool(rec.get("daily_anchor_conflict")),
             "anchor_snapshot_id": rec.get("integrity_digest"),
             "floating_pl": float(getattr(ai, "profit", 0.0)),

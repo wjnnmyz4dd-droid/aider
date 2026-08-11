@@ -75,12 +75,34 @@ def write_news(path, verified=True):
     return str(path)
 
 
+def seed_daily_anchor(runtime_dir, now=NOW, balance=100000.0, equity=100000.0,
+                      initial=100000.0, daily_loss_pct=0.05):
+    """Pre-seed a VALID complete daily anchor for now's Prague trading day, as a
+    continuously-running producer would already have captured at the rollover
+    (PR-3A.1: a fresh mid-day cold start no longer auto-creates one)."""
+    from forex_swing_orb.bridge import serialize
+    from forex_swing_orb.compliance.contract import prague_trading_day
+    runtime_dir = __import__("pathlib").Path(runtime_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    tday = prague_trading_day(now)
+    rec = {"anchor_schema_version": 2, "trading_day": tday, "timezone": "Europe/Prague",
+           "day_start_balance": float(balance), "day_start_equity": float(equity),
+           "initial_balance": float(initial), "daily_loss_pct": daily_loss_pct}
+    rec["integrity_digest"] = serialize.compute_integrity_digest(rec)
+    (runtime_dir / "daily_anchor.json").write_text(
+        serialize.canonical_json({"records": {tday: rec}}), encoding="utf-8")
+
+
 @pytest.fixture
 def env_config(tmp_path):
-    """Return (env_dict, paths) for a valid DEMO FTMO 2-Step Swing configuration."""
-    def _make(**over):
+    """Return (env_dict, paths) for a valid DEMO FTMO 2-Step Swing configuration.
+    Seeds a valid daily anchor by default (normal running producer); pass
+    seed_anchor=False to exercise the mid-day cold-start fail-closed path."""
+    def _make(seed_anchor=True, **over):
         bridge_root = tmp_path / "bridge"
         runtime_dir = tmp_path / "runtime"
+        if seed_anchor:
+            seed_daily_anchor(runtime_dir)
         news = write_news(tmp_path / "news.json")
         env = {
             "SESSION_EDGE_BRIDGE_ROOT": str(bridge_root),

@@ -215,7 +215,8 @@ def test_ftmo_max_account_loss(make_candidate, make_market, make_account, make_b
 
 
 def test_internal_levels_strictly_safer_than_official():
-    lv = ftmo_levels({"day_start_balance": 100000.0}, verified_profile(), FtmoConfig())
+    lv = ftmo_levels({"day_start_balance": 100000.0, "day_start_equity": 100000.0},
+                     verified_profile(), FtmoConfig())
     assert lv["internal_daily_level"] > lv["official_daily_level"]   # safer = higher
     assert lv["internal_max_level"] > lv["official_max_level"]
     assert lv["official_daily_amount"] == 5000.0 and lv["official_max_amount"] == 10000.0

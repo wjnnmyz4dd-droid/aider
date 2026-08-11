@@ -42,6 +42,15 @@ def test_build_env_uses_pinned_initial_not_live():
     assert env["SESSION_EDGE_INITIAL_BALANCE"] == "50000.0"
 
 
+def test_autostart_bat_has_no_usable_default_initial_balance():
+    # P3A-2: the autostart wrapper must carry NO executable numeric default and
+    # must fail closed if the operator hasn't set the challenge capital.
+    txt = (REPO_ROOT / "autostart_run.bat").read_text()
+    assert "set INITIAL_BALANCE=50000" not in txt        # no guessed default
+    assert 'set "INITIAL_BALANCE="' in txt               # empty by default
+    assert "exit /b 2" in txt                            # fail-closed guard when blank
+
+
 def test_config_loads_with_pinned_initial():
     from forex_swing_orb.runtime.config import load_config
     env = L.build_env(

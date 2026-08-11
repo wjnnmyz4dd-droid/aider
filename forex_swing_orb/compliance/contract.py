@@ -330,14 +330,15 @@ def ftmo_levels(account_state, profile, cfg):
     if day_start_balance is None or day_start_balance <= 0:
         return None
     # H2: FTMO's daily-loss reference is the HIGHER of the day-start balance and
-    # day-start equity (a Swing account holding a floating winner across the
-    # Prague rollover carries day-start equity > balance). Using balance-only
-    # under-states the level and is fail-open. When day_start_equity is present
-    # (the anchor now captures it) use max(balance, equity); it falls back to
-    # balance only for legacy anchors that predate equity capture.
+    # day-start equity (a Swing account holding a floating winner across the Prague
+    # rollover carries day-start equity > balance); balance-only under-states it.
+    # P3A-3: a complete anchor MUST carry day-start equity. A legacy/incomplete
+    # anchor (balance present, equity absent) is NOT authorizable — FAIL CLOSED
+    # rather than silently reverting to the old balance-only reference.
     day_start_equity = finite(account_state.get("day_start_equity"))
-    day_start_reference = (day_start_balance if day_start_equity is None
-                           else max(day_start_balance, day_start_equity))
+    if day_start_equity is None:
+        return None
+    day_start_reference = max(day_start_balance, day_start_equity)
     keep = 1.0 - cfg.safety_buffer_fraction
     official_daily_amount = profile.daily_loss_pct * initial
     internal_daily_amount = official_daily_amount * keep
