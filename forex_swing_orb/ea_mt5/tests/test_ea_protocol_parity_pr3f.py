@@ -70,9 +70,20 @@ def assert_result_fields(entry):
 
 
 def assert_manage_parity(manage):
-    assert P.has_manage_schema_guard(manage), "manage schema check not wired"
+    import re
+    assert P.has_manage_schema_guard(manage), "manage schema check not wired before dispatch"
     assert P.define_int(manage, "MG_SCHEMA_VERSION") == P.PY_MANAGE_SCHEMA, "manage schema drift"
-    assert P.manage_actions(manage) == P.PY_MANAGE_ACTIONS, "manage action vocabulary drift"
+    body = P.manage_handler_body(manage)
+    # the active handler explicitly branches on PROTECTIVE_CLOSE and treats the
+    # remaining case as MODIFY_STOP (the default modify path). Every EXPLICIT action
+    # token must be a Python action, PROTECTIVE_CLOSE must be recognized, and BOTH
+    # broker paths must be reachable in the active handler.
+    actions = P.manage_actions(manage)
+    assert actions <= P.PY_MANAGE_ACTIONS, f"unknown explicit manage action(s): {sorted(actions - P.PY_MANAGE_ACTIONS)}"
+    assert "PROTECTIVE_CLOSE" in actions, "PROTECTIVE_CLOSE not explicitly dispatched"
+    assert "MODIFY_STOP" in P.PY_MANAGE_ACTIONS
+    assert re.search(r"g_trade\.PositionClose", body), "PROTECTIVE_CLOSE path missing"
+    assert re.search(r"g_trade\.PositionModify", body), "MODIFY_STOP path missing"
     ms = P.manage_status_values(manage)
     unknown = ms - P.PY_MANAGE_STATUSES
     assert not unknown, f"manage status(es) Python cannot interpret: {sorted(unknown)}"
