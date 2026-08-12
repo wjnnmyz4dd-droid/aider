@@ -65,14 +65,23 @@ def _account(client, tmp_path, initial_balance=100000.0):
                                    anchor_tracker=tracker)
 
 
-# PR-3A.1: a within-rollover-window observation captures the day anchor; the
-# mid-day NOW then reuses it (a fresh mid-day cold start no longer auto-captures).
-ROLL = NOW - timedelta(hours=11)                         # Prague ~00:00 (within window)
+# PR-3A.2: capturing a day anchor requires an OBSERVED rollover — a prior-day
+# observation followed by a rollover observation within one producer cadence. The
+# mid-day NOW then reuses the persisted anchor (a fresh mid-day cold start, and a
+# lone rollover-adjacent observation, no longer auto-capture).
+PREV = NOW - timedelta(hours=11, minutes=5)             # Prague 23:55 day 01-06
+ROLL = NOW - timedelta(hours=10, minutes=55)            # Prague 00:05 day 01-07 (gap 10m)
+
+
+def _capture(prov):
+    """Observe the prior day then the rollover so a valid anchor is captured."""
+    prov.snapshot(PREV)
+    prov.snapshot(ROLL)
 
 
 def test_account_snapshot_valid(client, tmp_path):
     prov = _account(client, tmp_path)
-    prov.snapshot(ROLL)                                  # capture at the rollover window
+    _capture(prov)                                       # observed rollover -> anchor
     snap = prov.snapshot(NOW)                            # reuse mid-day
     ok, reason = validate_account(snap, NOW, 60)
     assert ok, reason
@@ -105,7 +114,7 @@ def test_account_disconnect_reflected(client, tmp_path):
 
 def test_account_balance_anchor_persists_and_ignores_equity(client, tmp_path):
     prov = _account(client, tmp_path)
-    prov.snapshot(ROLL)                                  # day-start BALANCE captured @ 100000
+    _capture(prov)                                       # day-start BALANCE captured @ 100000
     client.account.equity = 96000.0                      # equity (floating) dropped intraday
     client.account.balance = 100000.0                    # balance unchanged (no closed trades)
     snap = prov.snapshot(NOW)                            # mid-day: reuse persisted anchor

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 from ..bridge import serialize
 from ..compliance import mapping
@@ -47,19 +48,40 @@ class DailyAnchorTracker:
     first snapshot of each FTMO trading day (00:00 Europe/Prague, DST-aware).
     Balance excludes floating P/L; equity includes it. FTMO's daily-loss reference
     is the higher of the two. Idempotent per day; conflict-detected via integrity
-    digest; survives restart."""
+    digest; survives restart.
 
-    # P3A-1: a new day anchor may be first-captured only within this many minutes
-    # after the Prague midnight rollover (a fresh start near the boundary), or via
-    # observed continuity across the boundary (see record()). >= producer cadence
-    # so a continuously-running process always captures; small enough that a fresh
-    # in-window capture carries negligible intraday drift from the true day-start.
-    ROLLOVER_CAPTURE_WINDOW_MIN = 60
+    PR-3A.2 — a new day's anchor may be first-captured ONLY when this process
+    provably observed the trading-day rollover: the immediately-preceding
+    observation THIS run belonged to an earlier Prague trading day AND the elapsed
+    UTC gap between the two observations is within one producer cadence (+ bounded
+    scheduler jitter). Clock proximity to midnight is NOT proof — a fresh cold-start
+    process, a stalled/slept/disconnected process, and a backwards/forward host-clock
+    jump can never label current account state as historical day-start state; they
+    FAIL CLOSED. First-writer-wins across concurrent producers via an atomic per-day
+    hardlink claim (bridge.atomic.atomic_claim)."""
 
-    def __init__(self, path, reset_timezone="Europe/Prague"):
+    # Distinct fail-closed diagnostics (operator-facing; no secrets).
+    R_COLD_START = "no_valid_anchor_cold_start"          # fresh process, rollover not observed
+    R_MISSED_ROLLOVER = "anchor_missed_rollover_stall"    # gap too large (stall/sleep/multi-day/fwd-jump)
+    R_CLOCK_BACKWARDS = "anchor_clock_backwards"          # non-monotonic / backwards host clock
+    R_CLOCK_INVALID = "anchor_clock_invalid"              # naive / non-tz-aware instant
+    R_CONCURRENT = "anchor_concurrent_writer_conflict"    # lost the atomic claim, winner unreadable
+    R_LEGACY = "anchor_legacy_incomplete"                # reused anchor lacks day_start_equity
+
+    def __init__(self, path, reset_timezone="Europe/Prague", cadence_sec=900):
         self.path = path
         self.reset_timezone = reset_timezone
+        # Single authoritative production cadence (RuntimeConfig.cadence_sec, default
+        # 900s = one M15 bar). A healthy producer observes once per cadence, so the
+        # FIRST observation of a new trading day must fall within ~one cadence of its
+        # last prior-day observation. A bounded jitter allowance covers scheduler
+        # slack + per-tick processing, but the total stays STRICTLY below 2x cadence
+        # so a single MISSED observation (stall/disconnect/clock jump) is rejected
+        # rather than allowed to anchor a materially late account state.
+        self.cadence_sec = float(cadence_sec) if cadence_sec and cadence_sec > 0 else 900.0
+        self.max_rollover_gap_sec = self.cadence_sec + min(self.cadence_sec * 0.5, 120.0)
         self._last_seen = None          # in-memory: last trading_day observed THIS run
+        self._last_seen_ts = None       # in-memory: UTC instant of that observation
         self._records = {}          # trading_day -> anchor record
         try:
             with open(self.path, "r", encoding="utf-8") as f:
@@ -73,17 +95,39 @@ class DailyAnchorTracker:
         from ..compliance.contract import prague_trading_day
         return prague_trading_day(now, self.reset_timezone)
 
-    def _within_capture_window(self, now):
-        """True iff ``now`` is within the rollover-capture window just after Prague
-        midnight (DST-aware). None/naive/tz-unloadable -> False (fail closed)."""
+    def _observed_rollover(self, prev_seen, prev_ts, tday, now):
+        """Return (ok, reason). ``ok`` iff this process provably observed the
+        trading-day rollover into ``tday`` within the permitted observation gap.
+        Clock proximity to midnight is deliberately NOT considered."""
+        # Cold start: no prior observation THIS run (or the prior one was the same
+        # trading day and never produced a record) -> cannot prove a rollover.
+        if prev_seen is None or prev_ts is None or prev_seen == tday:
+            return False, self.R_COLD_START
+        # Both instants must be tz-aware for a sound elapsed-UTC calculation.
+        if now is None or now.tzinfo is None or prev_ts.tzinfo is None:
+            return False, self.R_CLOCK_INVALID
+        # Non-monotonic / backwards host clock: current instant not after the prior,
+        # or the "previous" trading day is not earlier than the current one.
+        if (now - prev_ts).total_seconds() <= 0 or prev_seen > tday:
+            return False, self.R_CLOCK_BACKWARDS
+        # Bounded observation gap: a stalled/slept/disconnected process, a large
+        # forward clock jump, or a multi-day (e.g. weekend) gap all exceed one
+        # cadence and must NOT anchor a late account state.
+        if (now - prev_ts).total_seconds() > self.max_rollover_gap_sec:
+            return False, self.R_MISSED_ROLLOVER
+        return True, None
+
+    def _claim_path(self, tday):
+        p = Path(self.path)
+        return p.parent / (p.name + "." + tday + ".claim")
+
+    def _load_claim(self, tday):
         try:
-            from zoneinfo import ZoneInfo
-            if now is None or now.tzinfo is None:
-                return False
-            p = now.astimezone(ZoneInfo(self.reset_timezone))
-            return (p.hour * 60 + p.minute) < self.ROLLOVER_CAPTURE_WINDOW_MIN
-        except Exception:
-            return False
+            with open(self._claim_path(tday), "r", encoding="utf-8") as f:
+                ok, obj = serialize.loads(f.read())
+            return obj if ok and isinstance(obj, dict) else None
+        except (FileNotFoundError, OSError):
+            return None
 
     def record(self, now, balance, *, equity=None, initial_balance=None,
                daily_loss_pct=None, account_id=None, profile_id=None,
@@ -93,26 +137,41 @@ class DailyAnchorTracker:
         reference is the higher of the two). Idempotent; flags conflict on tamper."""
         tday = self._trading_day(now)
         if tday is None:
-            return None                                # tz unloadable -> caller fails closed
-        prev_seen = self._last_seen
-        self._last_seen = tday                 # remember for the next call (this run)
+            return None                                # naive/tz-unloadable -> caller fails closed
+        prev_seen, prev_ts = self._last_seen, self._last_seen_ts
+        self._last_seen, self._last_seen_ts = tday, now   # remember for the next call (this run)
         existing = self._records.get(tday)
         if existing is not None:
             # idempotent; verify integrity (tamper/conflict detection). Reused as-is
             # on a mid-day restart (never recaptured from current account state).
             if not _digest_ok(existing):
                 existing = dict(existing); existing["daily_anchor_conflict"] = True
+                return existing
+            # PR-3A.1: a legacy/incomplete anchor (no day_start_equity) is preserved
+            # verbatim on disk but flagged so the operator diagnostic is distinct; it
+            # remains non-authorizable downstream (ftmo_levels fails closed).
+            if existing.get("day_start_equity") is None:
+                existing = dict(existing); existing["anchor_reason"] = self.R_LEGACY
             return existing
-        # P3A-1: first-capture a NEW day anchor ONLY when the observation provably
-        # corresponds to the trading-day rollover — either a continuously-running
-        # process that already observed a prior trading day THIS run (crossed the
-        # boundary live), or a start within the bounded rollover window just after
-        # Prague midnight. Otherwise FAIL CLOSED: never invent day-start balance/
-        # equity from a mid-day cold-start snapshot.
-        continuous = prev_seen is not None and prev_seen != tday
-        if not (continuous or self._within_capture_window(now)):
+        # P3A1-1/P3A1-2: first-capture a NEW day anchor ONLY when this process
+        # provably observed the rollover within one producer cadence. Otherwise FAIL
+        # CLOSED: never invent day-start balance/equity from a cold-start snapshot or
+        # a materially late (stalled) observation.
+        ok, reason = self._observed_rollover(prev_seen, prev_ts, tday, now)
+        if not ok:
             return {"trading_day": tday, "anchor_unavailable": True,
-                    "anchor_reason": "no_valid_anchor_midday_cold_start"}
+                    "anchor_reason": reason}
+        return self._first_write_anchor(
+            now, prev_ts, tday, balance, equity, initial_balance, daily_loss_pct,
+            account_id, profile_id, source_snapshot_id, safety_buffer_fraction)
+
+    def _first_write_anchor(self, now, prev_ts, tday, balance, equity,
+                            initial_balance, daily_loss_pct, account_id, profile_id,
+                            source_snapshot_id, safety_buffer_fraction):
+        """Build the schema-v2 anchor and persist it with FIRST-WRITER-WINS semantics
+        (P3A1-3). The per-day hardlink claim is atomic and only ever fully-written, so
+        the first producer to observe the rollover establishes the authoritative
+        anchor; a concurrent producer reads and reuses it (never overwrites it)."""
         from zoneinfo import ZoneInfo
         rec = {
             "anchor_schema_version": 2,        # complete format: balance + equity
@@ -120,6 +179,11 @@ class DailyAnchorTracker:
             "trading_day": tday, "timezone": self.reset_timezone,
             "anchor_timestamp_utc": serialize.iso_utc(now),
             "anchor_timestamp_prague": now.astimezone(ZoneInfo(self.reset_timezone)).strftime("%Y-%m-%dT%H:%M:%S"),
+            # rollover-observation evidence (P3A1-2 audit trail): the prior-day
+            # observation and the measured gap that authorized this capture.
+            "prev_observation_utc": (serialize.iso_utc(prev_ts) if prev_ts is not None else None),
+            "observation_gap_sec": ((now - prev_ts).total_seconds() if prev_ts is not None else None),
+            "max_observation_gap_sec": self.max_rollover_gap_sec,
             "day_start_balance": float(balance),
             "day_start_equity": (float(equity) if equity is not None else None),
             "initial_balance": (float(initial_balance) if initial_balance is not None else None),
@@ -131,10 +195,62 @@ class DailyAnchorTracker:
             "source_snapshot_id": source_snapshot_id,
         }
         rec["integrity_digest"] = serialize.compute_integrity_digest(rec)
-        self._records[tday] = rec
+        won = self._claim_day(tday, rec)
+        if won:
+            self._records[tday] = rec
+            self._sync_aggregate()
+            return rec
+        # Lost the atomic claim: another producer established this day's anchor first.
+        winner = self._load_claim(tday)
+        if winner is not None and _digest_ok(winner):
+            self._records[tday] = winner
+            self._sync_aggregate()
+            return winner
+        # Claim exists but is unreadable/invalid -> fail closed (never overwrite).
+        return {"trading_day": tday, "anchor_unavailable": True,
+                "anchor_reason": self.R_CONCURRENT}
+
+    def _claim_day(self, tday, rec):
+        """Atomically publish ``rec`` as the day's anchor iff no claim exists yet.
+        Returns True iff this caller won (created) the claim. Uses the bridge's
+        hardlink claim so the visible claim file is always complete (never partial)."""
+        import os
+        from ..bridge.atomic import atomic_claim
+        claim = self._claim_path(tday)
+        tmp = claim.parent / ("." + claim.name + ".tmp.%d" % os.getpid())
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(serialize.canonical_json(rec))
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+        won = atomic_claim(tmp, claim)     # hardlink+unlink; False if already claimed
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return won
+
+    def _sync_aggregate(self):
+        """Persist the in-memory records to the aggregate file for restart-reuse. The
+        per-day claim files remain the authoritative concurrency guard; the aggregate
+        is a convenience cache, re-merged on each write to avoid clobbering peers."""
         from ..bridge.atomic import atomic_write_text
-        atomic_write_text(self.path, serialize.canonical_json({"records": self._records}))
-        return rec
+        merged = {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                ok, obj = serialize.loads(f.read())
+            if ok and isinstance(obj.get("records"), dict):
+                merged.update(obj["records"])
+        except (FileNotFoundError, OSError):
+            pass
+        merged.update(self._records)
+        atomic_write_text(self.path, serialize.canonical_json({"records": merged}))
 
 
 def _digest_ok(rec):

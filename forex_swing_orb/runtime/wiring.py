@@ -107,7 +107,10 @@ def build_market_provider(client, cfg):
 
 
 def build_account_provider(client, cfg):
-    tracker = DailyAnchorTracker(cfg.anchor_path, reset_timezone=cfg.reset_timezone)
+    # P3A1-2: the tracker's permitted rollover-observation gap derives from the
+    # single authoritative producer cadence (no duplicated timing constant).
+    tracker = DailyAnchorTracker(cfg.anchor_path, reset_timezone=cfg.reset_timezone,
+                                 cadence_sec=cfg.cadence_sec)
     return Mt5AccountStateProvider(
         client, initial_balance=cfg.initial_balance, anchor_tracker=tracker,
         symbol_map=symbol_map(cfg), daily_loss_pct=cfg.daily_loss_pct)
