@@ -99,6 +99,7 @@ def candidate_from_instruction(instr):
     ev = instr.get("evidence_summary", {})
     return {
         "signal_id": instr["signal_id"],
+        "session_id": instr.get("session_id"),     # PR-4A: informational (risk stays global)
         "symbol": instr["symbol"],
         "direction": instr["direction"],
         "entry": instr["entry_price"],

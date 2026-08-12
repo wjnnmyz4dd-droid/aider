@@ -20,6 +20,12 @@ REM     run_session_edge.bat --initial-balance 50000
 REM  It is pinned and never read from the live account (so a drawdown can
 REM  never weaken your max-loss floor). Add symbols if you like:
 REM     run_session_edge.bat --initial-balance 50000 --symbols EURUSD,GBPUSD
+REM
+REM  Choose which trading sessions to run (default: LONDON). Any one, a
+REM  combination, or ALL of SYDNEY,TOKYO,LONDON,NEW_YORK:
+REM     run_session_edge.bat --initial-balance 50000 --sessions LONDON,NEW_YORK
+REM     run_session_edge.bat --initial-balance 50000 --sessions ALL
+REM  Session selection stays inside Session Edge; the EA never chooses sessions.
 REM ===================================================================
 setlocal
 cd /d "%~dp0"

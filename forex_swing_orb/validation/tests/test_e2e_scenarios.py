@@ -125,8 +125,10 @@ def test_digest_mismatch(tmp_path):
 
 
 def test_schema_mismatch(tmp_path):
+    # PR-4A: the multi-session pipeline accepts schema 2 only; a schema OUTSIDE the
+    # allow-list (e.g. the retired London-only schema 1) is rejected E_SCHEMA.
     ec, paths, ledger, audit, mt5 = H.build(tmp_path)
-    H.produce(paths, H.make_instruction(schema_version=2))
+    H.produce(paths, H.make_instruction(schema_version=1))
     result = H.drain(ec)[0]
     assert result["status"] == ResultState.REJECTED
     assert result["reason_code"] == "E_SCHEMA"

@@ -23,8 +23,8 @@ from .strategy_adapter import StrategyAdapter, candidate_from_instruction
 
 class ProducerRunner:
     def __init__(self, config, *, bridge_paths, market, account, news, broker,
-                 strategy, state_path, runner_audit_path, compliance_audit_path,
-                 kill_switch=None):
+                 strategy=None, state_path, runner_audit_path, compliance_audit_path,
+                 kill_switch=None, strategy_by_session=None):
         if not isinstance(config, RunnerConfig):
             raise TypeError("config must be a RunnerConfig")
         self.config = config
@@ -33,7 +33,20 @@ class ProducerRunner:
         self.account = account
         self.news = news
         self.broker = broker
-        self.strategy = strategy if isinstance(strategy, StrategyAdapter) else StrategyAdapter(strategy)
+        # A single injected strategy is the legacy/London adapter; a per-session map
+        # (PR-4A, from wiring) provides one session-configured adapter per profile.
+        self.strategy = (None if strategy is None
+                         else strategy if isinstance(strategy, StrategyAdapter)
+                         else StrategyAdapter(strategy))
+        self._strategy_by_session = {
+            sid: (a if isinstance(a, StrategyAdapter) else StrategyAdapter(a))
+            for sid, a in (strategy_by_session or {}).items()
+        }
+        # Enabled session profiles the cycle fans out over. Empty config -> a single
+        # implicit LONDON profile (the frozen engine's default session).
+        from ..session.profiles import profile_for
+        self._profiles = (tuple(config.session_profiles)
+                          or (profile_for("LONDON"),))
         self.state = RunnerState(state_path)
         self.audit = RunnerAudit(runner_audit_path)
         self.bridge_audit = AuditLog(self.paths.audit_log)
@@ -88,24 +101,68 @@ class ProducerRunner:
             return results
         news_bundle = self.news.bundle(now)     # compliance validates it (fails closed)
 
-        # Phase 9A: one canonical session snapshot per cycle (deterministic)
+        # Phase 9A: one canonical session snapshot per cycle (deterministic) — used
+        # for AUDIT/CONTEXT only. The per-session STRATEGY entry window (not the
+        # coarse market-session window) is the trading authority (SC-2 resolution).
         sess = None
         if cfg.session_model is not None:
             from ..session.model import session_snapshot
             sess = session_snapshot(cfg.session_model, now, cfg.strategy_capability)
         self._last_session_snapshot = sess
 
+        # symbols for which THIS cycle already wrote an instruction — enforces
+        # one-position-per-symbol ACROSS sessions before any position is open (§18).
+        self._cycle_claimed_symbols = set()
+
+        # Fan out: bars are fetched/validated once per symbol (session-independent),
+        # then each enabled session profile is evaluated INDEPENDENTLY on those bars.
         for sym in cfg.symbols:
-            results.append(self._run_symbol(sym, now, acct, news_bundle, sess))
+            prepared = self._prepare_symbol(sym, now)
+            if isinstance(prepared, CycleResult):
+                results.append(prepared)
+                continue
+            exec_bars, bar_iso, versions = prepared
+            for profile in self._profiles:
+                results.append(self._run_symbol_session(
+                    sym, profile, now, acct, news_bundle, exec_bars, bar_iso, versions))
 
         # 11/12. result ingestion + reconciliation (read-only)
         self._ingest_and_reconcile(now)
         return results
 
-    # -- per-symbol pipeline ------------------------------------------------
-    def _run_symbol(self, symbol, now, acct, news_bundle, sess=None):
+    def _session_trade_eligible(self, profile, now):
+        """Per-session entry eligibility (PR-4A). Authority = the session's STRATEGY
+        entry window (SC-2), then the configured OVERLAP_MODE from the session model:
+        ALLOW/DISABLE trade each session independently; REQUIRE permits a session only
+        while it is a member of an active enabled market overlap. Returns
+        (ok, reason_code_or_None)."""
+        if not profile.is_within_strategy_window(now):
+            return False, None
+        model = self.config.session_model
+        if model is not None and getattr(model, "overlap_mode", None) == "REQUIRE":
+            from ..session.model import OVERLAPS, SessionReason, active_overlaps
+            act = active_overlaps(model, now)
+            if not any(profile.session_id in OVERLAPS[o] for o in act):
+                return False, (SessionReason.OVERLAP_REQUIRED if model.enabled_overlaps
+                               else SessionReason.OVERLAP_NOT_ENABLED)
+        return True, None
+
+    def _adapter_for(self, profile):
+        """Resolve the session-configured strategy adapter for ``profile``. A
+        per-session map wins; otherwise the single injected strategy serves LONDON
+        (legacy). Returns None -> that session fails closed (no adapter)."""
+        a = self._strategy_by_session.get(profile.session_id)
+        if a is not None:
+            return a
+        if profile.session_id == "LONDON":
+            return self.strategy
+        return None
+
+    # -- per-symbol bar preparation (session-independent) -------------------
+    def _prepare_symbol(self, symbol, now):
+        """Fetch + validate bars for a symbol once (session-independent). Returns
+        (exec_bars, bar_iso, versions) or a terminal CycleResult on data failure."""
         cfg = self.config
-        # 2. obtain bars for every required timeframe; 3. validate all (fail closed)
         tf_bars = {}
         versions = {}
         for tf in cfg.required_timeframes:
@@ -120,36 +177,61 @@ class ProducerRunner:
 
         exec_bars = tf_bars[cfg.exec_timeframe]
         bar_iso = serialize.iso_utc(exec_bars.last["open_time"])
-
-        # 13 (guard): same bar not evaluated twice / no duplicate on restart
-        if self.state.get_last(symbol) == bar_iso:
-            return self._emit(CycleOutcome.NO_NEW_BAR, symbol, bar_iso,
-                              [RunnerReason.NO_NEW_BAR], now, versions)
         # the just-closed exec bar must be the schedule's latest closed bar
         if exec_bars.last["open_time"] != last_closed_open(now, cfg.exec_timeframe):
             return self._emit(CycleOutcome.DATA_REJECTED, symbol, bar_iso,
                               [RunnerReason.DATA_STALE], now, versions)
+        return exec_bars, bar_iso, versions
 
-        # Phase 9A: pre-strategy session gate. If scanning is ineligible (session/
-        # overlap disabled, outside window, friday/sunday policy, or the frozen
-        # strategy does not support the active session) DO NOT call strategy.evaluate;
-        # emit a deterministic no-trade audit and write no bridge instruction.
-        if sess is not None and not sess["eligible"]:
-            self.state.mark_processed(symbol, bar_iso)
+    # -- per-(symbol, session) pipeline ------------------------------------
+    def _run_symbol_session(self, symbol, profile, now, acct, news_bundle,
+                            exec_bars, bar_iso, versions):
+        """Evaluate ONE session profile for a symbol on the prepared bars. State is
+        keyed by (symbol, session) so each session processes the bar independently."""
+        sid_state = "{}|{}".format(symbol, profile.session_id)
+        detail = {"session_id": profile.session_id}
+
+        # 13 (guard): same bar not evaluated twice for THIS session / no restart dup
+        if self.state.get_last(sid_state) == bar_iso:
+            return self._emit(CycleOutcome.NO_NEW_BAR, symbol, bar_iso,
+                              [RunnerReason.NO_NEW_BAR], now, versions, detail=detail)
+
+        # per-session eligibility: the STRATEGY entry window (SC-2: NOT the coarse
+        # market close) plus the configured OVERLAP_MODE. If ineligible, do not
+        # evaluate the engine for this session — deterministic no-trade audit.
+        elig_ok, elig_reason = self._session_trade_eligible(profile, now)
+        if not elig_ok:
+            self.state.mark_processed(sid_state, bar_iso)
+            codes = [RunnerReason.SESSION_INELIGIBLE]
+            if elig_reason is not None:
+                codes.append(elig_reason)
             return self._emit(CycleOutcome.SESSION_INELIGIBLE, symbol, bar_iso,
-                              [RunnerReason.SESSION_INELIGIBLE, sess["rejection_reason"]],
-                              now, versions, session=sess)
+                              codes, now, versions, detail=detail)
+
+        adapter = self._adapter_for(profile)
+        if adapter is None:                       # advertised session without an engine
+            self.state.mark_processed(sid_state, bar_iso)
+            return self._emit(CycleOutcome.SESSION_INELIGIBLE, symbol, bar_iso,
+                              [RunnerReason.SESSION_INELIGIBLE], now, versions,
+                              detail={**detail, "no_adapter": True})
 
         # 6. deterministic strategy evaluation (frozen engine; no duplication)
-        instr = self.strategy.evaluate(symbol, exec_bars)
+        instr = adapter.evaluate(symbol, exec_bars)
 
         # 7. no candidate -> audit, no bridge write
         if instr is None:
-            self.state.mark_processed(symbol, bar_iso)
+            self.state.mark_processed(sid_state, bar_iso)
             return self._emit(CycleOutcome.NO_CANDIDATE, symbol, bar_iso,
-                              [RunnerReason.NO_CANDIDATE], now, versions)
+                              [RunnerReason.NO_CANDIDATE], now, versions, detail=detail)
 
-        # 8. mandatory FTMO compliance (component is the only authority)
+        # session identity must be present and match the profile (fail closed)
+        if instr.get("session_id") != profile.session_id:
+            self.state.mark_processed(sid_state, bar_iso)
+            return self._emit(CycleOutcome.NO_CANDIDATE, symbol, bar_iso,
+                              [RunnerReason.NO_CANDIDATE], now, versions,
+                              detail={**detail, "session_mismatch": instr.get("session_id")})
+
+        # 8. mandatory FTMO compliance (component is the only authority; GLOBAL)
         candidate = candidate_from_instruction(instr)
         bh = self.broker.snapshot(symbol, now) or {}
         market_state = {"symbol_tradable": bh.get("symbol_tradable"),
@@ -161,26 +243,42 @@ class ProducerRunner:
 
         # 9. compliance reject -> audit, no bridge write
         if not decision.is_pass:
-            self.state.mark_processed(symbol, bar_iso)
+            self.state.mark_processed(sid_state, bar_iso)
             return self._emit(
                 CycleOutcome.COMPLIANCE_REJECT, symbol, bar_iso,
                 [RunnerReason.COMPLIANCE_REJECT, *decision.reason_codes], now,
                 versions, signal_id=candidate["signal_id"],
-                compliance_decision_id=decision.decision_id)
+                compliance_decision_id=decision.decision_id, detail=detail)
+
+        # cross-session same-symbol guard (§18/§27): one-position-per-symbol is
+        # account-GLOBAL. If an earlier session already claimed this symbol THIS
+        # cycle, suppress the later session (session identity never multiplies
+        # account exposure). Global compliance still guards across cycles.
+        one_per_symbol = getattr(self.config.compliance.ftmo, "one_position_per_symbol", True)
+        if one_per_symbol and symbol in getattr(self, "_cycle_claimed_symbols", set()):
+            self.state.mark_processed(sid_state, bar_iso)
+            return self._emit(CycleOutcome.COMPLIANCE_REJECT, symbol, bar_iso,
+                              [RunnerReason.COMPLIANCE_REJECT,
+                               RunnerReason.SESSION_SYMBOL_CLAIMED], now, versions,
+                              signal_id=candidate["signal_id"],
+                              compliance_decision_id=decision.decision_id, detail=detail)
 
         # 10. compliance pass -> dedup guard, then write the FULL engine instruction
         sid = instr["signal_id"]
         if ingest.already_seen(self.paths, sid):
-            self.state.mark_processed(symbol, bar_iso)
+            self.state.mark_processed(sid_state, bar_iso)
             return self._emit(CycleOutcome.DUPLICATE_SUPPRESSED, symbol, bar_iso,
                               [RunnerReason.DUPLICATE_SUPPRESSED], now, versions,
-                              signal_id=sid, compliance_decision_id=decision.decision_id)
+                              signal_id=sid, compliance_decision_id=decision.decision_id,
+                              detail=detail)
         write_instruction(self.paths, instr, now, audit=self.bridge_audit)
         self.state.mark_written(sid)
-        self.state.mark_processed(symbol, bar_iso)
+        self._cycle_claimed_symbols.add(symbol)
+        self.state.mark_processed(sid_state, bar_iso)
         return self._emit(CycleOutcome.INSTRUCTION_WRITTEN, symbol, bar_iso,
                           [RunnerReason.INSTRUCTION_WRITTEN], now, versions,
-                          signal_id=sid, compliance_decision_id=decision.decision_id)
+                          signal_id=sid, compliance_decision_id=decision.decision_id,
+                          detail=detail)
 
     # -- ingestion / reconciliation ----------------------------------------
     def _ingest_and_reconcile(self, now):
@@ -195,15 +293,17 @@ class ProducerRunner:
 
     # -- audit + result construction ---------------------------------------
     def _emit(self, outcome, symbol, bar_ts, reason_codes, now, versions,
-              signal_id=None, compliance_decision_id=None, session=None):
+              signal_id=None, compliance_decision_id=None, session=None, detail=None):
         now_iso = serialize.iso_utc(now)
         cid = cycle_id(symbol, bar_ts, now_iso, versions)
         sess = session if session is not None else getattr(self, "_last_session_snapshot", None)
+        detail = dict(detail or {})
         record = {
             "kind": "cycle",
             "cycle_id": cid,
             "timestamp": now_iso,
             "symbol": symbol,
+            "session_id": detail.get("session_id"),      # PR-4A: first-class in audit
             "bar_ts": bar_ts,
             "outcome": outcome,
             "reason_codes": list(reason_codes),
@@ -226,7 +326,8 @@ class ProducerRunner:
         }
         self.audit.emit(record)
         return CycleResult(cid, symbol, bar_ts, outcome, tuple(reason_codes),
-                           signal_id, compliance_decision_id, {"versions": versions})
+                           signal_id, compliance_decision_id,
+                           {"versions": versions, **detail})
 
     # -- status snapshot pass-through --------------------------------------
     @property

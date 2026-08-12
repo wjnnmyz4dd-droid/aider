@@ -9,11 +9,15 @@ from __future__ import annotations
 # Required instruction fields (spec §3). integrity_digest is the bridge transport
 # field; the rest come from the strategy engine's instruction (schema_version 1).
 REQUIRED_INSTRUCTION_FIELDS = (
-    "schema_version", "signal_id", "strategy_id", "strategy_version", "symbol",
-    "direction", "entry_price", "stop_loss", "take_profit", "risk_fraction",
+    "schema_version", "signal_id", "session_id", "strategy_id", "strategy_version",
+    "symbol", "direction", "entry_price", "stop_loss", "take_profit", "risk_fraction",
     "generated_timestamp", "expiration_timestamp", "evidence_summary",
     "news_eligibility", "integrity_digest",
 )
+
+# session_id transport form: a short uppercase token (the bridge validates shape
+# only; which sessions are ENABLED is the producer's authority, never the bridge's).
+SESSION_ID_RE = r"^[A-Z][A-Z_]{1,19}$"
 
 DIRECTIONS = ("LONG", "SHORT")
 

@@ -12,7 +12,9 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BridgeConfig:
     # Instruction schema versions the consumer accepts (spec §7-2 / §2.1 D1).
-    schema_version_allowlist: frozenset = frozenset({1})
+    # PR-4A: schema 2 adds a required ``session_id``; the London-only schema-1
+    # instructions are retired from the multi-session pipeline (fail closed).
+    schema_version_allowlist: frozenset = frozenset({2})
     # Known producers (spec §2.1 validation 4b).
     strategy_id_allowlist: frozenset = frozenset({"forex_swing_orb"})
     strategy_version_allowlist: frozenset = frozenset({"swing_orb.v1.4.0"})

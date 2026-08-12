@@ -97,7 +97,9 @@ def test_config_json_and_env(tmp_path):
     assert cfg2.overlap_mode == "DISABLE"
 
 
-def test_config_no_silent_all_session_default(tmp_path):
+def test_config_defaults_to_london_never_all(tmp_path):
+    # PR-4A §13: an absent selection defaults to LONDON (backward compatible), and
+    # NEVER silently to ALL. Explicit ALL is required for all-session operation.
     news = tmp_path / "n.json"; news.write_text('{"as_of":"x","events":[]}', encoding="utf-8")
     env = {
         "SESSION_EDGE_BRIDGE_ROOT": str(tmp_path / "b"), "SESSION_EDGE_RUNTIME_DIR": str(tmp_path / "r"),
@@ -105,8 +107,11 @@ def test_config_no_silent_all_session_default(tmp_path):
         "SESSION_EDGE_ACCOUNT_CURRENCY": "USD", "SESSION_EDGE_FTMO_RULE_SOURCE": "x",
         "SESSION_EDGE_FTMO_RULE_VERIFIED_AT": "y", "SESSION_EDGE_FTMO_PROFILE_VERIFIED": "true",
         "SESSION_EDGE_NEWS_FILE": str(news), "SESSION_EDGE_OVERLAP_MODE": "ALLOW"}
-    with pytest.raises(ConfigError):        # enabled_sessions required (no silent all)
-        load_config(env=env)
+    cfg = load_config(env=env)
+    assert tuple(cfg.enabled_sessions) == ("LONDON",)      # default, not ALL
+    # explicit ALL expands to every supported session
+    cfg_all = load_config(env={**env, "SESSION_EDGE_ENABLED_SESSIONS": "ALL"})
+    assert set(cfg_all.enabled_sessions) == {"SYDNEY", "TOKYO", "LONDON", "NEW_YORK"}
 
 
 def test_config_unknown_session_env_fails_closed(tmp_path):
@@ -171,19 +176,22 @@ def test_snapshot_deterministic_id():
 
 
 # ---- strategy capability truth (35-39) ------------------------------------
-def test_london_capability_reported_accurately():
+def test_capability_reports_multi_session_support():
+    # PR-4A: all four sessions are genuinely supported; multi-session scanning is on.
     d = CAP.as_dict()
-    assert d["opening_range_session"] == "LONDON"
-    assert d["supports_multi_session_scanning"] is False
-    assert d["strategy_supported_sessions"] == ["LONDON"]
+    assert d["opening_range_session"] == "LONDON"          # frozen reference profile
+    assert d["supports_multi_session_scanning"] is True
+    assert d["strategy_supported_sessions"] == ["LONDON", "NEW_YORK", "SYDNEY", "TOKYO"]
 
 
 @pytest.mark.parametrize("sid,hour", [("SYDNEY", 23), ("TOKYO", 3), ("NEW_YORK", 18)])
-def test_nonlondon_only_not_falsely_supported(sid, hour):
+def test_nonlondon_sessions_now_supported(sid, hour):
+    # PR-4A: Sydney/Tokyo/New-York are now first-class supported sessions (each is a
+    # session instance of the shared ORB methodology), eligible during their window.
     m = SessionModel(enabled_sessions=(sid,), overlap_mode=OverlapMode.DISABLE).validate()
     e = M.eligibility(m, utc(2026, 1, 7, hour), CAP)
-    assert e["eligible"] is False
-    assert e["reason"] == SessionReason.STRATEGY_SESSION_UNSUPPORTED
+    assert e["eligible"] is True
+    assert e["strategy_supported"] is True
 
 
 def test_london_ny_overlap_policy_documented_and_eligible():
@@ -194,11 +202,13 @@ def test_london_ny_overlap_policy_documented_and_eligible():
     assert e["eligible"] is True
 
 
-def test_report_only_policy_flags_but_allows():
+def test_report_only_policy_allows_supported_session():
+    # PR-4A: Tokyo is supported now, so both FAIL_CLOSED and REPORT_ONLY yield an
+    # eligible, strategy-supported session during its window.
     m = SessionModel(enabled_sessions=("TOKYO",), overlap_mode=OverlapMode.DISABLE,
                      strategy_session_policy="REPORT_ONLY").validate()
     e = M.eligibility(m, utc(2026, 1, 7, 3), CAP)
-    assert e["eligible"] is True and e["strategy_supported"] is False
+    assert e["eligible"] is True and e["strategy_supported"] is True
 
 
 # ---- overlap modes eligibility --------------------------------------------

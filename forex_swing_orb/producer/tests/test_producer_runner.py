@@ -243,7 +243,8 @@ def test_multi_symbol_scheduling(make_runner):
     results = runner.run_cycle(NOW)
     assert {r.symbol for r in results} == set(syms)
     assert all(r.outcome == CycleOutcome.INSTRUCTION_WRITTEN for r in results)
-    assert set(runner.state.last_processed) == set(syms)
+    # PR-4A: processed state is keyed per (symbol, session); default session=LONDON
+    assert set(runner.state.last_processed) == {s + "|LONDON" for s in syms}
     assert len(_pending(d["paths"])) == 2
 
 

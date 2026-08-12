@@ -62,8 +62,9 @@ def test_deterministic_signal_id(se, bullish_setup):
     ids2 = [i["signal_id"] for i in e2.instructions["EURUSD.FX"]]
     assert ids1 == ids2 and len(ids1) >= 1
     inst = e1.instructions["EURUSD.FX"][0]
+    assert inst["session_id"] == "LONDON"                 # PR-4A: default profile
     recomputed = se.compute_signal_id(
-        inst["strategy_version"], inst["symbol"], inst["direction"],
+        inst["strategy_version"], inst["session_id"], inst["symbol"], inst["direction"],
         inst["generated_timestamp"], inst["entry_price"], inst["stop_loss"], inst["take_profit"],
     )
     assert recomputed == inst["signal_id"]

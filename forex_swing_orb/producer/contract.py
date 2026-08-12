@@ -63,12 +63,17 @@ class RunnerReason:
     INSTRUCTION_WRITTEN = "R_INSTRUCTION_WRITTEN"
     DUPLICATE_SUPPRESSED = "R_DUPLICATE_SUPPRESSED"
     RECONCILE_REQUIRED = "R_RECONCILE_REQUIRED"
+    # PR-4A: two enabled sessions produced a same-symbol candidate in one cycle;
+    # one-position-per-symbol is account-GLOBAL, so the later session is suppressed
+    # (session identity never bypasses a global exposure control).
+    SESSION_SYMBOL_CLAIMED = "R_SESSION_SYMBOL_CLAIMED"
 
     REQUIRED = frozenset({
         OK, KILL_SWITCH, NO_NEW_BAR, SESSION_INELIGIBLE, DATA_STALE, DATA_GAP, DATA_FUTURE_BAR,
         DATA_UNCLOSED_BAR, DATA_INSUFFICIENT, DATA_NOT_FOREX, DATA_UNAVAILABLE,
         ACCOUNT_UNAVAILABLE, ACCOUNT_STALE, ACCOUNT_ANCHOR_UNAVAILABLE, NO_CANDIDATE,
         COMPLIANCE_REJECT, INSTRUCTION_WRITTEN, DUPLICATE_SUPPRESSED, RECONCILE_REQUIRED,
+        SESSION_SYMBOL_CLAIMED,
     })
 
 
@@ -100,6 +105,10 @@ class RunnerConfig:
     # (backward compatible with pre-9A runners/tests).
     session_model: object = None
     strategy_capability: object = None
+    # PR-4A: the enabled session profiles the runner fans out over (one ORB
+    # evaluation per profile per symbol). Empty -> a single implicit LONDON profile
+    # (backward compatible: the frozen engine's default session is LONDON).
+    session_profiles: tuple = ()
 
 
 @dataclass(frozen=True)

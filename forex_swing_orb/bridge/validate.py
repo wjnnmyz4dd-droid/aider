@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 from . import serialize
-from .contract import REQUIRED_INSTRUCTION_FIELDS, DIRECTIONS, ReasonCode
+from .contract import REQUIRED_INSTRUCTION_FIELDS, SESSION_ID_RE, DIRECTIONS, ReasonCode
 from .paths import SIGNAL_ID_RE
 import re
 
@@ -50,6 +50,9 @@ def validate_record(record, cfg, now, expected_signal_id=None):
         return False, ReasonCode.E_ID, {"signal_id": signal_id}
     if expected_signal_id is not None and signal_id != expected_signal_id:
         return False, ReasonCode.E_ID, {"signal_id": signal_id, "filename": expected_signal_id}
+    # session_id well-formed (transport shape only; enablement is producer authority)
+    if not (isinstance(record["session_id"], str) and re.match(SESSION_ID_RE, record["session_id"])):
+        return False, ReasonCode.E_FIELDS, {"session_id": record["session_id"]}
     # (dedup is resolved once by the shared SeenResolver in the consumer)
     # 6. expiry (expired iff now >= expiration_timestamp — strategy spec §8.2)
     exp = serialize.parse_iso(record["expiration_timestamp"])

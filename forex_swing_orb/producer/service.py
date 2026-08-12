@@ -169,7 +169,8 @@ def build_from_env(env=None, config_path=None, client=None, now_fn=_utc_now):
         account=wiring.build_account_provider(client, cfg),
         news=wiring.build_news_provider(cfg),
         broker=wiring.build_broker_provider(client, cfg),
-        strategy=wiring.build_strategy(cfg),
+        strategy=wiring.build_strategy(cfg),                 # LONDON legacy fallback
+        strategy_by_session=wiring.build_session_strategies(cfg),   # PR-4A per-session
         state_path=cfg.producer_state_path,
         runner_audit_path=cfg.runner_audit_path,
         compliance_audit_path=cfg.compliance_audit_path)

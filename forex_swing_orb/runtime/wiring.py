@@ -52,7 +52,8 @@ def build_compliance_config(cfg):
 
 
 def build_runner_config(cfg, compliance=None):
-    from ..session.capability import LONDON_ORB_CAPABILITY
+    from ..session.capability import SESSION_ORB_CAPABILITY
+    from ..session.profiles import profiles_for
     compliance = compliance or build_compliance_config(cfg)
     return RunnerConfig(
         symbols=tuple(cfg.symbols),
@@ -61,8 +62,11 @@ def build_runner_config(cfg, compliance=None):
         cadence_sec=cfg.cadence_sec,
         compliance=compliance,
         strategy_config={"min_history_bars": 60},
-        session_model=cfg.session_model(),    # pre-strategy session gate (canonical)
-        strategy_capability=LONDON_ORB_CAPABILITY)
+        session_model=cfg.session_model(),    # session context/audit (canonical)
+        strategy_capability=SESSION_ORB_CAPABILITY,
+        # PR-4A: the enabled session profiles the runner fans out over (validated,
+        # deterministic order). Fails closed at config time on an unknown session.
+        session_profiles=profiles_for(cfg.enabled_sessions))
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +133,23 @@ def build_news_provider(cfg):
 
 def build_strategy(cfg):
     return load_engine({"min_history_bars": 60})
+
+
+def build_session_strategies(cfg):
+    """One session-configured frozen engine per ENABLED session profile (PR-4A).
+
+    Each engine is the SAME frozen SignalEngine, differing only by the session
+    timing overrides from its SessionProfile (session_id/tz/OR start/OR window/
+    entry end/Friday cutoff). Geometry (breakout/stop/RR/width) is shared. Returns
+    ``{session_id: SignalEngine}`` — the runner fans out over these independently."""
+    from ..producer.strategy_adapter import StrategyAdapter
+    from ..session.profiles import profiles_for
+    out = {}
+    for profile in profiles_for(cfg.enabled_sessions):
+        engine_cfg = {"min_history_bars": 60}
+        engine_cfg.update(profile.engine_overrides())     # session clock only
+        out[profile.session_id] = StrategyAdapter(load_engine(engine_cfg))
+    return out
 
 
 def build_truth_source(client):

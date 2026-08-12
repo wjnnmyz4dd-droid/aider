@@ -35,7 +35,11 @@ import pandas as pd
 
 STRATEGY_ID = "forex_swing_orb"
 STRATEGY_VERSION = "swing_orb.v1.4.0"
-INSTRUCTION_SCHEMA_VERSION = 1
+# schema 2 (PR-4A): the instruction carries an explicit ``session_id`` so a
+# multi-session pipeline can identify which session produced the setup. Legacy
+# schema-1 instructions (London-only era, no session_id) are retired from the
+# generalized path — the bridge allow-list accepts schema 2 only.
+INSTRUCTION_SCHEMA_VERSION = 2
 
 DEFAULT_CONFIG = {
     "execution_tf_minutes": 15,
@@ -52,6 +56,7 @@ DEFAULT_CONFIG = {
     "eq_atr_mult": 0.1,
     "minor_pivot_k": 1,
     "confirm_bars": 1,
+    "session_id": "LONDON",
     "session_tz": "Europe/London",
     "or_start_local_hour": 8,
     "or_start_local_minute": 0,
@@ -421,8 +426,13 @@ def combined_trend(bull_h4, bull_d1):
     return "NEUTRAL"
 
 
-def london_window_utc(local_date, cfg):
-    """Return (start_utc, end_utc, ok, reason) for the London OR window on a date.
+def session_window_utc(local_date, cfg):
+    """Return (start_utc, end_utc, ok, reason) for the configured session's opening
+    range window on a date, in the session's own IANA timezone.
+
+    Session-agnostic (PR-4A): the window is driven entirely by the session-timing
+    config keys (``session_tz``/``or_start_local_*``/``or_window_minutes``), so the
+    SAME implementation serves every session profile. London is one profile.
 
     Fail-closed on DST-transition ambiguity: if the UTC offset at the window
     start differs from the offset at the window end, the window straddles a
@@ -452,6 +462,12 @@ def session_end_utc(local_date, cfg, hour):
     return end_local.astimezone(timezone.utc)
 
 
+def london_window_utc(local_date, cfg):
+    """Backward-compatible wrapper: the London OR window is now one session profile
+    of the generalized session_window_utc(). Kept so existing callers/tests work."""
+    return session_window_utc(local_date, cfg)
+
+
 def format_price(value):
     return "{:.5f}".format(float(value))
 
@@ -460,9 +476,15 @@ def format_ts(ts):
     return pd.Timestamp(ts).tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def compute_signal_id(strategy_version, symbol, direction, generated_ts, entry, stop, target):
+def compute_signal_id(strategy_version, session_id, symbol, direction, generated_ts,
+                      entry, stop, target):
+    """Deterministic 16-hex signal identity. ``session_id`` is a first-class input
+    (PR-4A) so the SAME symbol/date/direction/geometry in two different sessions
+    yields two DIFFERENT signal_ids (no cross-session dedup collision)."""
+    if not session_id:
+        raise ValueError("compute_signal_id requires a non-empty session_id")
     payload = "|".join([
-        strategy_version, symbol, direction, generated_ts,
+        strategy_version, session_id, symbol, direction, generated_ts,
         format_price(entry), format_price(stop), format_price(target),
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -610,14 +632,15 @@ def evaluate_symbol(symbol, df_in, cfg):
     hh4 = health_h4.to_numpy()
     hd1 = health_d1.to_numpy()
 
-    # Per-day London opening range table (deterministic).
+    # Per-day session opening range table (deterministic; the session is selected
+    # by the injected config — London is one profile of the generalized engine).
     tz = ZoneInfo(cfg["session_tz"])
     local_dates = idx.tz_convert(tz)
     or_table = {}
     day_keys = pd.Series(local_dates.date, index=range(n))
     unique_days = sorted(set(day_keys.tolist()))
     for day in unique_days:
-        start_utc, end_utc, dok, dreason = london_window_utc(day, cfg)
+        start_utc, end_utc, dok, dreason = session_window_utc(day, cfg)
         if not dok:
             or_table[day] = (None, None, False, dreason)
             continue
@@ -731,7 +754,7 @@ def evaluate_symbol(symbol, df_in, cfg):
             audit.append(rec)
             continue
 
-        start_utc, end_utc, dok, _ = london_window_utc(day, cfg)
+        start_utc, end_utc, dok, _ = session_window_utc(day, cfg)
         eligible = dok and (idx[i] >= end_utc) and (idx[i] < session_end_utc(day, cfg, cfg["session_end_local_hour"]))
         if not eligible:
             rec["reason_code"] = ReasonCode.DST_AMBIGUOUS if (not dok) else ReasonCode.SESSION_INELIGIBLE
@@ -932,6 +955,7 @@ def new_audit(symbol, ts, cfg, reason):
     return {
         "evaluation_timestamp": (format_ts(ts) if ts is not None else None),
         "symbol": symbol,
+        "session_id": cfg.get("session_id"),
         "strategy_id": STRATEGY_ID,
         "strategy_version": STRATEGY_VERSION,
         "stage": "SESSION",
@@ -959,10 +983,15 @@ def build_instruction(symbol, direction, entry, stop, target, gen_ts, exp_ts, cf
     dir_str = "LONG" if direction > 0 else "SHORT"
     gen_s = format_ts(gen_ts)
     exp_s = format_ts(exp_ts)
-    sid = compute_signal_id(STRATEGY_VERSION, symbol, dir_str, gen_s, entry, stop, target)
+    session_id = cfg.get("session_id")
+    if not session_id:
+        raise ValueError("build_instruction requires cfg['session_id'] (fail closed)")
+    sid = compute_signal_id(STRATEGY_VERSION, session_id, symbol, dir_str, gen_s,
+                            entry, stop, target)
     return {
         "schema_version": INSTRUCTION_SCHEMA_VERSION,
         "signal_id": sid,
+        "session_id": session_id,
         "strategy_id": STRATEGY_ID,
         "strategy_version": STRATEGY_VERSION,
         "symbol": symbol,

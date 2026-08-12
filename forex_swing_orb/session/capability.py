@@ -47,24 +47,28 @@ class StrategyCapability:
         }
 
 
-# The frozen Session Edge Swing-ORB engine (run_dir/code/signal_engine.py):
-# a LONDON Opening-Range strategy. It does NOT compute a Sydney/Tokyo/New-York
-# opening range and does NOT implement overlap-specific setups. LONDON_NEW_YORK is
-# eligible only because it occurs AFTER the London OR is established (the frozen
-# rules still evaluate on M15 during that overlap); it is NOT a distinct overlap
-# setup. SYDNEY/TOKYO/NEW_YORK-only are NOT supported.
-LONDON_ORB_CAPABILITY = StrategyCapability(
+# PR-4A: the Session Edge Swing-ORB engine now applies the SAME ORB methodology
+# independently to every supported session (Sydney/Tokyo/London/New-York), each
+# with its own session clock (session_window_utc + a SessionProfile). Multi-session
+# scanning is genuinely supported: the producer fans out one independent ORB
+# evaluation per enabled session profile. Overlap-specific setups are still NOT a
+# distinct strategy — an overlap is just two independently-identified session
+# evaluations, so overlap-specific setup support remains False.
+SESSION_ORB_CAPABILITY = StrategyCapability(
     strategy_id="forex_swing_orb",
     strategy_version="swing_orb.v1.4.0",
-    supported_session_models=("LONDON_OPENING_RANGE",),
-    opening_range_session=LONDON,
+    supported_session_models=("SESSION_OPENING_RANGE",),
+    opening_range_session=LONDON,                        # the frozen reference profile
     execution_timeframe="M15",
     higher_timeframes=("H4", "D1"),
-    supports_multi_session_scanning=False,
+    supports_multi_session_scanning=True,
     supports_overlap_specific_setup=False,
-    strategy_supported_sessions=frozenset({LONDON}),
-    strategy_supported_overlaps=frozenset({LONDON_NEW_YORK}),
+    strategy_supported_sessions=frozenset({SYDNEY, TOKYO, LONDON, NEW_YORK}),
+    strategy_supported_overlaps=frozenset({SYDNEY_TOKYO, TOKYO_LONDON, LONDON_NEW_YORK}),
 )
+
+# Backward-compatible alias (older imports/tests referenced the London-only name).
+LONDON_ORB_CAPABILITY = SESSION_ORB_CAPABILITY
 
 
 def strategy_session_support(capability, kind, ident, active_sessions, active_overlaps):

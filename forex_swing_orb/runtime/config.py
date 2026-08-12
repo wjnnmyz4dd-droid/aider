@@ -304,9 +304,17 @@ def _validate(merged):
     mt5_login = merged.get("mt5_login")
     mt5_login = _as_int("mt5_login", mt5_login) if mt5_login not in (None, "") else None
 
-    # -- Phase 9A: canonical session framework (fail closed) ----------------
+    # -- Phase 9A/PR-4A: canonical session framework (fail closed) ----------
     from ..session.model import SessionModel, SessionConfigError, OverlapMode
-    enabled_sessions = _parse_list(_require(merged, "enabled_sessions"))
+    # Default remains LONDON when the operator does not select sessions (§13/§15).
+    _raw_sessions = merged.get("enabled_sessions")
+    enabled_sessions = (_parse_list(_raw_sessions) if _raw_sessions not in (None, "", ())
+                        else ("LONDON",))
+    # PR-4A: 'ALL' is a convenience that expands deterministically to every supported
+    # session. Expanded here (single authority) so launcher/config/env all agree.
+    if "ALL" in enabled_sessions:
+        from ..session.profiles import SUPPORTED_SESSION_IDS
+        enabled_sessions = SUPPORTED_SESSION_IDS
     enabled_overlaps = _parse_list(merged.get("enabled_overlaps", ()))
     overlap_mode = str(_require(merged, "overlap_mode")).upper()
     if overlap_mode not in OverlapMode.ALL:

@@ -107,11 +107,12 @@ class StubEngine:
     orchestration is deterministic without crafting signal-triggering OHLC."""
 
     def __init__(self, emit=True, direction="LONG", risk_fraction=0.0025,
-                 entry=1.10000):
+                 entry=1.10000, session_id="LONDON"):
         self.emit = emit
         self.direction = direction
         self.risk_fraction = risk_fraction
         self.entry = entry
+        self.session_id = session_id
         self.instructions = {}
         self.audit = {}
 
@@ -127,11 +128,12 @@ class StubEngine:
                 stop, target = entry - 0.0020, entry + 0.0040
             else:
                 stop, target = entry + 0.0020, entry - 0.0040
+            session_id = getattr(self, "session_id", "LONDON")
             sid = hashlib.sha256(
-                f"{sym}|{self.direction}|{gen}|{entry}|{stop}|{target}".encode()
+                f"{sym}|{session_id}|{self.direction}|{gen}|{entry}|{stop}|{target}".encode()
             ).hexdigest()[:16]
             self.instructions[sym] = [{
-                "schema_version": 1, "signal_id": sid,
+                "schema_version": 2, "signal_id": sid, "session_id": session_id,
                 "strategy_id": "forex_swing_orb",
                 "strategy_version": "swing_orb.v1.4.0",
                 "symbol": sym, "direction": self.direction,

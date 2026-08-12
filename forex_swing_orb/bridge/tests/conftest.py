@@ -35,8 +35,8 @@ def wired(tmp_path):
 
 def make_instruction(signal_id="a1b2c3d4e5f60718", direction="LONG",
                      entry=1.10000, stop=None, target=None, now=NOW,
-                     strategy_version="swing_orb.v1.4.0", schema_version=1,
-                     generated=None, expiration=None):
+                     strategy_version="swing_orb.v1.4.0", schema_version=2,
+                     generated=None, expiration=None, session_id="LONDON"):
     """A valid engine-shaped instruction dict (WITHOUT integrity_digest)."""
     if stop is None:
         stop = entry - 0.0020 if direction == "LONG" else entry + 0.0020
@@ -47,6 +47,7 @@ def make_instruction(signal_id="a1b2c3d4e5f60718", direction="LONG",
     return {
         "schema_version": schema_version,
         "signal_id": signal_id,
+        "session_id": session_id,
         "strategy_id": "forex_swing_orb",
         "strategy_version": strategy_version,
         "symbol": "EURUSD.FX",

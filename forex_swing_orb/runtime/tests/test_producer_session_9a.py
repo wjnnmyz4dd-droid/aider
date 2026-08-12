@@ -23,13 +23,18 @@ SID = "0123456789abcdef"
 
 
 def _spy_strategy(runner):
+    """Count strategy evaluations across ALL per-session adapters (PR-4A fan-out)."""
     calls = {"n": 0}
-    orig = runner.strategy.evaluate
+    adapters = list(runner._strategy_by_session.values())
+    if runner.strategy is not None:
+        adapters.append(runner.strategy)
+    for a in set(adapters):
+        orig = a.evaluate
 
-    def wrapped(symbol, bars):
-        calls["n"] += 1
-        return orig(symbol, bars)
-    runner.strategy.evaluate = wrapped
+        def wrapped(symbol, bars, _orig=orig):
+            calls["n"] += 1
+            return _orig(symbol, bars)
+        a.evaluate = wrapped
     return calls
 
 
@@ -58,16 +63,24 @@ def test_disabled_session_prevents_strategy_evaluation(env_config, client):
     assert list(BridgePaths(paths["bridge_root"]).pending.glob("*.json")) == []
 
 
-def test_unsupported_session_fails_closed_before_strategy(env_config, client):
-    # TOKYO active at 03:00 but strategy-unsupported; use TOKYO enabled and a Tokyo hour
-    from datetime import timezone, datetime
-    tok_now = datetime(2026, 1, 7, 3, 0, tzinfo=timezone.utc)
-    env, _ = env_config(SESSION_EDGE_ENABLED_SESSIONS="TOKYO", SESSION_EDGE_OVERLAP_MODE="DISABLE")
-    svc = build_producer(env=env, client=client, now_fn=lambda: tok_now)
+def test_all_supported_sessions_are_advertised():
+    # PR-4A: Sydney/Tokyo/London/New-York are now genuinely supported (no longer
+    # fail-closed-unsupported). The capability truthfully reflects the profiles.
+    from forex_swing_orb.session.capability import SESSION_ORB_CAPABILITY as C
+    assert C.strategy_supported_sessions == frozenset(
+        {"SYDNEY", "TOKYO", "LONDON", "NEW_YORK"})
+    assert C.supports_multi_session_scanning is True
+
+
+def test_enabled_session_outside_its_window_is_ineligible(env_config, client):
+    # NEW_YORK enabled but inactive at 10:00 UTC (NY 05:00, before its OR) -> the
+    # engine is NOT evaluated for that session (deterministic no-trade).
+    env, _ = env_config(SESSION_EDGE_ENABLED_SESSIONS="NEW_YORK",
+                        SESSION_EDGE_OVERLAP_MODE="DISABLE")
+    svc = build_producer(env=env, client=client, now_fn=lambda: NOW)
     calls = _spy_strategy(svc.runner)
-    res = svc.runner.run_cycle(tok_now)
-    # data may be rejected (rates end at 10:00 conftest) but session gate is checked
-    # only after data validation; assert strategy not called and reason present
+    res = svc.runner.run_cycle(NOW)
+    assert res[0].outcome == CycleOutcome.SESSION_INELIGIBLE
     assert calls["n"] == 0
 
 

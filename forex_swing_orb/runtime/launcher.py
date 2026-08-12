@@ -70,6 +70,27 @@ def canonical_symbols(symbols):
     return tuple(out)
 
 
+def canonical_sessions(raw):
+    """Normalize an operator ``--sessions`` value into a validated, deduplicated,
+    canonically-ordered tuple. Accepts 'ALL' (expands to all supported sessions).
+    The launcher only NORMALIZES + validates shape; runtime.config remains the
+    single session authority (it validates again, fail closed). Raises ValueError
+    on an unknown/empty selection so the launcher can fail closed before start."""
+    from ..session.profiles import SUPPORTED_SESSION_IDS
+    tokens = [t.strip().upper() for t in str(raw).replace(",", " ").split()]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        raise ValueError("no sessions selected")
+    if "ALL" in tokens:
+        return tuple(SUPPORTED_SESSION_IDS)
+    unknown = [t for t in tokens if t not in SUPPORTED_SESSION_IDS]
+    if unknown:
+        raise ValueError(f"unknown session(s): {unknown} "
+                         f"(supported: {list(SUPPORTED_SESSION_IDS)} or ALL)")
+    # canonical order; dedup
+    return tuple(s for s in SUPPORTED_SESSION_IDS if s in set(tokens))
+
+
 def build_env(base_env, *, bridge_root, runtime_dir, news_file, symbols,
               symbol_suffix, initial_balance, account_currency, ftmo_source,
               ftmo_verified_at, enabled_sessions=DEFAULT_SESSIONS,
@@ -177,6 +198,9 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                    help="comma-separated Forex majors, e.g. EURUSD,GBPUSD "
                         "(.FX suffix added automatically)")
     p.add_argument("--symbol-suffix", default="", help="broker symbol suffix, if any")
+    p.add_argument("--sessions", default="LONDON",
+                   help="comma-separated sessions to trade: SYDNEY,TOKYO,LONDON,"
+                        "NEW_YORK or ALL (default: LONDON)")
     p.add_argument("--initial-balance", type=float, default=None,
                    help="REQUIRED: true FTMO challenge starting capital (pinned; "
                         "never read from the live account)")
@@ -235,6 +259,12 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     news_file = runtime_dir / "news_bundle.json"
 
     symbols = canonical_symbols(args.symbols.split(","))
+    try:
+        sessions = canonical_sessions(args.sessions)
+    except ValueError as exc:
+        print(f"Session Edge launcher: invalid --sessions ({exc}). Nothing started.",
+              file=sys.stderr)
+        return 7
     # H3: the FTMO initial balance (challenge starting capital) MUST be explicitly
     # attested and pinned. It is NEVER re-anchored from the current live balance —
     # doing so would drift the static max-loss floor downward after any drawdown on
@@ -261,6 +291,7 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         os.environ, bridge_root=bridge_root, runtime_dir=str(runtime_dir),
         news_file=str(news_file), symbols=symbols, symbol_suffix=args.symbol_suffix,
         initial_balance=balance, account_currency=currency,
+        enabled_sessions=sessions,
         ftmo_source="FTMO 2-Step Swing (operator-attested via launcher)",
         ftmo_verified_at=datetime.now(timezone.utc).date().isoformat())
 
