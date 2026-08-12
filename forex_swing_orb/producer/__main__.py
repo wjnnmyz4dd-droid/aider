@@ -14,6 +14,7 @@ import sys
 
 from .contract import RunnerRefused
 from .service import build_from_env
+from .writer_lock import ProducerLockError, ProducerLockHeld
 
 
 def main(argv=None):
@@ -24,6 +25,15 @@ def main(argv=None):
         return 2
     try:
         service.run_forever()
+    except ProducerLockHeld as exc:                 # F-3: another producer owns this domain
+        print(f"producer refused to run: {exc}. Another producer is already the "
+              f"authoritative writer for this account/entry bridge; not starting a "
+              f"second writer.", file=sys.stderr)
+        return 4
+    except ProducerLockError as exc:               # F-3: lock could not be established
+        print(f"producer refused to run: writer authority could not be established "
+              f"({exc}); failing closed.", file=sys.stderr)
+        return 4
     except RunnerRefused as exc:                    # demo/FTMO safety gate
         print(f"producer refused to run: {exc}", file=sys.stderr)
         return 3

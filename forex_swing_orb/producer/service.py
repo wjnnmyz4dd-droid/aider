@@ -38,17 +38,22 @@ def configure_logging(log_path):
     return logger
 
 
-def write_health(health_path, dashboard, now):
-    """Atomically write the read-only status snapshot to a health file."""
+def write_health(health_path, dashboard, now, extra=None):
+    """Atomically write the read-only status snapshot to a health file. ``extra`` is
+    an optional dict merged in (e.g. producer writer-lock diagnostics)."""
     from ..bridge.atomic import atomic_write_text
-    atomic_write_text(health_path, serialize.canonical_json(dashboard.status(now)))
+    status = dashboard.status(now)
+    if extra:
+        status = {**status, **extra}
+    atomic_write_text(health_path, serialize.canonical_json(status))
 
 
 class ProducerService:
     """Background loop around :class:`ProducerRunner`. No console window required."""
 
     def __init__(self, runner, log_path, health_path, now_fn=_utc_now,
-                 compliance_status_path=None, session_status_path=None, advisory=None):
+                 compliance_status_path=None, session_status_path=None, advisory=None,
+                 writer_lock=None):
         self.runner = runner
         self.logger = configure_logging(log_path)
         self.health_path = health_path
@@ -56,8 +61,18 @@ class ProducerService:
         self.compliance_status_path = compliance_status_path
         self.session_status_path = session_status_path
         self.advisory = advisory                 # Phase 9A ShadowAdvisoryService or None
+        # F-3: single-writer authority for this account/entry-bridge domain. Held for
+        # the whole service lifetime. None only in unit tests that drive the loop in
+        # isolation; production always injects one via build_from_env.
+        self.writer_lock = writer_lock
         self._now = now_fn
         self._stop = False
+
+    def _lock_health(self):
+        if self.writer_lock is None:
+            return None
+        return {"producer_lock_held": bool(self.writer_lock.held),
+                "producer_lock_domain": str(self.writer_lock.domain)}
 
     def _install_signals(self):
         try:
@@ -71,32 +86,51 @@ class ProducerService:
         self._stop = True
 
     def start(self):
+        # F-3: take single-writer authority BEFORE any market evaluation, compliance
+        # authorization, or bridge write. A second producer on the same account/entry
+        # bridge fails closed here and never reaches the loop below.
+        self._acquire_writer_authority()
         now = self._now()
         self.runner.preflight(now)              # refuses (raises) if unsafe
         self._install_signals()
         self.logger.info("producer service started (DEMO)")
-        write_health(self.health_path, self.dashboard, now)
+        write_health(self.health_path, self.dashboard, now, extra=self._lock_health())
+
+    def _acquire_writer_authority(self):
+        if self.writer_lock is None:
+            return
+        self.writer_lock.acquire()              # raises ProducerLockHeld/Unavailable -> fail closed
+        self.logger.info("producer writer authority acquired: %s",
+                         self.writer_lock.owner_diagnostics())
 
     def run_forever(self, max_cycles=None):
         """Deterministic closed-bar loop. Sleeps until the next exec-bar close."""
         self.start()
-        n = 0
-        while not self._stop:
-            now = self._now()
-            try:
-                self.runner.run_cycle(now)
-            except Exception as exc:                       # never crash the service loop
-                self.runner._last_error = repr(exc)
-                self.logger.exception("cycle error")
-            write_health(self.health_path, self.dashboard, now)
-            self._write_compliance_status(now)
-            self._write_session_status(now)
-            self._observe_advisory(now)
-            n += 1
-            if max_cycles is not None and n >= max_cycles:
-                break
-            self._sleep_until_next_bar(self._now())
+        try:
+            n = 0
+            while not self._stop:
+                now = self._now()
+                try:
+                    self.runner.run_cycle(now)
+                except Exception as exc:                       # never crash the service loop
+                    self.runner._last_error = repr(exc)
+                    self.logger.exception("cycle error")
+                write_health(self.health_path, self.dashboard, now, extra=self._lock_health())
+                self._write_compliance_status(now)
+                self._write_session_status(now)
+                self._observe_advisory(now)
+                n += 1
+                if max_cycles is not None and n >= max_cycles:
+                    break
+                self._sleep_until_next_bar(self._now())
+        finally:
+            self._release_writer_authority()
         self.logger.info("producer service stopped gracefully")
+
+    def _release_writer_authority(self):
+        if self.writer_lock is not None:
+            self.writer_lock.release()
+            self.logger.info("producer writer authority released")
 
     def _write_compliance_status(self, now):
         """Surface the FTMO compliance budget view as a read-only status file
@@ -180,8 +214,15 @@ def build_from_env(env=None, config_path=None, client=None, now_fn=_utc_now):
         from ..runtime.advisory import ShadowAdvisoryService
         advisory = ShadowAdvisoryService.build(cfg, client)
 
+    # F-3: single-writer authority is keyed to the entry-bridge root (the writer
+    # domain), so any two producers targeting the same bridge conflict regardless of
+    # config-file spelling. No production flag can disable it.
+    from .writer_lock import ProducerWriterLock
+    writer_lock = ProducerWriterLock(paths.root)
+
     return ProducerService(
         runner, log_path=cfg.producer_log_path,
         health_path=cfg.producer_health_path, now_fn=now_fn,
         compliance_status_path=cfg.compliance_status_path,
-        session_status_path=cfg.session_status_path, advisory=advisory)
+        session_status_path=cfg.session_status_path, advisory=advisory,
+        writer_lock=writer_lock)
