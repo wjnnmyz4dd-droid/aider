@@ -9,6 +9,7 @@ corrupt/future bridge state fails closed via BRIDGE_UNHEALTHY. Deterministic; no
 
 from __future__ import annotations
 
+import pathlib
 import shutil
 from datetime import datetime, timedelta, timezone
 
@@ -255,3 +256,123 @@ def test_manager_bridge_traffic_not_counted(tmp_path):
         encoding="utf-8")
     obs = observe_entry_bridge(p, NOW)
     assert obs.outstanding_count == 0 and obs.missing_ack_count == 0   # manage != entry
+
+
+# --------------------------------------------------------------------------- #
+# F-H5-1 — concurrent-claim TOCTOU: a file that vanishes mid-scan is reconciled
+# against CURRENT authoritative bridge state (claimed/ + terminal) before any
+# failure verdict. A normal consumer claim (pending->claimed FileMove) or a
+# terminal archive move MUST NOT be misread as a bridge failure.
+#
+# The consumer's atomic claim / terminal move is modeled deterministically by an
+# injected read hook that performs the real filesystem move BETWEEN directory
+# enumeration and the observer's read of that file, then raises FileNotFoundError
+# exactly as os-level read of a moved-away path would (§19 FileMove semantics).
+# --------------------------------------------------------------------------- #
+def _inject_move_on_read(monkeypatch, *, src, dst_dir, sid, delete=False):
+    """Patch Path.read_text so the FIRST read of ``src``/<sid>.json performs the
+    move ``src -> dst_dir`` (or delete) then raises FileNotFoundError, modeling a
+    concurrent consumer claim/terminal move happening mid-scan. All other reads
+    (including the observer's re-read of the moved-to location) behave normally."""
+    orig = pathlib.Path.read_text
+    fired = {"done": False}
+    name = sid + ".json"
+
+    def hooked(self, *a, **k):
+        if not fired["done"] and self.name == name and self.parent == src:
+            fired["done"] = True
+            if delete:
+                (src / name).unlink()
+            else:
+                shutil.move(str(src / name), str(dst_dir / name))
+            raise FileNotFoundError(str(self))
+        return orig(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", hooked)
+    return fired
+
+
+def test_pending_claimed_midscan_is_healthy_acknowledged(tmp_path, monkeypatch):
+    # pending -> claimed (normal atomic FileMove) while the observer scans:
+    # reconcile to claimed -> healthy, acknowledged, counted ONCE.
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_FRESH, where="pending")
+    fired = _inject_move_on_read(monkeypatch, src=p.pending, dst_dir=p.claimed, sid=SID_A)
+    obs = observe_entry_bridge(p, NOW)
+    assert fired["done"]                                  # the concurrent claim really happened
+    assert obs.healthy and obs.reason == ""
+    assert obs.outstanding_count == 1                     # counted once, not zero and not two
+    assert obs.missing_ack_count == 0                     # claim IS the acknowledgement
+    assert obs.outstanding_symbols == ("EURUSD.FX",)
+
+
+def test_stale_pending_claimed_midscan_not_missing_ack(tmp_path, monkeypatch):
+    # even a PENDING that had missed its ACK window becomes acknowledged the instant
+    # it is claimed mid-scan -> reconcile to claimed -> NOT missing-ack, healthy.
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_STALE, where="pending")
+    _inject_move_on_read(monkeypatch, src=p.pending, dst_dir=p.claimed, sid=SID_A)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy and obs.missing_ack_count == 0 and obs.outstanding_count == 1
+
+
+def test_pending_archived_midscan_released_healthy(tmp_path, monkeypatch):
+    # pending -> archive/accepted (terminal) mid-scan: terminal evidence -> released,
+    # not outstanding, healthy.
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_FRESH, where="pending")
+    _inject_move_on_read(monkeypatch, src=p.pending, dst_dir=p.archive_accepted, sid=SID_A)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy and obs.outstanding_count == 0 and obs.missing_ack_count == 0
+
+
+def test_pending_vanishes_no_evidence_fails_closed(tmp_path, monkeypatch):
+    # pending disappears from EVERY authoritative state with no terminal evidence:
+    # ambiguous bridge state -> FAIL CLOSED (never silently healthy).
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_FRESH, where="pending")
+    _inject_move_on_read(monkeypatch, src=p.pending, dst_dir=None, sid=SID_A, delete=True)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy is False and obs.missing_ack_count >= 1
+    assert SID_A in obs.reason
+
+
+def test_claimed_archived_midscan_released_healthy(tmp_path, monkeypatch):
+    # claimed -> archive/accepted (terminal) mid-scan: terminal evidence -> released.
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_FRESH, where="claimed")
+    _inject_move_on_read(monkeypatch, src=p.claimed, dst_dir=p.archive_accepted, sid=SID_A)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy and obs.outstanding_count == 0 and obs.missing_ack_count == 0
+
+
+def test_claimed_vanishes_no_terminal_fails_closed(tmp_path, monkeypatch):
+    # claimed disappears with NO terminal evidence -> unexplained -> FAIL CLOSED.
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_FRESH, where="claimed")
+    _inject_move_on_read(monkeypatch, src=p.claimed, dst_dir=None, sid=SID_A, delete=True)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy is False and obs.missing_ack_count >= 1
+
+
+def test_permission_error_midscan_still_fails_closed(tmp_path, monkeypatch):
+    # a NON-FileNotFound I/O error (e.g. permission) is NOT a benign disappearance:
+    # it must stay fail-closed, never reconciled to healthy.
+    p = _paths(tmp_path); _write(p, SID_A, exp=EXP_FRESH, where="pending")
+    orig = pathlib.Path.read_text
+
+    def hooked(self, *a, **k):
+        if self.name == SID_A + ".json" and self.parent == p.pending:
+            raise PermissionError("denied")
+        return orig(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", hooked)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy is False and obs.missing_ack_count >= 1
+
+
+def test_duplicate_pending_claimed_midscan_counted_once(tmp_path, monkeypatch):
+    # a signal already present in claimed/ AND still listed in pending (it moved
+    # after claimed enumeration): the pending read vanishes, reconcile finds it in
+    # claimed -> still counted exactly once.
+    p = _paths(tmp_path)
+    _write(p, SID_A, exp=EXP_FRESH, where="claimed")     # already enumerated as claimed
+    _write(p, SID_A, exp=EXP_FRESH, where="pending")     # stale duplicate listing
+    # the pending read will "vanish" (already claimed); reconcile confirms claimed
+    _inject_move_on_read(monkeypatch, src=p.pending, dst_dir=None, sid=SID_A, delete=True)
+    obs = observe_entry_bridge(p, NOW)
+    assert obs.healthy and obs.outstanding_count == 1 and obs.missing_ack_count == 0
