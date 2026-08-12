@@ -87,15 +87,22 @@ def compute_coverage(normalized_events, raw_calendar):
     return coverage_start, coverage_end, COVERAGE_EVENT_SPAN
 
 
-def establish_effective_as_of(raw_calendar, normalized_events, now, cfg):
+def establish_effective_as_of(raw_calendar, normalized_events, now, cfg,
+                              content_hash=None, previous=None):
     """Return ``(effective_calendar_as_of, coverage_start, coverage_end, basis,
-    coverage_verified)``.
+    coverage_verified, content_first_seen)`` (both timestamps tz-aware UTC).
 
-    The calendar must demonstrably cover ``now`` (fail closed on the wrong week).
-    ``effective_calendar_as_of`` is the source-declared generated timestamp when
-    available, else the fetch time — but ONLY once coverage proves the payload is the
-    calendar for the current period. This is what makes the written ``as_of`` a
-    validated-freshness signal rather than a bare download timestamp (F-2)."""
+    H4 correction — A RECENT DOWNLOAD IS NOT PROOF OF RECENT NEWS CONTENT. The
+    effective freshness is derived from the strongest defensible signal, in order:
+
+      1. a trusted upstream ``source_as_of`` (generated timestamp) — its own lineage;
+      2. otherwise the CONTENT-VERSION FIRST-SEEN instant: the time this exact content
+         (by ``content_hash``) was first observed. Re-downloading identical content
+         NEVER advances it, so unchanged/stale content ages out through the existing
+         compliance freshness rule (``max_age_sec`` on the bundle ``as_of``).
+
+    Coverage (does the payload cover ``now``) remains an INDEPENDENT requirement —
+    it can never substitute for freshness. Fetch time is never used as freshness."""
     now = _require_utc(now, Reason.MISSING_SOURCE_TIME)
     coverage_start, coverage_end, basis = compute_coverage(normalized_events, raw_calendar)
     grace = timedelta(seconds=int(cfg.coverage_grace_sec))
@@ -107,10 +114,22 @@ def establish_effective_as_of(raw_calendar, normalized_events, now, cfg):
             "basis": basis})
 
     if raw_calendar.source_as_of is not None:
-        effective = _require_utc(raw_calendar.source_as_of, Reason.INVALID_TIMESTAMP)
+        # a trusted upstream generated timestamp IS the content lineage
+        src = _require_utc(raw_calendar.source_as_of, Reason.INVALID_TIMESTAMP)
+        return src, coverage_start, coverage_end, basis, True, src
+
+    # No upstream generated timestamp (e.g. the ForexFactory weekly feed): the
+    # effective freshness is the CONTENT-FIRST-SEEN instant, pinned across repeated
+    # downloads of the same content version and across restart (persisted in the
+    # bundle). Fetch time is never used here — that is the H4 defect this removes.
+    prev = previous or {}
+    prev_hash = prev.get("content_hash")
+    prev_first_seen = serialize.parse_iso(prev.get("content_first_seen"))
+    if content_hash is not None and prev_hash == content_hash and prev_first_seen is not None:
+        # unchanged content -> keep the ORIGINAL lineage; never rejuvenate, and never
+        # move it to a younger instant (clock rollback cannot make stale look fresh).
+        first_seen = prev_first_seen
     else:
-        # No upstream generated timestamp: coverage is the defensible signal, so the
-        # validated-current fetch time is the effective freshness. (Not a bare
-        # download stamp — it is only reached AFTER coverage proves currency.)
-        effective = _require_utc(raw_calendar.fetched_at, Reason.MISSING_SOURCE_TIME)
-    return effective, coverage_start, coverage_end, basis, True
+        # validated new/changed content establishes a fresh lineage at first sight
+        first_seen = now
+    return first_seen, coverage_start, coverage_end, basis, True, first_seen

@@ -138,12 +138,14 @@ def test_source_as_of_absent_uses_coverage(tmp_path):
 
 def test_content_hash_and_change_tracking(tmp_path):
     acq = _acq(week_rows(NOW), tmp_path)
-    b1 = acq.refresh(NOW, previous_content_hash=None)
+    b1 = acq.refresh(NOW, previous=None)
     h1 = b1["provenance"]["content_hash"]
     assert b1["provenance"]["content_changed"] is None       # first sight
-    b2 = acq.refresh(NOW, previous_content_hash=h1)
+    b2 = acq.refresh(NOW, previous=b1)                        # pass the whole prior bundle
     assert b2["provenance"]["content_changed"] is False      # unchanged, still current
     assert b2["provenance"]["content_hash"] == h1
+    # H4: unchanged content keeps its ORIGINAL first-seen lineage (not re-stamped)
+    assert b2["provenance"]["content_first_seen"] == b1["provenance"]["content_first_seen"]
 
 
 def test_repeated_unchanged_current_week_stays_valid(tmp_path):

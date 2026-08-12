@@ -98,11 +98,18 @@ class CalendarAcquisitionService:
             self._busy = False
 
     def _acquire_with_retries(self, now):
+        # H4: the content-version lineage (content_hash + content_first_seen) comes
+        # from the DURABLE last-known-good bundle on disk, so a restart cannot make
+        # unchanged/stale content look freshly downloaded. In-memory hash is only a
+        # diagnostic fallback.
+        previous = writer.read_last_good(self.cfg.output_file)
+        if previous is None and self._last_content_hash is not None:
+            previous = self._last_content_hash
         attempts = self.cfg.retries + 1
         last = None
         for i in range(attempts):
             try:
-                return self.acquirer.refresh(now, previous_content_hash=self._last_content_hash)
+                return self.acquirer.refresh(now, previous=previous)
             except AcquisitionError as exc:
                 last = exc
                 if i < attempts - 1:
