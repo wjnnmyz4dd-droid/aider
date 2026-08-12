@@ -42,7 +42,11 @@ input int    PollSeconds     = 5;                      // bridge poll cadence (n
 input long   MagicNumber     = 920240125;
 
 //--- allow-lists mirror bridge/config.py ----------------------------
-#define ALLOW_SCHEMA_VERSION   1
+// PR-4A.1: the production instruction schema is 2 (adds a required session_id so
+// the multi-session pipeline can identify the originating session). This MUST equal
+// bridge/config.py schema_version_allowlist; a source-parity test guards divergence.
+// Schema 1 (London-only era, no session_id) is retired and fails closed here.
+#define ALLOW_SCHEMA_VERSION   2
 #define ALLOW_STRATEGY_ID      "forex_swing_orb"
 #define ALLOW_STRATEGY_VERSION "swing_orb.v1.4.0"
 #define FUTURE_SKEW_SEC        60
@@ -251,9 +255,10 @@ string ValidateInstruction(const string sid, const uchar &raw[], const int rawle
    if(!ok || schema != ALLOW_SCHEMA_VERSION) return "E_SCHEMA";
    if(!VerifyIntegrityDigest(raw, rawlen))    return "E_INTEGRITY";
 
-   // required fields present
-   string need[] = {"signal_id","strategy_id","strategy_version","symbol","direction",
-                    "entry_price","stop_loss","take_profit","risk_fraction",
+   // required fields present (schema 2 adds session_id — validated for schema
+   // integrity only; the EA never evaluates session time or eligibility)
+   string need[] = {"signal_id","session_id","strategy_id","strategy_version","symbol",
+                    "direction","entry_price","stop_loss","take_profit","risk_fraction",
                     "generated_timestamp","expiration_timestamp"};
    for(int i = 0; i < ArraySize(need); i++)
       if(StringLen(JsonGet(json, need[i])) == 0) return "E_FIELDS";
@@ -301,6 +306,10 @@ void Execute(const string sid, const string json, const string received)
       WriteResult(sid, st, vreason, received, 0, 0, 0, 0, 0, 0, 0, "", "{}");
       return;
    }
+   // diagnostic only — the EA logs the originating session but NEVER decides
+   // session eligibility (session authority stays upstream in Session Edge).
+   Print("Session Edge EA: executing ", sid, " session=", JsonGet(json, "session_id"),
+         " ", direction, " ", symbol);
 
    // No-double-order guard: broker already holds this signal_id -> adopt.
    ulong existing = BrokerTicketByComment(sid);

@@ -110,10 +110,6 @@ class ProducerRunner:
             sess = session_snapshot(cfg.session_model, now, cfg.strategy_capability)
         self._last_session_snapshot = sess
 
-        # symbols for which THIS cycle already wrote an instruction — enforces
-        # one-position-per-symbol ACROSS sessions before any position is open (§18).
-        self._cycle_claimed_symbols = set()
-
         # Fan out: bars are fetched/validated once per symbol (session-independent),
         # then each enabled session profile is evaluated INDEPENDENTLY on those bars.
         for sym in cfg.symbols:
@@ -129,6 +125,45 @@ class ProducerRunner:
         # 11/12. result ingestion + reconciliation (read-only)
         self._ingest_and_reconcile(now)
         return results
+
+    def _outstanding_intents(self):
+        """(count, symbols) of entry instructions written but NOT yet terminal — the
+        files still in bridge pending/ or claimed/ (a terminal result archives them
+        out). This is authoritative on-disk truth, restart-safe, and self-releasing
+        (no capacity leak): a filled order leaves pending/claimed and is then owned by
+        broker open_position_count; a rejected/expired order also leaves it. Includes
+        THIS cycle's earlier writes (they land in pending/). Unreadable files still
+        count toward capacity (fail closed)."""
+        count = 0
+        symbols = set()
+        for d in (self.paths.pending, self.paths.claimed):
+            try:
+                files = [p for p in d.glob("*.json")]
+            except OSError:
+                continue
+            for f in files:
+                count += 1
+                try:
+                    ok, obj = serialize.loads(f.read_text(encoding="utf-8"))
+                except OSError:
+                    continue                       # counts toward capacity anyway
+                if ok and isinstance(obj, dict) and obj.get("symbol"):
+                    symbols.add(obj["symbol"])
+        return count, symbols
+
+    def _effective_account_state(self, acct):
+        """Broker account snapshot (immutable) with open_position_count / open_symbols
+        RAISED by outstanding entry intents, so compliance's existing max_open_positions
+        and one_position_per_symbol gates account for unfilled orders (MS-2). Broker
+        truth is never mutated — a shallow copy carries the effective view."""
+        res_count, res_symbols = self._outstanding_intents()
+        eff = dict(acct)
+        broker_open = acct.get("open_position_count")
+        if isinstance(broker_open, int) and not isinstance(broker_open, bool):
+            eff["open_position_count"] = broker_open + res_count
+        broker_syms = acct.get("open_symbols") or ()
+        eff["open_symbols"] = tuple(set(broker_syms) | res_symbols)
+        return eff
 
     def _session_trade_eligible(self, profile, now):
         """Per-session entry eligibility (PR-4A). Authority = the session's STRATEGY
@@ -231,17 +266,36 @@ class ProducerRunner:
                               [RunnerReason.NO_CANDIDATE], now, versions,
                               detail={**detail, "session_mismatch": instr.get("session_id")})
 
-        # 8. mandatory FTMO compliance (component is the only authority; GLOBAL)
         candidate = candidate_from_instruction(instr)
+        sid = instr["signal_id"]
+
+        # 8. dedup FIRST (exactly-once): a signal already anywhere in the bridge is an
+        # idempotent replay (e.g. restart re-emitting the same bar) — suppress it here,
+        # BEFORE compliance/capacity reservation, so a signal never counts ITSELF in
+        # the outstanding-intent reservation and a known duplicate needs no re-decision.
+        if ingest.already_seen(self.paths, sid):
+            self.state.mark_processed(sid_state, bar_iso)
+            return self._emit(CycleOutcome.DUPLICATE_SUPPRESSED, symbol, bar_iso,
+                              [RunnerReason.DUPLICATE_SUPPRESSED], now, versions,
+                              signal_id=sid, detail=detail)
+
+        # 9. mandatory FTMO compliance (component is the only authority; GLOBAL).
+        # MS-2: reserve account capacity for OUTSTANDING ENTRY INTENTS (instructions
+        # written but not yet filled/terminal — same cycle AND prior cycles/restart)
+        # so multi-session/multi-symbol fan-out cannot exceed max_open_positions or
+        # one-position-per-symbol before MT5 reflects the fills. Broker truth stays
+        # immutable; the effective count/symbols are what compliance checks (single
+        # place, no duplicated max-position arithmetic).
         bh = self.broker.snapshot(symbol, now) or {}
         market_state = {"symbol_tradable": bh.get("symbol_tradable"),
                         "market_open": bh.get("market_open")}
+        eff_acct = self._effective_account_state(acct)
         decision = self.compliance.evaluate(
-            candidate, market_state=market_state, account_state=acct,
+            candidate, market_state=market_state, account_state=eff_acct,
             broker_health=bh, news_bundle=news_bundle, now=now,
             kill_switch=False, dry_run=False)
 
-        # 9. compliance reject -> audit, no bridge write
+        # 10. compliance reject -> audit, no bridge write
         if not decision.is_pass:
             self.state.mark_processed(sid_state, bar_iso)
             return self._emit(
@@ -250,30 +304,11 @@ class ProducerRunner:
                 versions, signal_id=candidate["signal_id"],
                 compliance_decision_id=decision.decision_id, detail=detail)
 
-        # cross-session same-symbol guard (§18/§27): one-position-per-symbol is
-        # account-GLOBAL. If an earlier session already claimed this symbol THIS
-        # cycle, suppress the later session (session identity never multiplies
-        # account exposure). Global compliance still guards across cycles.
-        one_per_symbol = getattr(self.config.compliance.ftmo, "one_position_per_symbol", True)
-        if one_per_symbol and symbol in getattr(self, "_cycle_claimed_symbols", set()):
-            self.state.mark_processed(sid_state, bar_iso)
-            return self._emit(CycleOutcome.COMPLIANCE_REJECT, symbol, bar_iso,
-                              [RunnerReason.COMPLIANCE_REJECT,
-                               RunnerReason.SESSION_SYMBOL_CLAIMED], now, versions,
-                              signal_id=candidate["signal_id"],
-                              compliance_decision_id=decision.decision_id, detail=detail)
-
-        # 10. compliance pass -> dedup guard, then write the FULL engine instruction
-        sid = instr["signal_id"]
-        if ingest.already_seen(self.paths, sid):
-            self.state.mark_processed(sid_state, bar_iso)
-            return self._emit(CycleOutcome.DUPLICATE_SUPPRESSED, symbol, bar_iso,
-                              [RunnerReason.DUPLICATE_SUPPRESSED], now, versions,
-                              signal_id=sid, compliance_decision_id=decision.decision_id,
-                              detail=detail)
+        # 11. compliance pass -> write. The write lands the instruction in pending/,
+        # so the very next candidate's _outstanding_intents() scan reserves this
+        # slot+symbol (MS-2), same cycle.
         write_instruction(self.paths, instr, now, audit=self.bridge_audit)
         self.state.mark_written(sid)
-        self._cycle_claimed_symbols.add(symbol)
         self.state.mark_processed(sid_state, bar_iso)
         return self._emit(CycleOutcome.INSTRUCTION_WRITTEN, symbol, bar_iso,
                           [RunnerReason.INSTRUCTION_WRITTEN], now, versions,

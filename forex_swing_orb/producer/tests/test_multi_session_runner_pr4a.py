@@ -96,13 +96,15 @@ def test_same_symbol_two_sessions_distinct_signal_ids(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_same_symbol_one_per_symbol_across_sessions(tmp_path):
     # SAME symbol, both sessions active: exactly ONE instruction is written; the
-    # second session is suppressed by the account-global one-position-per-symbol rule.
+    # second session is rejected by the account-global one-position-per-symbol gate
+    # (the first write's pending intent raises the effective open_symbols set).
     runner, paths = _runner(tmp_path, ("LONDON", "NEW_YORK"), symbols=("EURUSD.FX",))
     res = runner.run_cycle(BOTH)
     written = [r for r in res if r.outcome == CycleOutcome.INSTRUCTION_WRITTEN]
-    suppressed = [r for r in res if RunnerReason.SESSION_SYMBOL_CLAIMED in r.reason_codes]
+    rejected = [r for r in res if r.outcome == CycleOutcome.COMPLIANCE_REJECT
+                and "ONE_PER_SYMBOL" in r.reason_codes]
     assert len(written) == 1                                 # NOT two positions on EURUSD
-    assert len(suppressed) == 1
+    assert len(rejected) == 1
     assert len(_pending(paths)) == 1                         # only one bridge instruction
 
 

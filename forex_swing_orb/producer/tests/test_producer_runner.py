@@ -190,9 +190,9 @@ def test_restart_no_duplicate_signal(make_runner, tmp_path):
     runner2 = ProducerRunner(
         d["cfg"], bridge_paths=d["paths"], market=d["market"], account=d["account"],
         news=d["news"], broker=d["broker"], strategy=d["engine"],
-        state_path=str(tmp_path / "state.json"),
-        runner_audit_path=str(tmp_path / "runner_audit.jsonl"),
-        compliance_audit_path=str(tmp_path / "compliance.jsonl"))
+        state_path=d["state_path"],
+        runner_audit_path=d["runner_audit_path"],
+        compliance_audit_path=d["compliance_audit_path"])
     r = _only(runner2.run_cycle(NOW))
     assert r.outcome == CycleOutcome.NO_NEW_BAR
     assert len(_pending(d["paths"])) == 1
@@ -202,13 +202,13 @@ def test_duplicate_instruction_prevented_after_state_loss(make_runner, tmp_path)
     runner, d = make_runner()
     runner.run_cycle(NOW)
     # wipe runner state entirely -> only the bridge dedup can prevent a dup
-    Path(tmp_path / "state.json").unlink()
+    Path(d["state_path"]).unlink(missing_ok=True)
     runner2 = ProducerRunner(
         d["cfg"], bridge_paths=d["paths"], market=d["market"], account=d["account"],
         news=d["news"], broker=d["broker"], strategy=d["engine"],
-        state_path=str(tmp_path / "state.json"),
-        runner_audit_path=str(tmp_path / "runner_audit.jsonl"),
-        compliance_audit_path=str(tmp_path / "compliance.jsonl"))
+        state_path=d["state_path"],
+        runner_audit_path=d["runner_audit_path"],
+        compliance_audit_path=d["compliance_audit_path"])
     r = _only(runner2.run_cycle(NOW))
     assert r.outcome == CycleOutcome.DUPLICATE_SUPPRESSED
     assert len(_pending(d["paths"])) == 1       # still exactly one
