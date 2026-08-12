@@ -15,6 +15,7 @@ invariants come from the frozen modules — nothing is recomputed here.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 from ..bridge import serialize
 from ..bridge.atomic import append_line_fsync
 from ..position import contract as PC
+from ..position import geometry as geo_mod
 from ..position import spec
 from ..position.closure import confirm_full_close
 from ..position.contract import (StopPhase, PMReason, ManualAction,
@@ -38,9 +40,11 @@ _CONSTRAINT = frozenset({
     mt5c.TRADE_RETCODE_INVALID_PRICE, mt5c.TRADE_RETCODE_TRADE_DISABLED,
 })
 
-# F2: quantization defaults when the broker symbol has no tick metadata.
-_FALLBACK_DIGITS = 5              # 5-digit FX default (point = 1e-5)
+# H6/M11: there is NO digit/pip fallback. When authoritative per-symbol geometry is
+# unavailable the manager takes no stop action (fail closed) — it never guesses a
+# digit count or pip size that could produce a wrong executable stop.
 _TICK_TOLERANCE = 0              # allowed deviation in ticks for stop equality
+_ABS_EPS = 1e-9                  # near-exact price equality when geometry is unknown
 
 
 class PMAudit:
@@ -230,14 +234,24 @@ class PositionManager:
         if price is None:
             return self._emit(st, PMReason.DATA_INSUFFICIENT, now)
 
+        # H6/M11: every BE / profit-lock / trail modification below is derived from
+        # per-symbol pip and tick geometry. If AUTHORITATIVE metadata is unavailable
+        # take NO stop action this cycle (the existing protective stop is preserved)
+        # and retry when metadata returns — never guess a pip size or digit count.
+        g = self._geo(sym)
+        if g is None:
+            return self._emit(st, PMReason.DATA_INSUFFICIENT, now, market_reference=price,
+                              reconciliation_status="symbol_geometry_unavailable")
+        cfg = self._cfg_for(g)                    # per-symbol pip; used for all pip math
+
         if st["phase"] == StopPhase.INITIAL:
-            trig = spec.breakeven_trigger_price(d, entry, R, self.cfg)
+            trig = spec.breakeven_trigger_price(d, entry, R, cfg)
             if not self._reached_q(d, price, trig, sym):
                 return self._emit(st, PMReason.BREAKEVEN_PENDING, now,
                                   trigger_price=trig, market_reference=price)
             self._event(st, PMReason.BREAKEVEN_TRIGGERED, now,
                         trigger_price=trig, market_reference=price)
-            cand = self._q(spec.breakeven_stop(d, entry, self.cfg), sym)
+            cand = self._q(spec.breakeven_stop(d, entry, cfg), sym)
             # protection already at/beyond BE (adopted / manual tighten): advance
             # phase without a redundant modification so later phases can engage.
             if self._at_or_beyond_q(d, cur, cand, sym):
@@ -248,13 +262,13 @@ class PositionManager:
                                      price, trig, now)
 
         if st["phase"] == StopPhase.BREAKEVEN:
-            trig = spec.profit_lock_trigger_price(d, entry, R, self.cfg)
+            trig = spec.profit_lock_trigger_price(d, entry, R, cfg)
             if not self._reached_q(d, price, trig, sym):
                 return self._emit(st, PMReason.NO_ACTION, now,
                                   trigger_price=trig, market_reference=price)
             self._event(st, PMReason.PROFIT_LOCK_TRIGGERED, now,
                         trigger_price=trig, market_reference=price)
-            cand = self._q(spec.profit_lock_stop(d, entry, R, self.cfg), sym)
+            cand = self._q(spec.profit_lock_stop(d, entry, R, cfg), sym)
             if self._at_or_beyond_q(d, cur, cand, sym):
                 st["phase"] = StopPhase.LOCKED
                 return self._emit(st, PMReason.PROFIT_LOCK_SET, now, trigger_price=trig,
@@ -263,7 +277,7 @@ class PositionManager:
                                      price, trig, now)
 
         # LOCKED / TRAILING -> structure trailing
-        return self._trail(st, price, swing, swing_ref, bars_since, now)
+        return self._trail(st, price, swing, swing_ref, bars_since, now, cfg)
 
     def _try_advance(self, st, cand, ok_reason, next_phase, price, trig, now):
         d, cur, sym = st["direction"], st["current_stop"], st["symbol"]
@@ -276,18 +290,18 @@ class PositionManager:
         return self._apply_stop(st, cand, ok_reason, now, next_phase=next_phase,
                                 trigger_price=trig, market_reference=price)
 
-    def _trail(self, st, price, swing, swing_ref, bars_since, now):
+    def _trail(self, st, price, swing, swing_ref, bars_since, now, cfg):
         d, cur, sym = st["direction"], st["current_stop"], st["symbol"]
         if swing is None or swing_ref is None:
             return self._emit(st, PMReason.TRAIL_PENDING, now, market_reference=price)
         # F6: structure freshness is mandatory for a trailing move.
-        if bars_since is None or spec.structure_is_stale(bars_since, self.cfg):
+        if bars_since is None or spec.structure_is_stale(bars_since, cfg):
             return self._emit(st, PMReason.DATA_STALE, now,
                               structure_reference=swing_ref, market_reference=price)
         if swing_ref == st.get("last_structure_ref"):        # no repeat for same structure
             return self._emit(st, PMReason.TRAIL_NO_IMPROVEMENT, now,
                               structure_reference=swing_ref, market_reference=price)
-        cand = spec.trailing_stop_candidate(d, swing, self.cfg)
+        cand = spec.trailing_stop_candidate(d, swing, cfg)   # per-symbol pip offset
         if cand is None:
             return self._emit(st, PMReason.DATA_INSUFFICIENT, now, market_reference=price)
         cand = self._q(cand, sym)
@@ -523,51 +537,80 @@ class PositionManager:
         """A non-action event line (e.g. trigger armed); not the cycle outcome."""
         self._safe_emit(self._record(st, reason, now, **fields))
 
-    # -- F2: symbol-tick quantization + tolerant comparison -----------------
-    def _point(self, symbol):
+    # -- H6/M11: authoritative per-symbol geometry (no fallback) ------------
+    def _geo(self, symbol):
+        """Resolve AUTHORITATIVE per-symbol FX geometry (point/digits/pip) from
+        broker metadata, or None (fail closed) when it is missing/malformed. Never
+        guesses a digit count or pip size."""
         try:
             info = self.mt5.symbol_info(symbol)
-            if info is not None and getattr(info, "point", None):
-                return float(info.point)
         except Exception:
-            pass
-        return 10.0 ** (-_FALLBACK_DIGITS)
+            return None
+        return geo_mod.resolve(info)
+
+    def _cfg_for(self, g):
+        """A per-symbol view of the frozen PM config with ``pip_size`` bound to the
+        authoritative per-symbol pip (H6). No other field changes, so the frozen
+        ``spec`` math converts every pip-denominated distance with the correct pip
+        for THIS symbol (0.0001 majors, 0.01 JPY)."""
+        return dataclasses.replace(self.cfg, pip_size=g.pip)
+
+    def _point(self, symbol):
+        g = self._geo(symbol)
+        return g.point if g is not None else None
 
     def _digits(self, symbol):
-        p = self._point(symbol)
-        return max(0, int(round(-math.log10(p)))) if p > 0 else _FALLBACK_DIGITS
+        g = self._geo(symbol)
+        return g.digits if g is not None else None
 
     def _q(self, value, symbol):
         """Quantize (normalize) a price to the symbol's tick grid (NormalizeDouble
-        analog). Returns value unchanged if non-finite."""
+        analog). Non-finite values pass through; when geometry is UNKNOWN the value
+        is returned UNCHANGED — never rounded to a guessed digit count (M11)."""
         if not isinstance(value, (int, float)) or not math.isfinite(value):
             return value
-        return round(value, self._digits(symbol))
+        g = self._geo(symbol)
+        if g is None:
+            return value
+        return round(value, g.digits)
 
-    def _ticks(self, value, symbol):
-        return int(round(value / self._point(symbol)))
+    def _ticks_g(self, value, g):
+        return int(round(value / g.point))
 
     def _eq_stop(self, a, b, symbol):
-        """Tolerant equality in tick space (absorbs broker normalization)."""
+        """Tolerant equality in tick space (absorbs broker normalization). When
+        geometry is unknown, fall back to a conservative near-exact price compare so
+        no fabricated grid can mask or invent a stop difference."""
         if a is None or b is None:
             return a is b
         if not (math.isfinite(a) and math.isfinite(b)):
             return False
-        return abs(self._ticks(a, symbol) - self._ticks(b, symbol)) <= _TICK_TOLERANCE
+        g = self._geo(symbol)
+        if g is None:
+            return abs(a - b) <= _ABS_EPS
+        return abs(self._ticks_g(a, g) - self._ticks_g(b, g)) <= _TICK_TOLERANCE
 
     def _legal_q(self, direction, current, candidate, symbol):
-        """Never-widen/never-loosen in tick space (equal = allowed)."""
-        ct, nt = self._ticks(current, symbol), self._ticks(candidate, symbol)
+        """Never-widen/never-loosen in tick space (equal = allowed). Unknown
+        geometry -> not legal (hold)."""
+        g = self._geo(symbol)
+        if g is None:
+            return False
+        ct, nt = self._ticks_g(current, g), self._ticks_g(candidate, g)
         if str(direction).upper() in ("LONG", "BULLISH"):
             return nt >= ct
         return nt <= ct
 
     def _improves_q(self, direction, current, candidate, symbol):
         """Strict improvement by >= min_trail_improvement, in tick space (fixes
-        exact-boundary double rounding)."""
-        ct, nt = self._ticks(current, symbol), self._ticks(candidate, symbol)
+        exact-boundary double rounding). Uses the per-symbol pip; unknown geometry
+        -> no improvement (hold)."""
+        g = self._geo(symbol)
+        if g is None:
+            return False
+        ct, nt = self._ticks_g(current, g), self._ticks_g(candidate, g)
         thresh = max(1, int(round(self.cfg.min_trail_improvement_pips
-                                  * self.cfg.pip_size / self._point(symbol))))
+                                  * g.pip / g.point)))
         if str(direction).upper() in ("LONG", "BULLISH"):
             return (nt - ct) >= thresh
         return (ct - nt) >= thresh
@@ -575,23 +618,33 @@ class PositionManager:
     def _min_stop_ok_q(self, direction, price, candidate, symbol):
         if self.cfg.broker_min_stop_pips <= 0:
             return True
-        dist = int(round(self.cfg.broker_min_stop_pips * self.cfg.pip_size / self._point(symbol)))
-        pt, nt = self._ticks(price, symbol), self._ticks(candidate, symbol)
+        g = self._geo(symbol)
+        if g is None:
+            return False                          # cannot verify distance -> hold
+        dist = int(round(self.cfg.broker_min_stop_pips * g.pip / g.point))
+        pt, nt = self._ticks_g(price, g), self._ticks_g(candidate, g)
         if str(direction).upper() in ("LONG", "BULLISH"):
             return (pt - nt) >= dist
         return (nt - pt) >= dist
 
     def _reached_q(self, direction, price, trigger, symbol):
-        """Trigger comparison (>= toward profit) in tick space."""
+        """Trigger comparison (>= toward profit) in tick space. Unknown geometry
+        -> not reached (hold)."""
         if trigger is None or not math.isfinite(price):
             return False
-        pt, tt = self._ticks(price, symbol), self._ticks(trigger, symbol)
+        g = self._geo(symbol)
+        if g is None:
+            return False
+        pt, tt = self._ticks_g(price, g), self._ticks_g(trigger, g)
         if str(direction).upper() in ("LONG", "BULLISH"):
             return pt >= tt
         return pt <= tt
 
     def _at_or_beyond_q(self, direction, current, target, symbol):
-        ct, tt = self._ticks(current, symbol), self._ticks(target, symbol)
+        g = self._geo(symbol)
+        if g is None:
+            return False
+        ct, tt = self._ticks_g(current, g), self._ticks_g(target, g)
         if str(direction).upper() in ("LONG", "BULLISH"):
             return ct >= tt
         return ct <= tt
