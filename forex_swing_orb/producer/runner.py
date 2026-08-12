@@ -14,6 +14,7 @@ from ..bridge.paths import BridgePaths
 from ..bridge.producer import write_instruction
 from ..compliance import ComplianceEngine, ComplianceAuditLog
 from . import ingest, providers
+from .bridge_health import observe_entry_bridge
 from .contract import (CycleOutcome, CycleResult, RunnerConfig, RunnerMode,
                        RunnerReason, RunnerRefused, cycle_id)
 from .scheduler import last_closed_open
@@ -126,43 +127,23 @@ class ProducerRunner:
         self._ingest_and_reconcile(now)
         return results
 
-    def _outstanding_intents(self):
-        """(count, symbols) of entry instructions written but NOT yet terminal — the
-        files still in bridge pending/ or claimed/ (a terminal result archives them
-        out). This is authoritative on-disk truth, restart-safe, and self-releasing
-        (no capacity leak): a filled order leaves pending/claimed and is then owned by
-        broker open_position_count; a rejected/expired order also leaves it. Includes
-        THIS cycle's earlier writes (they land in pending/). Unreadable files still
-        count toward capacity (fail closed)."""
-        count = 0
-        symbols = set()
-        for d in (self.paths.pending, self.paths.claimed):
-            try:
-                files = [p for p in d.glob("*.json")]
-            except OSError:
-                continue
-            for f in files:
-                count += 1
-                try:
-                    ok, obj = serialize.loads(f.read_text(encoding="utf-8"))
-                except OSError:
-                    continue                       # counts toward capacity anyway
-                if ok and isinstance(obj, dict) and obj.get("symbol"):
-                    symbols.add(obj["symbol"])
-        return count, symbols
+    def _observe_bridge(self, now):
+        """ONE read-only entry-bridge snapshot (H5) feeding capacity reservation, ACK
+        liveness (missing_ack_count) and bridge health (bridge_healthy). Fails closed."""
+        return observe_entry_bridge(self.paths, now)
 
-    def _effective_account_state(self, acct):
+    def _effective_account_state(self, acct, obs):
         """Broker account snapshot (immutable) with open_position_count / open_symbols
-        RAISED by outstanding entry intents, so compliance's existing max_open_positions
-        and one_position_per_symbol gates account for unfilled orders (MS-2). Broker
-        truth is never mutated — a shallow copy carries the effective view."""
-        res_count, res_symbols = self._outstanding_intents()
+        RAISED by the OUTSTANDING entry intents in the bridge observation, so
+        compliance's existing max_open_positions and one_position_per_symbol gates
+        account for unfilled orders (MS-2). Broker truth is never mutated — a shallow
+        copy carries the effective view."""
         eff = dict(acct)
         broker_open = acct.get("open_position_count")
         if isinstance(broker_open, int) and not isinstance(broker_open, bool):
-            eff["open_position_count"] = broker_open + res_count
+            eff["open_position_count"] = broker_open + int(obs.outstanding_count)
         broker_syms = acct.get("open_symbols") or ()
-        eff["open_symbols"] = tuple(set(broker_syms) | res_symbols)
+        eff["open_symbols"] = tuple(set(broker_syms) | set(obs.outstanding_symbols))
         return eff
 
     def _session_trade_eligible(self, profile, now):
@@ -289,7 +270,13 @@ class ProducerRunner:
         bh = self.broker.snapshot(symbol, now) or {}
         market_state = {"symbol_tradable": bh.get("symbol_tradable"),
                         "market_open": bh.get("market_open")}
-        eff_acct = self._effective_account_state(acct)
+        # H5: overlay AUTHORITATIVE bridge liveness onto the broker-health facts the
+        # compliance gate consumes (the MT5 provider's placeholders are replaced with
+        # the real entry-bridge observation). One snapshot feeds capacity + liveness.
+        obs = self._observe_bridge(now)
+        bh = {**bh, "bridge_healthy": obs.healthy,
+              "missing_ack_count": obs.missing_ack_count}
+        eff_acct = self._effective_account_state(acct, obs)
         decision = self.compliance.evaluate(
             candidate, market_state=market_state, account_state=eff_acct,
             broker_health=bh, news_bundle=news_bundle, now=now,
@@ -305,8 +292,8 @@ class ProducerRunner:
                 compliance_decision_id=decision.decision_id, detail=detail)
 
         # 11. compliance pass -> write. The write lands the instruction in pending/,
-        # so the very next candidate's _outstanding_intents() scan reserves this
-        # slot+symbol (MS-2), same cycle.
+        # so the very next candidate's bridge observation reserves this slot+symbol
+        # (MS-2), same cycle.
         write_instruction(self.paths, instr, now, audit=self.bridge_audit)
         self.state.mark_written(sid)
         self.state.mark_processed(sid_state, bar_iso)

@@ -186,14 +186,15 @@ def test_broker_fill_not_double_counted(tmp_path):
     runner, paths = _build(tmp_path, symbols=("EURUSD.FX",), max_open=1)
     runner.run_cycle(BOTH)                                # writes EURUSD -> pending 1
     base = {"open_position_count": 0, "open_symbols": ()}
-    assert runner._effective_account_state(base)["open_position_count"] == 1   # 0 + pending
+    obs1 = runner._observe_bridge(BOTH)
+    assert runner._effective_account_state(base, obs1)["open_position_count"] == 1  # 0 + pending
     # fill: EURUSD leaves pending (archived) and becomes a broker position
     sid = _pending(paths)[0][:16]
     (paths.archive_accepted / f"{sid}.json").write_text(
         (paths.pending / f"{sid}.json").read_text(), encoding="utf-8")
     (paths.pending / f"{sid}.json").unlink()
     filled = {"open_position_count": 1, "open_symbols": ("EURUSD.FX",)}
-    eff = runner._effective_account_state(filled)
+    eff = runner._effective_account_state(filled, runner._observe_bridge(BOTH))
     assert eff["open_position_count"] == 1               # broker 1 + pending 0 (NOT double)
     assert set(eff["open_symbols"]) == {"EURUSD.FX"}
 
