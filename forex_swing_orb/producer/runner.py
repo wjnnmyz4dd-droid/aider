@@ -181,6 +181,11 @@ class ProducerRunner:
         (ok, reason_code_or_None)."""
         if not profile.is_within_strategy_window(now):
             return False, None
+        # M12: at/after this session's Friday no-new-entry cutoff (session-local,
+        # DST-aware), NO new entry may be authorized. Open positions are still managed
+        # by the position manager (a separate service) — this gate blocks ENTRY only.
+        if profile.is_friday_no_new_entry(now):
+            return False, RunnerReason.FRIDAY_NO_NEW_ENTRY
         model = self.config.session_model
         if model is not None and getattr(model, "overlap_mode", None) == "REQUIRE":
             from ..session.model import OVERLAPS, SessionReason, active_overlaps

@@ -14,6 +14,7 @@ silent pass.
 from __future__ import annotations
 
 import abc
+from datetime import datetime, timezone
 
 from ..bridge import serialize
 from ..compliance import mapping
@@ -140,8 +141,34 @@ def validate_bars(bars, timeframe, now, max_age_sec, continuity_bars, min_bars):
     return (True, RunnerReason.OK)
 
 
+def _aware_utc(text):
+    """Parse an ISO-8601 instant to tz-aware UTC. Unlike ``serialize.parse_iso``
+    (which silently coerces a naive timestamp to UTC), a NAIVE / offset-less string
+    returns None: an account observation time without an explicit timezone cannot be
+    trusted as a real observation instant, so it must fail closed (M8)."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone(timezone.utc)
+
+
 def validate_account(snap, now, max_age_sec):
-    """Return (ok, reason_code). Fail closed on missing/stale/unverified."""
+    """Return (ok, reason_code). Fail closed on missing/stale/future/naive/unverified.
+
+    M8 — a NEW ENTRY may use account state only from a single, sufficiently-fresh
+    observation. The snapshot's ``as_of`` (the synchronous observation instant stamped
+    by the account provider) must be:
+      * present and a well-formed, tz-EXPLICIT UTC instant (naive -> unusable);
+      * not in the future beyond the freshness window (clock rollback / fabricated);
+      * not older than ``max_age_sec``.
+    If freshness cannot be established, BLOCK. This does not depend on, and never
+    rejuvenates, any persisted state (a restart re-observes ``as_of`` from scratch).
+    """
     if not isinstance(snap, dict):
         return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
     # P3A-1: no valid rollover anchor for the current trading day (mid-day cold
@@ -152,10 +179,16 @@ def validate_account(snap, now, max_age_sec):
               "open_position_count", "open_symbols", "terminal_connected", "as_of"):
         if snap.get(k) is None:
             return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
-    as_of = serialize.parse_iso(snap.get("as_of"))
-    if as_of is None:
+    # the decision instant itself must be a usable tz-aware UTC instant
+    if now is None or getattr(now, "tzinfo", None) is None:
         return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
-    if abs((now - as_of).total_seconds()) > max_age_sec:
+    as_of = _aware_utc(snap.get("as_of"))
+    if as_of is None:                                   # missing / malformed / naive
+        return (False, RunnerReason.ACCOUNT_UNAVAILABLE)
+    age = (now - as_of).total_seconds()
+    if age < -max_age_sec:                              # observation ahead of decision instant
+        return (False, RunnerReason.ACCOUNT_FUTURE)
+    if age > max_age_sec:                               # observation too old
         return (False, RunnerReason.ACCOUNT_STALE)
     return (True, RunnerReason.OK)
 

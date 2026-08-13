@@ -105,6 +105,20 @@ class SessionProfile:
         end = self.strategy_entry_end_local_hour * 60
         return start <= minute < end
 
+    def is_friday_no_new_entry(self, now):
+        """True iff ``now`` is AT OR AFTER this session's Friday no-new-entry cutoff
+        in the session's own IANA timezone (DST-aware). M12: at/after the cutoff on a
+        Friday NO new entry may be authorized; the cutoff is per-session (each derived
+        from that session's own clock, so no session can borrow another's cutoff), and
+        it never affects open-position MANAGEMENT (owned by the position manager). The
+        boundary is hour-granular and uses ``>=``, matching the frozen engine's own
+        ``friday_exit`` comparison. Fail closed on a missing/naive ``now`` (block)."""
+        if now is None or getattr(now, "tzinfo", None) is None:
+            return True
+        from zoneinfo import ZoneInfo
+        local = now.astimezone(ZoneInfo(self.timezone))
+        return local.weekday() == 4 and local.hour >= self.friday_no_new_entry_local_hour
+
     def engine_overrides(self):
         """The session-timing config overrides the frozen engine consumes. Geometry
         keys are intentionally absent — they come from the shared strategy config."""
