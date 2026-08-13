@@ -101,7 +101,11 @@ class BridgeMt5Adapter:
         fields = {
             "signal_id": st["signal_id"], "ticket": ticket, "symbol": sym,
             "direction": st["direction"], "action": action,
-            "target_stop": (ticks.quantize(sl, self.truth, sym) if sl is not None else None),
+            # M11/PR-3L: transport the PM-authorized stop VERBATIM — the PM already
+            # quantized it on the authoritative H6 grid and fails closed when geometry
+            # is unknown, so the transport must not re-quantize onto a (possibly
+            # guessed) grid. point/digits below are authoritative-sourced metadata only.
+            "target_stop": sl,
             "expected_current_stop": (st["current_stop"] if action == MC.ManageAction.MODIFY_STOP else None),
             "prior_stop": st["current_stop"], "pm_phase": st["phase"],
             "pm_reason": pm_reason,

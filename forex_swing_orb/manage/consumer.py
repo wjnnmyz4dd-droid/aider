@@ -140,12 +140,21 @@ class ManageConsumer:
         # ---- MODIFY_STOP path ----
         target = rec["target_stop"]
         expected = rec["expected_current_stop"]
+        # M11/PR-3L: authoritative per-symbol geometry must be available to compare
+        # stops on the broker grid. If it is unavailable (e.g. metadata vanished after
+        # PM authorization), fail closed — NO modification, existing stop preserved,
+        # surfaced as UNCERTAIN so the PM reconciles/retries — never a guessed grid.
+        if ticks.point(self.mt5, sym) is None:
+            return self._nonterminal(rec, manage_id, MC.ManageStatus.UNCERTAIN, now, path,
+                                     observed_before=observed_before)
         # 10 compare-and-swap (against LIVE broker stop)
         if not ticks.eq_stop(observed_before, expected, self.mt5, sym):
             return self._finalize(rec, manage_id, MC.ManageStatus.REJECTED_STALE,
                                   "cas_mismatch", now, path, observed_before=observed_before)
-        # 11 tick normalization
-        qtarget = ticks.quantize(target, self.mt5, sym)
+        # 11 executable target: the PM-authorized stop is transported VERBATIM (already
+        # quantized on the authoritative grid); the transport never re-quantizes it. The
+        # live EA still normalizes with SYMBOL_DIGITS at execution.
+        qtarget = target
         # 12 risk-reducing-only (frozen never-loosen invariant)
         if not stop_move_is_legal(rec["direction"], observed_before, qtarget):
             return self._finalize(rec, manage_id, MC.ManageStatus.REJECTED_LOOSEN,
