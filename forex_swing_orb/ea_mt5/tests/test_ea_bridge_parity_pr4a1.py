@@ -52,12 +52,19 @@ def test_ea_schema_equals_bridge_production_schema():
 
 
 def test_ea_and_bridge_agree_on_current_instruction_schema():
+    # M9: the EA accepts the producer's FINALIZED on-wire schema (what is actually
+    # written to the bridge), not the frozen engine's pre-sizing proto-schema. The
+    # producer finalizes the engine proto-instruction by attaching the authoritative
+    # volume and bumping the schema; the EA must accept exactly that production schema.
     from forex_swing_orb.producer.strategy_adapter import load_engine_module
+    from forex_swing_orb.bridge.contract import PRODUCTION_INSTRUCTION_SCHEMA_VERSION
     engine_schema = load_engine_module().INSTRUCTION_SCHEMA_VERSION
     ea_schema = _define_int("ALLOW_SCHEMA_VERSION")
-    assert ea_schema == engine_schema, (
-        f"EA schema {ea_schema} != engine-emitted schema {engine_schema}")
-    assert engine_schema in BRIDGE_CFG.schema_version_allowlist
+    assert ea_schema == PRODUCTION_INSTRUCTION_SCHEMA_VERSION, (
+        f"EA schema {ea_schema} != production schema {PRODUCTION_INSTRUCTION_SCHEMA_VERSION}")
+    assert PRODUCTION_INSTRUCTION_SCHEMA_VERSION in BRIDGE_CFG.schema_version_allowlist
+    assert engine_schema < PRODUCTION_INSTRUCTION_SCHEMA_VERSION, (
+        "producer finalizes the engine proto-schema up to the production schema")
 
 
 def test_schema_one_is_retired_everywhere():

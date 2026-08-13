@@ -12,9 +12,12 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BridgeConfig:
     # Instruction schema versions the consumer accepts (spec §7-2 / §2.1 D1).
-    # PR-4A: schema 2 adds a required ``session_id``; the London-only schema-1
-    # instructions are retired from the multi-session pipeline (fail closed).
-    schema_version_allowlist: frozenset = frozenset({2})
+    # PR-4A: schema 2 added a required ``session_id``. PR-3J/M9: schema 3 adds a
+    # required, authoritative ``volume`` (execution size proven within risk-per-trade
+    # by compliance). Schema 2 lacked authoritative volume and is RETIRED for
+    # new-entry execution — accepting it would fall back to an independent EA lot, so
+    # it fails closed. Existing positions remain managed via broker/PM truth.
+    schema_version_allowlist: frozenset = frozenset({3})
     # Known producers (spec §2.1 validation 4b).
     strategy_id_allowlist: frozenset = frozenset({"forex_swing_orb"})
     strategy_version_allowlist: frozenset = frozenset({"swing_orb.v1.4.0"})

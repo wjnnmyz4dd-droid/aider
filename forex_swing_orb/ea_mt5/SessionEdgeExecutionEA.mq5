@@ -35,18 +35,22 @@
 //--- inputs (operational config; NOT strategy parameters) -----------
 input string BridgeRoot      = "session_edge_bridge"; // bridge_root, under MQL5\Files (or common)
 input bool   UseCommonFolder = false;                 // true => terminal common Files folder
-input double DefaultVolume   = 0.10;                  // operator lot; EA never sizes from risk
+input double DefaultVolume   = 0.10;                  // DEPRECATED (M9): NOT used for production
+                                                      // execution; volume is authoritative in the
+                                                      // instruction. Retained only as an inert input.
 input string BrokerSuffix    = "";                    // appended to the 6-char base symbol
 input string EaId            = "SessionEdgeExecutionEA/1.0";
 input int    PollSeconds     = 5;                      // bridge poll cadence (no busy-wait)
 input long   MagicNumber     = 920240125;
 
 //--- allow-lists mirror bridge/config.py ----------------------------
-// PR-4A.1: the production instruction schema is 2 (adds a required session_id so
-// the multi-session pipeline can identify the originating session). This MUST equal
-// bridge/config.py schema_version_allowlist; a source-parity test guards divergence.
-// Schema 1 (London-only era, no session_id) is retired and fails closed here.
-#define ALLOW_SCHEMA_VERSION   2
+// PR-3J/M9: the production instruction schema is 3 (adds a required, authoritative
+// ``volume`` — the executable lot sized upstream and proven within risk-per-trade by
+// compliance; the EA executes it VERBATIM and never sizes from risk_fraction or the
+// DefaultVolume input). This MUST equal bridge/config.py schema_version_allowlist; a
+// source-parity test guards divergence. Schema 1 (London-only) and schema 2 (no
+// authoritative volume) are retired and fail closed here.
+#define ALLOW_SCHEMA_VERSION   3
 #define ALLOW_STRATEGY_ID      "forex_swing_orb"
 #define ALLOW_STRATEGY_VERSION "swing_orb.v1.4.0"
 #define FUTURE_SKEW_SEC        60
@@ -248,18 +252,19 @@ void Quarantine(const string subdir, const string sid, const string reason)
 //+------------------------------------------------------------------+
 string ValidateInstruction(const string sid, const uchar &raw[], const int rawlen,
                            const string json, string &symbol, string &direction,
-                           double &entry, double &sl, double &tp)
+                           double &entry, double &sl, double &tp, double &volume)
 {
    bool ok;
    long schema = JsonGetLong(json, "schema_version", ok);
    if(!ok || schema != ALLOW_SCHEMA_VERSION) return "E_SCHEMA";
    if(!VerifyIntegrityDigest(raw, rawlen))    return "E_INTEGRITY";
 
-   // required fields present (schema 2 adds session_id — validated for schema
-   // integrity only; the EA never evaluates session time or eligibility)
+   // required fields present (schema 3 adds an authoritative ``volume`` — the EA
+   // executes it verbatim; session_id/risk_fraction are schema integrity only, the
+   // EA never evaluates session time/eligibility nor sizes from risk_fraction)
    string need[] = {"signal_id","session_id","strategy_id","strategy_version","symbol",
                     "direction","entry_price","stop_loss","take_profit","risk_fraction",
-                    "generated_timestamp","expiration_timestamp"};
+                    "volume","generated_timestamp","expiration_timestamp"};
    for(int i = 0; i < ArraySize(need); i++)
       if(StringLen(JsonGet(json, need[i])) == 0) return "E_FIELDS";
 
@@ -285,6 +290,10 @@ string ValidateInstruction(const string sid, const uchar &raw[], const int rawle
    if(entry <= 0 || sl <= 0 || tp <= 0) return "E_STRUCT";
    if(direction == "LONG"  && !(sl < entry && entry < tp)) return "E_STRUCT";
    if(direction == "SHORT" && !(sl > entry && entry > tp)) return "E_STRUCT";
+   // M9: authoritative execution volume (transport shape only; broker step/min/max
+   // is verified against live symbol metadata in Execute). Missing/non-positive -> reject.
+   volume = JsonGetDouble(json, "volume", ok);
+   if(!ok || volume <= 0) return "E_STRUCT";
    return "";
 }
 
@@ -294,12 +303,12 @@ string ValidateInstruction(const string sid, const uchar &raw[], const int rawle
 //+------------------------------------------------------------------+
 void Execute(const string sid, const string json, const string received)
 {
-   string symbol, direction; double entry, sl, tp;
+   string symbol, direction; double entry, sl, tp, volume;
    uchar raw[]; int rawlen = 0;
    if(BridgeReadBytes(Path(BR_CLAIMED, sid + ".json"), UseCommonFolder, raw))
       rawlen = ArraySize(raw);
 
-   string vreason = ValidateInstruction(sid, raw, rawlen, json, symbol, direction, entry, sl, tp);
+   string vreason = ValidateInstruction(sid, raw, rawlen, json, symbol, direction, entry, sl, tp, volume);
    if(vreason != "")
    {
       string st = (vreason == "E_EXPIRED") ? ST_EXPIRED : ST_REJECTED;
@@ -316,7 +325,7 @@ void Execute(const string sid, const string json, const string received)
    if(existing != 0)
    {
       WriteResult(sid, ST_EXECUTED, "X_ADOPTED", received, sl, tp, (long)existing,
-                  entry, 0, DefaultVolume, 0, "",
+                  entry, 0, volume, 0, "",
                   StringFormat("{\"adopted\":true,\"ticket\":%I64d}", existing));
       return;
    }
@@ -326,14 +335,17 @@ void Execute(const string sid, const string json, const string received)
    // Broker-side input checks (broker constraints, NOT strategy).
    string broker_symbol = NormalizeSymbol(symbol);
    if(broker_symbol == "" || !SymbolSelect(broker_symbol, true))
-   { WriteResult(sid, ST_EXECUTION_FAILED, "X_INVALID_SYMBOL", received, sl, tp, 0, entry, 0, DefaultVolume, 0,
+   { WriteResult(sid, ST_EXECUTION_FAILED, "X_INVALID_SYMBOL", received, sl, tp, 0, entry, 0, volume, 0,
                  StringFormat("{\"symbol\":\"%s\"}", symbol), "{}"); return; }
 
+   // M9: execute the AUTHORITATIVE instruction volume verbatim. Verify EXACT alignment
+   // with live broker constraints and REJECT on mismatch — the EA never rounds up or
+   // substitutes DefaultVolume (single upstream sizing authority; no EA upsizing).
    double vmin = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MIN);
    double vmax = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MAX);
    double vstep = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_STEP);
-   double vol = DefaultVolume;         // EA never sizes from risk_fraction
-   if(vol < vmin || vol > vmax || (vstep > 0 && MathAbs(MathRound((vol-vmin)/vstep)*vstep + vmin - vol) > vstep*1e-6))
+   double vol = volume;                // authoritative instruction volume (never DefaultVolume)
+   if(vol <= 0 || vol < vmin || vol > vmax || (vstep > 0 && MathAbs(MathRound((vol-vmin)/vstep)*vstep + vmin - vol) > vstep*1e-6))
    { WriteResult(sid, ST_EXECUTION_FAILED, "X_INVALID_VOLUME", received, sl, tp, 0, entry, 0, vol, 0,
                  StringFormat("{\"volume\":%.10g}", vol), "{}"); return; }
 

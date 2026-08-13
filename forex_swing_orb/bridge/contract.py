@@ -6,12 +6,22 @@ shaped. No execution, no broker fields are ever populated by the bridge.
 
 from __future__ import annotations
 
+# The current on-wire production instruction schema. PR-3J / M9: schema 3 adds a
+# required, authoritative ``volume`` (the executable lot proven within risk-per-trade
+# by compliance BEFORE authorization). The frozen engine still emits a pre-sizing
+# schema-2 proto-instruction; the producer FINALIZES it to this schema by attaching
+# the sized volume, so the authoritative on-wire schema is owned by the producer, not
+# the raw engine. Schema 2 (no authoritative volume) is retired for NEW-entry
+# execution and fails closed.
+PRODUCTION_INSTRUCTION_SCHEMA_VERSION = 3
+
 # Required instruction fields (spec §3). integrity_digest is the bridge transport
-# field; the rest come from the strategy engine's instruction (schema_version 1).
+# field; the rest come from the strategy engine's instruction, plus ``volume`` which
+# the producer's sizing authority attaches (schema 3, M9).
 REQUIRED_INSTRUCTION_FIELDS = (
     "schema_version", "signal_id", "session_id", "strategy_id", "strategy_version",
     "symbol", "direction", "entry_price", "stop_loss", "take_profit", "risk_fraction",
-    "generated_timestamp", "expiration_timestamp", "evidence_summary",
+    "volume", "generated_timestamp", "expiration_timestamp", "evidence_summary",
     "news_eligibility", "integrity_digest",
 )
 

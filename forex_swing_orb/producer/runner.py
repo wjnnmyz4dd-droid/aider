@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from ..bridge import serialize
 from ..bridge.audit import AuditLog
+from ..bridge.contract import PRODUCTION_INSTRUCTION_SCHEMA_VERSION
 from ..bridge.paths import BridgePaths
 from ..bridge.producer import write_instruction
 from ..compliance import ComplianceEngine, ComplianceAuditLog
+from ..compliance import sizing
+from ..compliance.contract import candidate_risk_amount
 from . import ingest, providers
 from .bridge_health import observe_entry_bridge
 from .contract import (CycleOutcome, CycleResult, RunnerConfig, RunnerMode,
@@ -173,6 +176,20 @@ class ProducerRunner:
         eff["open_symbols"] = tuple(set(broker_syms) | set(obs.outstanding_symbols))
         return eff
 
+    def _size_volume(self, candidate, bh):
+        """M9 sizing authority: the largest step-aligned lot whose monetary loss-at-stop
+        stays within the risk-per-trade budget (risk_fraction × initial_balance), using
+        broker tick/volume metadata. Returns None (=> compliance fails closed, no trade)
+        when metadata is missing or the budget cannot fund the minimum lot. This is the
+        SAME risk primitive compliance uses to re-prove risk, so sizer and gate agree."""
+        permitted = candidate_risk_amount(candidate, self.config.compliance.profile)
+        if permitted is None:
+            return None
+        return sizing.allowable_volume(
+            candidate.get("entry"), candidate.get("stop_loss"), permitted,
+            bh.get("tick_size"), bh.get("tick_value"),
+            bh.get("volume_min"), bh.get("volume_max"), bh.get("volume_step"))
+
     def _session_trade_eligible(self, profile, now):
         """Per-session entry eligibility (PR-4A). Authority = the session's STRATEGY
         entry window (SC-2), then the configured OVERLAP_MODE from the session model:
@@ -309,6 +326,21 @@ class ProducerRunner:
         bh = {**bh, "bridge_healthy": obs.healthy,
               "missing_ack_count": obs.missing_ack_count}
         eff_acct = self._effective_account_state(acct, obs)
+
+        # M9: SIZING AUTHORITY. Compute the ONE authoritative execution volume from the
+        # approved entry/stop geometry, the risk-per-trade budget (risk_fraction ×
+        # initial_balance), and broker symbol tick/volume metadata — then FINALIZE the
+        # engine's pre-sizing proto-instruction (schema 2) to the on-wire production
+        # schema (3) by attaching that volume. Compliance re-proves the resulting
+        # monetary loss-at-stop from this exact volume; the EA executes it verbatim.
+        # A None volume (missing metadata, or risk budget below the minimum lot) flows
+        # to compliance, which fails closed (RISK_MONETARY_UNVERIFIABLE) — no trade,
+        # never an independent EA lot.
+        volume = self._size_volume(candidate, bh)
+        instr = {**instr, "volume": volume,
+                 "schema_version": PRODUCTION_INSTRUCTION_SCHEMA_VERSION}
+        candidate = {**candidate, "volume": volume}
+
         decision = self.compliance.evaluate(
             candidate, market_state=market_state, account_state=eff_acct,
             broker_health=bh, news_bundle=news_bundle, now=now,

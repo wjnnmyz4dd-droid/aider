@@ -179,8 +179,9 @@ def test_unknown_broker_symbol_fails_closed(env, mt5):
 
 
 def test_invalid_volume_fails_closed(env, mt5):
-    env.default_volume = 999.0                      # above broker volume_max
-    result = _produce(env, make_instruction())
+    # M9: volume is authoritative in the instruction; an out-of-range instruction
+    # volume fails closed (no DefaultVolume substitution, no order sent).
+    result = _produce(env, make_instruction(volume=999.0))   # above broker volume_max
     assert result["status"] == ResultState.EXECUTION_FAILED
     assert result["reason_code"] == XReason.INVALID_VOLUME
     assert len(mt5.order_log) == 0

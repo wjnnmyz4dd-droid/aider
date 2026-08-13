@@ -353,22 +353,28 @@ class ExecutionConsumer:
 
     # -- helpers ------------------------------------------------------------
     def _resolve_volume(self, record):
-        """Resolve the order volume WITHOUT any risk math. The EA never sizes
-        trades: it uses an explicit instruction ``volume`` when the upstream risk
-        layer provides one, else an operator-configured constant lot. It NEVER
-        converts ``risk_fraction`` to lots — that is risk sizing, which the EA
-        must not perform. (The frozen v1.4.0 instruction contract carries
-        ``risk_fraction`` but no executable volume; see README 'Deviations'.)"""
-        if record.get("volume") is not None:
-            return record["volume"]
-        return self.default_volume
+        """Return the AUTHORITATIVE execution volume carried by the instruction.
+
+        M9: the volume was sized upstream and proven within risk-per-trade by
+        compliance; the EA executes it VERBATIM and never sizes trades itself. There
+        is NO DefaultVolume fallback for the production schema — a missing volume is a
+        rejected instruction (``_volume_error`` returns "missing"), never a silently
+        substituted operator lot. ``risk_fraction`` is never converted to lots here."""
+        return record.get("volume")
 
     def _volume_error(self, vol, info):
-        if vol is None or not isinstance(vol, (int, float)):
+        """Verify the supplied volume against LIVE broker constraints. The EA never
+        rounds/normalizes UP: a step-misaligned volume is REJECTED ("off_step"), it is
+        not snapped to the nearest lot — preserving the single upstream sizing
+        authority (no EA upsizing)."""
+        if vol is None or not isinstance(vol, (int, float)) or isinstance(vol, bool):
+            return "missing"
+        import math as _math
+        if not _math.isfinite(vol) or vol <= 0:
             return "missing"
         if vol < info.volume_min or vol > info.volume_max:
             return "out_of_range"
-        # step check with float tolerance
+        # step check with float tolerance (reject on mismatch; never round up)
         steps = round((vol - info.volume_min) / info.volume_step)
         nearest = info.volume_min + steps * info.volume_step
         if abs(nearest - vol) > info.volume_step * 1e-6:

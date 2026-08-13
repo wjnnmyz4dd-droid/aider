@@ -15,6 +15,7 @@ import pytest
 
 import _ea_parity as P
 from forex_swing_orb.bridge.config import DEFAULT_CONFIG as BRIDGE_CFG
+from forex_swing_orb.bridge.contract import PRODUCTION_INSTRUCTION_SCHEMA_VERSION
 from forex_swing_orb.producer.strategy_adapter import load_engine_module
 
 
@@ -27,9 +28,17 @@ def _engine_schema():
 # mutated source, expecting AssertionError). Every guard is one function.
 # --------------------------------------------------------------------------- #
 def assert_schema_parity(entry):
+    # M9: the EA accepts the producer's FINALIZED on-wire schema (production), which the
+    # bridge also allows — this is what is actually written to the bridge, so the EA can
+    # never silently disagree (the MS-1 guarantee). The frozen engine emits a pre-sizing
+    # proto-schema that the producer finalizes (schema bump) by attaching the
+    # authoritative volume; that proto-schema is strictly below the production schema.
     ea = P.define_int(entry, "ALLOW_SCHEMA_VERSION")
-    assert ea == _engine_schema(), f"EA schema {ea} != engine {_engine_schema()}"
+    assert ea == PRODUCTION_INSTRUCTION_SCHEMA_VERSION, (
+        f"EA schema {ea} != production on-wire schema {PRODUCTION_INSTRUCTION_SCHEMA_VERSION}")
     assert ea in BRIDGE_CFG.schema_version_allowlist, "EA schema not in bridge allow-list"
+    assert _engine_schema() < PRODUCTION_INSTRUCTION_SCHEMA_VERSION, (
+        "producer must finalize the engine proto-schema up to the production schema")
 
 
 def assert_schema_guard_wired(entry):
@@ -162,8 +171,8 @@ def test_python_consumer_still_green_with_canonical_fixture():
 # 16-21: MUTATION TESTS — prove each guard actually catches drift
 # --------------------------------------------------------------------------- #
 def test_mutation_schema_drift_caught():
-    mut = P.entry_source().replace("ALLOW_SCHEMA_VERSION   2", "ALLOW_SCHEMA_VERSION   3")
-    assert "ALLOW_SCHEMA_VERSION   3" in mut
+    mut = P.entry_source().replace("ALLOW_SCHEMA_VERSION   3", "ALLOW_SCHEMA_VERSION   2")
+    assert "ALLOW_SCHEMA_VERSION   2" in mut
     with pytest.raises(AssertionError):
         assert_schema_parity(mut)
 

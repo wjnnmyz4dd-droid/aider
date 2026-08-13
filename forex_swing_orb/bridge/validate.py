@@ -77,6 +77,11 @@ def validate_record(record, cfg, now, expected_signal_id=None):
     rf = record["risk_fraction"]
     if not (isinstance(rf, (int, float)) and not isinstance(rf, bool) and 0 < rf <= 1):
         return False, ReasonCode.E_STRUCT, {"risk_fraction": rf}
+    # M9: authoritative execution volume must be a finite positive number (transport
+    # shape only; broker step/min/max alignment is verified downstream by the EA,
+    # which alone holds live symbol volume metadata).
+    if not _finite_positive(record["volume"]):
+        return False, ReasonCode.E_STRUCT, {"volume": record["volume"]}
     if direction == "LONG" and not (stop < entry < tp):
         return False, ReasonCode.E_STRUCT, {"geometry": "long"}
     if direction == "SHORT" and not (stop > entry > tp):

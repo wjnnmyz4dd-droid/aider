@@ -91,6 +91,10 @@ class MockBrokerHealthProvider(BrokerHealthProvider):
             "recent_slippage_points": 1.0, "max_slippage_points": 10.0,
             "missing_ack_count": 0, "quote_age_sec": 1.0, "max_quote_age_sec": 30.0,
             "symbol_tradable": True, "market_open": True,
+            # M9: symbol tick/volume metadata for authoritative sizing (EURUSD-like
+            # 5-digit defaults; tick_value is account-currency-denominated).
+            "tick_size": 0.00001, "tick_value": 1.0,
+            "volume_min": 0.01, "volume_max": 100.0, "volume_step": 0.01,
         }
         self._snap.update(over)
 

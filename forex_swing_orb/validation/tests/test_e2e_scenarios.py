@@ -172,6 +172,12 @@ def test_real_engine_to_execution(tmp_path):
     eng.generate({"EURUSD.FX": df2})
     instrs = eng.instructions["EURUSD.FX"]
     assert len(instrs) == 1
+    # M9: the frozen engine emits a pre-sizing schema-2 proto-instruction; the producer
+    # FINALIZES it to the on-wire schema (3) by attaching the sized authoritative volume
+    # (proven within risk-per-trade by compliance) before it reaches the bridge/EA.
+    from forex_swing_orb.bridge.contract import PRODUCTION_INSTRUCTION_SCHEMA_VERSION
+    instrs = [{**i, "volume": 0.10,
+               "schema_version": PRODUCTION_INSTRUCTION_SCHEMA_VERSION} for i in instrs]
 
     now = datetime(2024, 1, 25, 11, 30, tzinfo=timezone.utc)
     ec, paths, ledger, audit, mt5 = H.build(tmp_path)

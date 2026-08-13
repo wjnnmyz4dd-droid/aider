@@ -1,93 +1,123 @@
-"""PR-3I / M9 — risk-per-trade authority (BLOCKED: execution-sizing contract required).
+"""PR-3J / M9 — compliance risk-per-trade AUTHORITY (closed).
 
-The compliance risk gate authorizes a declared ``risk_fraction`` and computes a
-NOTIONAL monetary amount = ``risk_fraction × initial_balance``. It never sees an
-executable volume, tick value, or stop-distance-derived money figure, and the EA
-sizes every order from an operator ``DefaultVolume`` (see the companion EA proof).
-Therefore compliance cannot prove the ACTUAL monetary risk of a trade before
-authorization. These tests CHARACTERIZE that gap (no production change is made):
-closing M9 requires an execution-sizing authority contract, which is out of scope
-for this PR. Deterministic; no networking.
+The risk gate now RE-PROVES the actual monetary loss-at-stop from the approved
+execution ``volume`` + broker tick metadata + capital base, and requires it within
+``risk_fraction × initial_balance``. A declared ``risk_fraction`` is a policy cap,
+never the sole proof. Missing volume/metadata fails closed. Deterministic; no networking.
 """
 
 from __future__ import annotations
 
+import pytest
+
 from forex_swing_orb.compliance.contract import (FtmoConfig, FtmoProfile,
-                                                 candidate_risk_amount)
+                                                 ReasonCode)
 from forex_swing_orb.compliance.gates import gate_risk
-from forex_swing_orb.compliance.contract import ReasonCode
 
 PROF = FtmoProfile(initial_balance=100000.0, daily_loss_pct=0.05, maximum_loss_pct=0.10)
 CFG = FtmoConfig(safety_buffer_fraction=0.20, max_risk_per_trade_pct=0.01)
 ACCT = {"equity": 100000.0, "day_start_balance": 100000.0,
         "day_start_equity": 100000.0, "initial_balance": 100000.0}
-NOW = None            # gate_risk does not use now
+# EURUSD-like metadata; tick_value account-currency-denominated.
+BH = {"tick_size": 0.00001, "tick_value": 1.0}
+NOW = None
 
 
-def _cand(risk_fraction=0.0025, **extra):
-    c = {"risk_fraction": risk_fraction}
+def _cand(volume=0.10, risk_fraction=0.005, entry=1.10000, stop=1.09500, **extra):
+    c = {"risk_fraction": risk_fraction, "entry": entry, "stop_loss": stop, "volume": volume}
     c.update(extra)
     return c
 
 
-def _true_monetary_risk(volume, entry, stop, tick_size, tick_value):
-    """The ACTUAL money at risk if the position hits its stop (the figure compliance
-    would need, but cannot obtain pre-authorization)."""
-    return abs(entry - stop) / tick_size * tick_value * volume
+def _g(cand, bh=BH):
+    return gate_risk(cand, ACCT, PROF, CFG, NOW, broker_health=bh)
 
 
 # --------------------------------------------------------------------------- #
-# the declared model is fraction-only
+# authoritative recompute
 # --------------------------------------------------------------------------- #
-def test_candidate_risk_amount_is_declared_fraction_times_initial():
-    assert candidate_risk_amount(_cand(0.0025), PROF) == 250.0     # 0.0025 * 100000
-    assert candidate_risk_amount(_cand(0.01), PROF) == 1000.0
+def test_passes_when_actual_loss_within_budget():
+    # loss = 0.005/1e-5 * 1.0 * 0.10 = 50 <= permitted 0.005*100000 = 500
+    v = _g(_cand(volume=0.10))
+    assert v.passed and v.evidence["loss_at_stop"] == pytest.approx(50.0)
 
 
-def test_risk_gate_enforces_declared_fraction_cap():
-    ok = gate_risk(_cand(0.01), ACCT, PROF, CFG, NOW)
-    over = gate_risk(_cand(0.0101), ACCT, PROF, CFG, NOW)
-    assert ok.passed
-    assert not over.passed and ReasonCode.RISK_PER_TRADE_EXCEEDED in over.reason_codes
+def test_rejects_when_actual_loss_exceeds_budget():
+    # volume 2.0 -> loss = 0.005/1e-5 * 1.0 * 2.0 = 1000 > 500
+    v = _g(_cand(volume=2.0))
+    assert not v.passed and ReasonCode.RISK_PER_TRADE_EXCEEDED in v.reason_codes
 
 
-# --------------------------------------------------------------------------- #
-# the authority gap — compliance is blind to executable size
-# --------------------------------------------------------------------------- #
-def test_gate_verdict_independent_of_would_be_execution_size():
-    # attaching an (arbitrary) executable volume the EA might use changes NOTHING:
-    # the gate never reads it, proving compliance cannot bound true monetary risk.
-    base = gate_risk(_cand(0.0025), ACCT, PROF, CFG, NOW)
-    tiny = gate_risk(_cand(0.0025, volume=0.01), ACCT, PROF, CFG, NOW)
-    huge = gate_risk(_cand(0.0025, volume=50.0), ACCT, PROF, CFG, NOW)
-    assert base.passed and tiny.passed and huge.passed
-    assert base.reason_codes == tiny.reason_codes == huge.reason_codes
-
-
-def test_declared_amount_can_diverge_arbitrarily_from_true_risk():
-    # same authorized fraction (250.0 declared), wildly different ACTUAL exposure
-    # depending on the EA's DefaultVolume — which compliance never sees.
-    declared = candidate_risk_amount(_cand(0.0025), PROF)          # 250.0
-    true_small = _true_monetary_risk(0.01, 1.10, 1.098, 1e-5, 1.0)   # tiny lots
-    true_large = _true_monetary_risk(50.0, 1.10, 1.098, 1e-5, 1.0)   # huge lots
-    assert true_small < declared < true_large                      # unbounded either way
-    # compliance authorizes the fraction regardless of which volume actually executes
-    assert gate_risk(_cand(0.0025), ACCT, PROF, CFG, NOW).passed
-
-
-def test_candidate_carries_no_executable_volume_field():
-    # the compliance candidate has no authoritative volume the gate could size from
-    assert "volume" not in _cand()
+def test_declared_fraction_alone_is_not_proof():
+    # identical risk_fraction, oversize volume -> the ACTUAL loss is what's judged
+    ok = _g(_cand(volume=0.10, risk_fraction=0.005))
+    bad = _g(_cand(volume=5.0, risk_fraction=0.005))
+    assert ok.passed and not bad.passed
 
 
 # --------------------------------------------------------------------------- #
-# property B — removing the ability to prove monetary risk is never MORE permissive
+# fail closed on missing volume / metadata (§10, §27)
 # --------------------------------------------------------------------------- #
-def test_propB_no_monetary_proof_is_not_more_permissive():
-    # the declared-fraction gate is already the ONLY proof; there is no stricter
-    # monetary check to remove, so the current authorization is a fixed upper bound
-    # on permissiveness (a monetary contract could only TIGHTEN it, never loosen).
-    with_proof_absent = gate_risk(_cand(0.0025), ACCT, PROF, CFG, NOW)
-    assert with_proof_absent.passed          # today: passes on declared fraction alone
-    # an over-cap fraction is still blocked — the fraction bound remains authoritative
-    assert not gate_risk(_cand(0.02), ACCT, PROF, CFG, NOW).passed
+def test_missing_volume_fails_closed():
+    v = _g(_cand(volume=None))
+    assert not v.passed and ReasonCode.RISK_MONETARY_UNVERIFIABLE in v.reason_codes
+
+
+def test_missing_tick_value_fails_closed():
+    v = _g(_cand(volume=0.10), bh={"tick_size": 0.00001})   # no tick_value
+    assert not v.passed and ReasonCode.RISK_MONETARY_UNVERIFIABLE in v.reason_codes
+
+
+def test_missing_broker_health_fails_closed():
+    v = gate_risk(_cand(), ACCT, PROF, CFG, NOW)            # no broker_health
+    assert not v.passed and ReasonCode.RISK_MONETARY_UNVERIFIABLE in v.reason_codes
+
+
+def test_zero_tick_size_fails_closed():
+    v = _g(_cand(volume=0.10), bh={"tick_size": 0.0, "tick_value": 1.0})
+    assert not v.passed and ReasonCode.RISK_MONETARY_UNVERIFIABLE in v.reason_codes
+
+
+def test_entry_equals_stop_fails_closed():
+    v = _g(_cand(volume=0.10, entry=1.10000, stop=1.10000))
+    assert not v.passed and ReasonCode.RISK_MONETARY_UNVERIFIABLE in v.reason_codes
+
+
+# --------------------------------------------------------------------------- #
+# tamper resistance (§39.3-4, property E)
+# --------------------------------------------------------------------------- #
+def test_tamper_volume_upward_rejected():
+    assert _g(_cand(volume=0.10)).passed
+    assert not _g(_cand(volume=3.0)).passed         # inflated volume -> actual loss > limit
+
+
+def test_tamper_risk_fraction_down_cannot_hide_actual_risk():
+    # lowering risk_fraction only TIGHTENS the permitted budget; it cannot license a
+    # large actual loss. volume 2.0 loss=1000; lowering rf to 0.001 -> permit 100 -> reject.
+    v = _g(_cand(volume=2.0, risk_fraction=0.001))
+    assert not v.passed and ReasonCode.RISK_PER_TRADE_EXCEEDED in v.reason_codes
+
+
+# --------------------------------------------------------------------------- #
+# risk_fraction policy cap still enforced (before the monetary recompute)
+# --------------------------------------------------------------------------- #
+def test_risk_fraction_over_cap_still_rejected():
+    v = _g(_cand(volume=0.10, risk_fraction=0.02))          # > max_risk_per_trade_pct 0.01
+    assert not v.passed and ReasonCode.RISK_PER_TRADE_EXCEEDED in v.reason_codes
+
+
+# --------------------------------------------------------------------------- #
+# property D — removing monetary metadata is never more permissive
+# --------------------------------------------------------------------------- #
+def test_propD_removing_metadata_never_more_permissive():
+    with_meta = _g(_cand(volume=0.10))
+    without = _g(_cand(volume=0.10), bh={})
+    assert with_meta.passed and not without.passed
+
+
+def test_propE_exact_limit_boundary_deterministic():
+    # choose volume so loss == permitted exactly: loss=500 -> volume = 500/(0.005/1e-5*1.0)=1.0
+    v = _g(_cand(volume=1.0))                                # loss = 500 == permitted 500 (approx)
+    assert v.passed and v.evidence["loss_at_stop"] == pytest.approx(500.0)
+    over = _g(_cand(volume=1.01))                           # meaningfully over -> reject
+    assert not over.passed

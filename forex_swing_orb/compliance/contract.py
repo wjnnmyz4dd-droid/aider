@@ -103,6 +103,10 @@ class ReasonCode:
     # -- risk -----------------------------------------------------------------
     RISK_PER_TRADE_EXCEEDED = "RISK_PER_TRADE_EXCEEDED"
     RISK_PROJECTED_BREACH = "RISK_PROJECTED_BREACH"
+    # M9: the ACTUAL monetary loss-at-stop for the approved volume cannot be proven
+    # (missing/invalid volume or symbol tick/volume metadata) — fail closed rather
+    # than trust a declared risk_fraction alone.
+    RISK_MONETARY_UNVERIFIABLE = "RISK_MONETARY_UNVERIFIABLE"
 
     REQUIRED = frozenset({
         COMPLIANCE_PASS, KILL_SWITCH, UNKNOWN_STATE, CANDIDATE_MALFORMED,
@@ -120,7 +124,7 @@ class ReasonCode:
         NEWS_DATA_CONFLICT, NEWS_IMPACT_UNKNOWN,
         BROKER_UNHEALTHY, SPREAD_TOO_HIGH, SLIPPAGE_TOO_HIGH,
         TERMINAL_DISCONNECTED, BRIDGE_UNHEALTHY, MARKET_DATA_STALE, ACK_MISSING,
-        RISK_PER_TRADE_EXCEEDED, RISK_PROJECTED_BREACH,
+        RISK_PER_TRADE_EXCEEDED, RISK_PROJECTED_BREACH, RISK_MONETARY_UNVERIFIABLE,
     })
 
 

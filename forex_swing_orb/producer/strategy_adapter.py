@@ -106,6 +106,7 @@ def candidate_from_instruction(instr):
         "stop_loss": instr["stop_loss"],
         "take_profit": instr["take_profit"],
         "risk_fraction": instr["risk_fraction"],
+        "volume": instr.get("volume"),             # M9: authoritative execution size (sized upstream)
         "mtf": {
             "daily_bias": ev.get("trend_d1"),
             "h4_structure": ev.get("trend_h4"),

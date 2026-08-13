@@ -361,7 +361,9 @@ def test_risk_per_trade_exceeded(make_candidate, make_market, make_account,
 def test_risk_gate_projected_breach_defense_in_depth(make_candidate, make_account):
     # direct gate test: projected post-trade equity < internal daily level (96000)
     acct = make_account(equity=96200.0)   # risk 0.005*100000=500 => projected 95700 < 96000
-    v = gates.gate_risk(make_candidate(), acct, verified_profile(), FtmoConfig(), NOW)
+    bh = {"tick_size": 0.00001, "tick_value": 1.0}   # M9: metadata for the loss recompute
+    v = gates.gate_risk(make_candidate(), acct, verified_profile(), FtmoConfig(), NOW,
+                        broker_health=bh)
     assert not v.passed and v.reason_codes[0] == ReasonCode.RISK_PROJECTED_BREACH
 
 

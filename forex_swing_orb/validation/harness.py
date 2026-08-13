@@ -65,8 +65,9 @@ def signal_id(i):
 
 def make_instruction(i=0, signal_id_value=None, direction=None, symbol=None,
                      entry=1.10000, stop=None, target=None, now=NOW,
-                     strategy_version="swing_orb.v1.4.0", schema_version=2,
-                     generated=None, expiration=None, session_id="LONDON"):
+                     strategy_version="swing_orb.v1.4.0", schema_version=3,
+                     generated=None, expiration=None, session_id="LONDON",
+                     volume=0.10):
     """A deterministic, valid engine-shaped instruction (WITHOUT digest)."""
     sid = signal_id_value or signal_id(i)
     direction = direction or ("LONG" if i % 2 == 0 else "SHORT")
@@ -89,6 +90,7 @@ def make_instruction(i=0, signal_id_value=None, direction=None, symbol=None,
         "stop_loss": round(stop, 5),
         "take_profit": round(target, 5),
         "risk_fraction": 0.0025,
+        "volume": volume,                      # M9: authoritative execution size (schema 3)
         "generated_timestamp": serialize.iso_utc(gen),
         "expiration_timestamp": serialize.iso_utc(exp),
         "evidence_summary": {"trend_d1": "BULLISH", "trend_h4": "BULLISH"},

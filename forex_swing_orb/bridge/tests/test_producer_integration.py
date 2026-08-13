@@ -40,6 +40,11 @@ def test_engine_instruction_flows_through_bridge(bridge):
     eng.generate({"EURUSD.FX": df2})
     instrs = eng.instructions["EURUSD.FX"]
     assert len(instrs) == 1
+    # M9: the frozen engine emits a pre-sizing schema-2 proto-instruction; the producer
+    # FINALIZES it to the on-wire schema (3) by attaching the sized authoritative volume.
+    from forex_swing_orb.bridge.contract import PRODUCTION_INSTRUCTION_SCHEMA_VERSION
+    instrs = [{**i, "volume": 0.10,
+               "schema_version": PRODUCTION_INSTRUCTION_SCHEMA_VERSION} for i in instrs]
 
     import tempfile
     now = datetime(2024, 1, 25, 11, 30, tzinfo=timezone.utc)   # between generated & expiry

@@ -86,8 +86,10 @@ def test_active_status_writer_in_vocab():
 # §N adversarial mutations 1-18 — each MUST fail parity
 # --------------------------------------------------------------------------- #
 def test_m01_schema_constant_drift():
-    mut = E.replace("ALLOW_SCHEMA_VERSION   2", "ALLOW_SCHEMA_VERSION   3")
-    assert P.define_int(mut, "ALLOW_SCHEMA_VERSION") != _engine_schema()
+    # M9: the parity invariant is EA schema == the production on-wire schema (bridge
+    # allowlist). Drifting the EA constant off that value must be detectable.
+    mut = E.replace("ALLOW_SCHEMA_VERSION   3", "ALLOW_SCHEMA_VERSION   2")
+    assert P.define_int(mut, "ALLOW_SCHEMA_VERSION") not in BRIDGE_CFG.schema_version_allowlist
 
 
 def test_m02_schema_comparison_removed():
@@ -212,10 +214,13 @@ def test_m20_added_comment_survives():
 # --------------------------------------------------------------------------- #
 # §O MS-1 regression + §P canonical source
 # --------------------------------------------------------------------------- #
-def test_ms1_regression_schema2_engine_vs_schema1_ea():
-    mut = E.replace("ALLOW_SCHEMA_VERSION   2", "ALLOW_SCHEMA_VERSION   1")
+def test_ms1_regression_ea_schema_below_production_caught():
+    # MS-1 class defect: an EA schema that disagrees with what the producer writes
+    # (the production on-wire schema) would reject every real instruction. Any such
+    # drift must be caught — here the EA is knocked down to the retired schema 1.
+    mut = E.replace("ALLOW_SCHEMA_VERSION   3", "ALLOW_SCHEMA_VERSION   1")
     ea = P.define_int(mut, "ALLOW_SCHEMA_VERSION")
-    assert ea == 1 and ea != _engine_schema()   # the exact MS-1 mismatch -> CI fails
+    assert ea == 1 and ea not in BRIDGE_CFG.schema_version_allowlist
 
 
 def test_canonical_single_shipped_copy():

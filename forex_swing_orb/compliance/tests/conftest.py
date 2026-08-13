@@ -53,6 +53,9 @@ def make_candidate():
             "stop_loss": 1.09500,
             "take_profit": 1.11000,
             "risk_fraction": 0.005,
+            # M9: authoritative execution volume. loss-at-stop = 0.005/1e-5 * 1.0 * 0.10
+            # = 50.0 <= permitted 0.005*100000 = 500.0 (EURUSD tick metadata below).
+            "volume": 0.10,
             "mtf": {"daily_bias": "UP", "h4_structure": "UP",
                     "h1_setup": "BREAKOUT", "m15_timing": "RETEST", "aligned": True},
         }
@@ -103,6 +106,10 @@ def make_broker():
             "missing_ack_count": 0,
             "quote_age_sec": 1.0,
             "max_quote_age_sec": 30.0,
+            # M9: symbol tick/volume metadata for the authoritative risk recompute
+            # (EURUSD-like 5-digit; tick_value account-currency-denominated).
+            "tick_size": 0.00001, "tick_value": 1.0,
+            "volume_min": 0.01, "volume_max": 100.0, "volume_step": 0.01,
         }
         b.update(over)
         return b

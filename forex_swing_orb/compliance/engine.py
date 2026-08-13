@@ -48,7 +48,8 @@ class ComplianceEngine:
             lambda: gates.gate_session(candidate, cfg.session, now),
             lambda: gate_news(candidate, news_bundle, cfg.news, now),
             lambda: gates.gate_broker_health(broker_health, now),
-            lambda: gates.gate_risk(candidate, account_state, cfg.profile, cfg.ftmo, now),
+            lambda: gates.gate_risk(candidate, account_state, cfg.profile, cfg.ftmo, now,
+                                    broker_health=broker_health),
         )
 
         reject = None

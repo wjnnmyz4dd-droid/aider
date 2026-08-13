@@ -433,6 +433,10 @@ class Mt5BrokerHealthProvider(BrokerHealthProvider):
             "tick_size": float(getattr(si, "trade_tick_size", 0.0) or 0.0),
             "tick_value": float(getattr(si, "trade_tick_value", 0.0) or 0.0),
             "broker_min_stop_distance": stop_level_pts * point,
+            # M9: per-symbol volume constraints for the upstream sizing authority.
+            "volume_min": float(getattr(si, "volume_min", 0.0) or 0.0),
+            "volume_max": float(getattr(si, "volume_max", 0.0) or 0.0),
+            "volume_step": float(getattr(si, "volume_step", 0.0) or 0.0),
         }
 
     def _recent_slippage(self, symbol, now, point):

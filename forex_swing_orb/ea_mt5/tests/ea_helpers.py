@@ -22,8 +22,8 @@ NOW = datetime(2024, 1, 25, 12, 0, 0, tzinfo=timezone.utc)
 def make_instruction(signal_id="a1b2c3d4e5f60718", direction="LONG",
                      entry=1.10000, stop=None, target=None, now=NOW,
                      symbol="EURUSD.FX", strategy_version="swing_orb.v1.4.0",
-                     schema_version=2, generated=None, expiration=None,
-                     session_id="LONDON"):
+                     schema_version=3, generated=None, expiration=None,
+                     session_id="LONDON", volume=0.10):
     """A valid engine-shaped instruction dict (WITHOUT integrity_digest)."""
     if stop is None:
         stop = entry - 0.0020 if direction == "LONG" else entry + 0.0020
@@ -43,6 +43,7 @@ def make_instruction(signal_id="a1b2c3d4e5f60718", direction="LONG",
         "stop_loss": round(stop, 5),
         "take_profit": round(target, 5),
         "risk_fraction": 0.0025,
+        "volume": volume,
         "generated_timestamp": serialize.iso_utc(gen),
         "expiration_timestamp": serialize.iso_utc(exp),
         "evidence_summary": {"trend_d1": "BULLISH", "trend_h4": "BULLISH"},

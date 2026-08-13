@@ -8,7 +8,7 @@ code (never a generic failure, never fail-open).
 
 from __future__ import annotations
 
-from . import mapping
+from . import mapping, sizing
 from .contract import (GateVerdict, ReasonCode, Stage, candidate_risk_amount,
                        finite, ftmo_levels, prague_trading_day)
 
@@ -279,7 +279,12 @@ def gate_broker_health(broker_health, now):
 
 
 # -- Stage 7: Risk compliance ----------------------------------------------
-def gate_risk(candidate, account_state, profile, cfg, now):
+def gate_risk(candidate, account_state, profile, cfg, now, broker_health=None):
+    """M9: declared ``risk_fraction`` is a POLICY input (a cap), never the sole proof.
+    The gate independently RE-COMPUTES the actual monetary loss-at-stop for the
+    approved ``volume`` from broker symbol metadata (tick size/value) and requires it
+    within ``risk_fraction × initial_balance``. Missing volume / metadata fails closed
+    (RISK_MONETARY_UNVERIFIABLE) — never a fall-back to the declared fraction alone."""
     rf = finite(candidate.get("risk_fraction"))
     if rf is None or rf < 0:
         return _no(Stage.RISK, [ReasonCode.UNKNOWN_STATE], {"risk_fraction": candidate.get("risk_fraction")})
@@ -288,14 +293,33 @@ def gate_risk(candidate, account_state, profile, cfg, now):
                    {"risk_fraction": rf, "max": cfg.max_risk_per_trade_pct})
 
     levels = ftmo_levels(account_state, profile, cfg)
-    risk_amt = candidate_risk_amount(candidate, profile)
+    risk_amt = candidate_risk_amount(candidate, profile)   # permitted = rf × initial_balance
     equity = finite(account_state.get("equity"))
     if levels is None or risk_amt is None or equity is None:
         return _no(Stage.RISK, [ReasonCode.UNKNOWN_STATE], {"missing": "risk numerics"})
 
-    projected = equity - risk_amt        # defense-in-depth (FTMO gate catches first)
+    # M9 authoritative loss-at-stop from the APPROVED VOLUME (the exact lot the EA
+    # executes) + broker tick metadata. risk_fraction alone is never accepted.
+    bh = broker_health if isinstance(broker_health, dict) else {}
+    volume = candidate.get("volume")
+    ok_risk, loss = sizing.risk_within_limit(
+        candidate.get("entry"), candidate.get("stop_loss"), volume,
+        bh.get("tick_size"), bh.get("tick_value"), risk_amt)
+    if loss is None:
+        return _no(Stage.RISK, [ReasonCode.RISK_MONETARY_UNVERIFIABLE],
+                   {"volume": volume, "tick_size": bh.get("tick_size"),
+                    "tick_value": bh.get("tick_value")})
+    if not ok_risk:
+        return _no(Stage.RISK, [ReasonCode.RISK_PER_TRADE_EXCEEDED],
+                   {"loss_at_stop": loss, "permitted_risk_amount": risk_amt,
+                    "volume": volume})
+
+    # daily-buffer defense-in-depth uses the DECLARED amount (>= actual loss), so this
+    # check is never weakened by the tighter authoritative loss figure.
+    projected = equity - risk_amt        # (FTMO gate catches first)
     if projected < levels["internal_daily_level"]:
         return _no(Stage.RISK, [ReasonCode.RISK_PROJECTED_BREACH],
                    {"projected_post_trade_equity": projected,
                     "internal_daily_level": levels["internal_daily_level"]})
-    return _ok(Stage.RISK, {"risk_amount": risk_amt, "projected_post_trade_equity": projected})
+    return _ok(Stage.RISK, {"risk_amount": risk_amt, "loss_at_stop": loss,
+                            "volume": volume, "projected_post_trade_equity": projected})
