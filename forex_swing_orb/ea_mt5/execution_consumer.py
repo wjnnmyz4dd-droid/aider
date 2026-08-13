@@ -437,39 +437,89 @@ class ExecutionConsumer:
 
         claimed = sorted(paths.claimed.iterdir()) if paths.claimed.exists() else []
         for p in claimed:
-            if p.name.startswith(".") and p.name.endswith(".tmp"):
-                continue
-            if not is_safe_regular_file(p, paths.root) or len(p.name) != 21 or \
-                    not p.name.endswith(".json"):
-                c._quarantine(p, p.name[:-5], now, ReasonCode.E_UNSAFE_PATH)
-                summary["quarantined"] += 1
-                continue
-            sid = p.name[:-5]
-            seen = self.resolver.resolve(sid)
-            if seen.conflict:
-                c._quarantine(p, sid, now, ReasonCode.E_CONFLICT, detail=seen.detail)
-                summary["quarantined"] += 1
-                continue
-            if seen.terminal:
-                c._adopt(sid, seen, now, action="reconcile")
-                summary["adopted"] += 1
-                continue
-
-            # not terminal in the bridge: consult the broker (the other source
-            # of truth) before deciding — never a blind resend.
-            pos = self._broker_position(sid)
-            if pos is not None:
-                self._finalize_from_broker(sid, p, pos, now)
-                summary["recovered_from_broker"] += 1
-            elif self._has_ack(sid):
-                c.mark_reconciliation_required(sid, now)
-                summary["reconciliation_required"] += 1
-            else:
-                self.process(sid, now)          # never attempted -> safe to run
-                summary["reprocessed"] += 1
+            # restart may safely FIRST-ATTEMPT a never-attempted (no-ack) item.
+            self._reconcile_one_claimed(p, now, summary, first_attempt_ok=True)
 
         audit.emit(serialize.iso_utc(now), "reconcile", "EXEC_DONE", detail=summary)
         return summary
+
+    def reconcile_held(self, now):
+        """PERIODIC broker-truth re-resolution of HELD / RETRY_PENDING entry work
+        (G-1). Called on the normal poll cadence — NOT only at restart — so a
+        transient/ambiguous intent cannot reserve account capacity indefinitely.
+
+        It shares the exact per-item logic with :meth:`recover` but NEVER first-
+        attempts or resends an order: it may only inspect broker truth and either
+        finalize EXECUTED (broker holds the position), adopt existing terminal
+        evidence, or leave the item HELD (capacity-reserved, fail-closed) when the
+        outcome is still unknown. Each claimed item is reconciled independently so
+        one broker-truth lookup fault cannot block unrelated HELD signals."""
+        c = self.consumer
+        paths, audit = c.paths, c.audit
+        summary = {"adopted": 0, "recovered_from_broker": 0,
+                   "reconciliation_required": 0, "held": 0, "quarantined": 0}
+        # keep the transient ticket map fresh from broker truth (read-only).
+        self.active_tickets = self._rebuild_ticket_map()
+        claimed = sorted(paths.claimed.iterdir()) if paths.claimed.exists() else []
+        for p in claimed:
+            try:
+                self._reconcile_one_claimed(p, now, summary, first_attempt_ok=False)
+            except mt5c.MT5Disconnected:
+                summary["held"] += 1            # broker truth unknown -> stay HELD
+            except Exception as exc:            # isolate: one fault never blocks siblings
+                summary["held"] += 1
+                audit.emit(serialize.iso_utc(now), "reconcile_held", "ERROR",
+                           signal_id=p.name[:16], detail={"error": type(exc).__name__})
+        audit.emit(serialize.iso_utc(now), "reconcile_held", "HELD_DONE", detail=summary)
+        return summary
+
+    def poll(self, now):
+        """One production poll tick: periodically re-resolve HELD items against
+        broker truth (no resend), then process any newly pending instruction."""
+        held = self.reconcile_held(now)
+        result = self.process_next(now)
+        return {"held_reconcile": held, "processed": result}
+
+    def _reconcile_one_claimed(self, p, now, summary, first_attempt_ok):
+        """Resolve ONE stranded claimed instruction against authoritative truth.
+        Shared by restart recovery and periodic reconciliation. NEVER resends; only
+        ``first_attempt_ok`` (restart) may run a NEVER-attempted (no-ack) item as a
+        safe first execution. HELD/unknown stays claimed (capacity-reserved)."""
+        c = self.consumer
+        if p.name.startswith(".") and p.name.endswith(".tmp"):
+            return
+        if not is_safe_regular_file(p, c.paths.root) or len(p.name) != 21 or \
+                not p.name.endswith(".json"):
+            c._quarantine(p, p.name[:-5], now, ReasonCode.E_UNSAFE_PATH)
+            summary["quarantined"] = summary.get("quarantined", 0) + 1
+            return
+        sid = p.name[:-5]
+        seen = self.resolver.resolve(sid)
+        if seen.conflict:
+            c._quarantine(p, sid, now, ReasonCode.E_CONFLICT, detail=seen.detail)
+            summary["quarantined"] = summary.get("quarantined", 0) + 1
+            return
+        if seen.terminal:
+            c._adopt(sid, seen, now, action="reconcile")
+            summary["adopted"] = summary.get("adopted", 0) + 1
+            return
+        # not terminal in the bridge: consult the broker (the other source of
+        # truth) before deciding — never a blind resend.
+        pos = self._broker_position(sid)
+        if pos is not None:
+            self._finalize_from_broker(sid, p, pos, now)     # HELD -> EXECUTED (truth)
+            summary["recovered_from_broker"] = summary.get("recovered_from_broker", 0) + 1
+        elif self._has_ack(sid):
+            # attempted, outcome unknown -> remain HELD (capacity-reserved), NO resend.
+            c.mark_reconciliation_required(sid, now)
+            summary["reconciliation_required"] = summary.get("reconciliation_required", 0) + 1
+        elif first_attempt_ok:
+            self.process(sid, now)               # never attempted -> safe first run (restart only)
+            summary["reprocessed"] = summary.get("reprocessed", 0) + 1
+        else:
+            # periodic: a never-attempted item is left for the retry/restart path;
+            # periodic reconciliation must not resend/first-attempt.
+            summary["held"] = summary.get("held", 0) + 1
 
     def _rebuild_ticket_map(self):
         """Reconstruct signal_id -> ticket from open MT5 positions (broker truth).
