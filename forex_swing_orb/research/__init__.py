@@ -24,11 +24,12 @@ randomness only via an explicit seed. Every experiment records full provenance.
 from __future__ import annotations
 
 from .provenance import ExperimentRecord, git_head, ProvenanceError
-from . import portfolio, execution_analytics, reporting, walk_forward, montecarlo
+from . import (portfolio, execution_analytics, reporting, walk_forward, montecarlo,
+               lifecycle)
 from .experiments import ExperimentManager, Experiment
 
 __all__ = [
     "ExperimentRecord", "git_head", "ProvenanceError", "portfolio",
-    "execution_analytics", "reporting", "walk_forward", "montecarlo",
+    "execution_analytics", "reporting", "walk_forward", "montecarlo", "lifecycle",
     "ExperimentManager", "Experiment",
 ]
