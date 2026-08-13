@@ -113,19 +113,46 @@ class ProducerRunner:
 
         # Fan out: bars are fetched/validated once per symbol (session-independent),
         # then each enabled session profile is evaluated INDEPENDENTLY on those bars.
-        for sym in cfg.symbols:
-            prepared = self._prepare_symbol(sym, now)
-            if isinstance(prepared, CycleResult):
-                results.append(prepared)
-                continue
-            exec_bars, bar_iso, versions = prepared
-            for profile in self._profiles:
-                results.append(self._run_symbol_session(
-                    sym, profile, now, acct, news_bundle, exec_bars, bar_iso, versions))
-
-        # 11/12. result ingestion + reconciliation (read-only)
-        self._ingest_and_reconcile(now)
+        # M3: each symbol and each session is fault-isolated — one deterministic
+        # exception fails ONLY that unit (fail-closed, no instruction written, no
+        # capacity reserved) and never starves sibling symbols/sessions. Global
+        # prerequisites (kill/account/news above) already gate the whole cycle, so
+        # isolation applies only after those succeed. End-of-cycle reconciliation
+        # ALWAYS runs (finally) so a local fault cannot suppress result ingestion.
+        try:
+            for sym in cfg.symbols:
+                try:
+                    prepared = self._prepare_symbol(sym, now)
+                except Exception as exc:               # symbol-level prep fault -> skip symbol
+                    results.append(self._unit_error(sym, "-", now, "prepare_symbol", exc))
+                    continue
+                if isinstance(prepared, CycleResult):
+                    results.append(prepared)
+                    continue
+                exec_bars, bar_iso, versions = prepared
+                for profile in self._profiles:
+                    try:
+                        results.append(self._run_symbol_session(
+                            sym, profile, now, acct, news_bundle, exec_bars, bar_iso, versions))
+                    except Exception as exc:           # session-local fault -> skip session
+                        results.append(self._unit_error(sym, profile.session_id, now,
+                                                        "run_symbol_session", exc))
+        finally:
+            # 11/12. result ingestion + reconciliation (read-only) MUST run even if a
+            # symbol/session unit faulted above (M3 §26).
+            try:
+                self._ingest_and_reconcile(now)
+            except Exception as exc:
+                self._last_error = repr(exc)
         return results
+
+    def _unit_error(self, symbol, session_id, now, stage, exc):
+        """Emit a fail-closed isolated-unit error result (no instruction written, no
+        capacity reserved). Diagnostics identify the symbol/session/stage; the
+        exception type is recorded (no secrets)."""
+        return self._emit(CycleOutcome.UNIT_ERROR, symbol, "-", [RunnerReason.UNIT_ERROR],
+                          now, {}, detail={"session_id": session_id, "stage": stage,
+                                           "error": type(exc).__name__})
 
     def _observe_bridge(self, now):
         """ONE read-only entry-bridge snapshot (H5) feeding capacity reservation, ACK

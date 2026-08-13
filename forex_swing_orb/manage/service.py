@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ..bridge import serialize
 from ..bridge.atomic import atomic_write_text
+from ..position.contract import PMReason
 from .ledger import ManageLedger
 
 
@@ -38,30 +39,62 @@ class ManagerService:
         bars_open = bars_open or {}
         ks = self._kill(now) if kill_switch is None else kill_switch
         results = []
-        for sid in list(self.pm.states.keys()):
-            st = self.pm.states[sid]
-            ticket = st["ticket"]
-            # provide broker-constraint context to the adapter (additive state keys)
-            st["_market_reference"] = market.get(ticket)
-            st["_broker_min_stop_distance"] = 0.0
-            # one-in-flight: try to resolve a persisted in-flight, else reconcile
-            if self.ledger.get_inflight(ticket) is not None:
-                self.adapter.reconcile_inflight(ticket)
-                if self.ledger.get_inflight(ticket) is not None:
-                    results.append(self.pm.recover(sid, now))
-                    continue
-            # one action per ticket per cycle: the PM makes the single decision from
-            # the injected context (confirmed_swing + structure_reference enable
-            # structure trailing; bars_open enables the max-duration decision).
-            rec = self.pm.evaluate(
-                sid, market_price=market.get(ticket), now=now, kill_switch=ks,
-                confirmed_swing=swings.get(ticket),
-                structure_reference=structures.get(ticket),
-                bars_since_swing=bars_since.get(ticket), bars_open=bars_open.get(ticket))
-            results.append(rec)
-        if self.health_path is not None:
-            self._write_health(now)
+        try:
+            for sid in list(self.pm.states.keys()):
+                # M2: fault isolation — one ticket's unexpected exception must not
+                # starve the others. Each ticket is managed in its own boundary; a
+                # failure records a diagnostic and leaves the position PROTECTED
+                # (never marked CLOSED from an exception), then the cycle continues.
+                try:
+                    results.append(self._manage_one(sid, now, ks, market, swings,
+                                                    structures, bars_since, bars_open))
+                except Exception as exc:                    # narrow to per-ticket work
+                    results.append(self._isolate_ticket_fault(sid, now, exc))
+        finally:
+            # cycle-level health must still be written even if a ticket faulted.
+            if self.health_path is not None:
+                try:
+                    self._write_health(now)
+                except Exception:
+                    pass
         return results
+
+    def _manage_one(self, sid, now, ks, market, swings, structures, bars_since, bars_open):
+        st = self.pm.states[sid]
+        ticket = st["ticket"]
+        # provide broker-constraint context to the adapter (additive state keys)
+        st["_market_reference"] = market.get(ticket)
+        st["_broker_min_stop_distance"] = 0.0
+        # one-in-flight: try to resolve a persisted in-flight, else reconcile
+        if self.ledger.get_inflight(ticket) is not None:
+            self.adapter.reconcile_inflight(ticket)
+            if self.ledger.get_inflight(ticket) is not None:
+                return self.pm.recover(sid, now)
+        # one action per ticket per cycle: the PM makes the single decision from
+        # the injected context (confirmed_swing + structure_reference enable
+        # structure trailing; bars_open enables the max-duration decision).
+        return self.pm.evaluate(
+            sid, market_price=market.get(ticket), now=now, kill_switch=ks,
+            confirmed_swing=swings.get(ticket),
+            structure_reference=structures.get(ticket),
+            bars_since_swing=bars_since.get(ticket), bars_open=bars_open.get(ticket))
+
+    def _isolate_ticket_fault(self, sid, now, exc):
+        """Record an isolated per-ticket management fault WITHOUT touching the
+        position (it keeps its existing protective stop) and WITHOUT marking it
+        CLOSED. Emits a fail-closed RECONCILIATION_REQUIRED audit line so the fault
+        is observable and the ticket is re-examined next cycle."""
+        st = self.pm.states.get(sid) or {}
+        diag = {"stage": "manage_cycle", "error": type(exc).__name__,
+                "reconciliation_status": "ticket_fault_isolated"}
+        # emit the fail-closed PM audit line (best-effort); never touch the position.
+        try:
+            if st:
+                self.pm._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
+                              reconciliation_status="ticket_fault_isolated")
+        except Exception:
+            pass
+        return {"signal_id": sid, "reason_code": PMReason.RECONCILIATION_REQUIRED, **diag}
 
     def status(self, now):
         inflight = dict(self.ledger.inflight)

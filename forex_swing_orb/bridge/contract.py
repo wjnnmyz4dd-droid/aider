@@ -36,6 +36,14 @@ class ResultState:
     # an execution consumer exists; now populated by the MT5 Execution Adapter.
     EXECUTED = "EXECUTED"
     EXECUTION_FAILED = "EXECUTION_FAILED"
+    # M1: a NON-TERMINAL, consumer-internal signal returned by an execution hook when
+    # a broker outcome is transient/ambiguous and MUST NOT be terminalized as a
+    # failure (a resend could duplicate, or the order may actually have executed).
+    # It is NEVER written to a result file and never appears in the on-disk result
+    # vocabulary: the consumer routes it to mark_reconciliation_required so the
+    # claimed instruction stays outstanding (capacity-reserved, ACK'd, no resend)
+    # until broker-truth reconciliation resolves it.
+    RETRY_PENDING = "RETRY_PENDING"
 
 
 class HookPosture:

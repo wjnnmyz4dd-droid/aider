@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from forex_swing_orb.bridge import serialize
-from forex_swing_orb.bridge.contract import ResultState
+from forex_swing_orb.bridge.contract import ResultState, ReasonCode
 from forex_swing_orb.bridge.paths import instruction_name
 from forex_swing_orb.ea_mt5 import mock_mt5
 from forex_swing_orb.ea_mt5.execution_consumer import XReason
@@ -23,18 +23,19 @@ def _audit_has(audit, action, reason=None):
               for a in audit.read_all())
 
 
-# -- broker failures: fail closed + deterministic reason + audit -----------
-BROKER_CASES = [
+# -- TERMINAL broker rejections: fail closed + deterministic reason + audit ---
+# (M1) Only genuine business rejections terminalize; transient/ambiguous outcomes
+# are handled below and must NOT be terminalized as failures.
+TERMINAL_CASES = [
     (mock_mt5.TRADE_RETCODE_REJECT, XReason.BROKER_REJECT),
     (mock_mt5.TRADE_RETCODE_MARKET_CLOSED, XReason.MARKET_CLOSED),
-    (mock_mt5.TRADE_RETCODE_PRICE_OFF, XReason.OFF_QUOTES),
-    (mock_mt5.TRADE_RETCODE_REQUOTE, XReason.REQUOTE),
-    (mock_mt5.TRADE_RETCODE_TOO_MANY_REQUESTS, XReason.TRADE_BUSY),
+    (mock_mt5.TRADE_RETCODE_NO_MONEY, XReason.NO_MONEY),
+    (mock_mt5.TRADE_RETCODE_INVALID_VOLUME, XReason.INVALID_VOLUME),
 ]
 
 
-@pytest.mark.parametrize("retcode,reason", BROKER_CASES)
-def test_broker_failure_fails_closed(tmp_path, retcode, reason):
+@pytest.mark.parametrize("retcode,reason", TERMINAL_CASES)
+def test_broker_terminal_rejection_fails_closed(tmp_path, retcode, reason):
     ec, paths, ledger, audit, mt5 = H.build(tmp_path)
     mt5.script(retcode)
     rec = H.make_instruction()
@@ -44,20 +45,51 @@ def test_broker_failure_fails_closed(tmp_path, retcode, reason):
     assert result["reason_code"] == reason
     assert result["execution_error"]["retcode"] == retcode
     assert mt5.position_by_comment(rec["signal_id"]) is None      # no open position
+    assert len(mt5.order_log) == 1                                # terminal -> no retry
     assert _audit_has(audit, "process", reason)
-    # archived to the rejected family (terminal, deterministic)
     assert (paths.archive_rejected / instruction_name(rec["signal_id"])).exists()
 
 
-def test_terminal_disconnected_fails_closed(tmp_path):
+# -- TRANSIENT: a routine requote/off-quote is retried (bounded) and succeeds ---
+@pytest.mark.parametrize("retcode", [mock_mt5.TRADE_RETCODE_REQUOTE,
+                                     mock_mt5.TRADE_RETCODE_PRICE_OFF])
+def test_transient_failure_retried_then_executes(tmp_path, retcode):
+    ec, paths, ledger, audit, mt5 = H.build(tmp_path)
+    mt5.script(retcode)                              # one transient, then DONE
+    rec = H.make_instruction()
+    H.produce(paths, rec)
+    result = H.drain(ec)[0]
+    assert result["status"] == ResultState.EXECUTED          # not dropped
+    assert mt5.position_by_comment(rec["signal_id"]) is not None
+    assert len(mt5.order_log) == 2                            # requote + resend
+
+
+# -- AMBIGUOUS: too-many-requests is held (never resent, never terminalized) ---
+def test_ambiguous_retcode_held_not_failed(tmp_path):
+    ec, paths, ledger, audit, mt5 = H.build(tmp_path)
+    mt5.script(mock_mt5.TRADE_RETCODE_TOO_MANY_REQUESTS)
+    rec = H.make_instruction()
+    H.produce(paths, rec)
+    result = H.drain(ec)[0]
+    assert result["status"] == ReasonCode.RECONCILIATION_REQUIRED    # held, not failed
+    assert mt5.position_by_comment(rec["signal_id"]) is None
+    assert len(mt5.order_log) == 1                                    # not hammered
+    # claimed instruction is HELD (capacity-reserved), not archived as rejected
+    assert (paths.claimed / instruction_name(rec["signal_id"])).exists()
+    assert not (paths.archive_rejected / instruction_name(rec["signal_id"])).exists()
+
+
+def test_terminal_disconnected_held_not_failed(tmp_path):
     ec, paths, ledger, audit, mt5 = H.build(tmp_path)
     mt5.connected = False
     rec = H.make_instruction()
     H.produce(paths, rec)
     result = H.drain(ec)[0]
-    assert result["status"] == ResultState.EXECUTION_FAILED
-    assert result["reason_code"] == XReason.DISCONNECTED
+    # a disconnect is ambiguous (order may have reached the server) -> held, never
+    # marked definitely-failed; the claimed instruction stays for reconciliation.
+    assert result["status"] == ReasonCode.RECONCILIATION_REQUIRED
     assert mt5.position_by_comment(rec["signal_id"]) is None
+    assert (paths.claimed / instruction_name(rec["signal_id"])).exists()
     # reconnect + a fresh signal executes normally (recovers)
     mt5.connected = True
     rec2 = H.make_instruction(i=2)

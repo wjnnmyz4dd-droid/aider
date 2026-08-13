@@ -49,6 +49,8 @@ class XReason:
     DISCONNECTED = "X_DISCONNECTED"           # terminal<->server link down
     BROKER_ERROR = "X_BROKER_ERROR"           # any other non-DONE retcode
     RECONCILE = "X_RECONCILE"                 # restart: attempted, outcome unknown
+    EXPIRED = "X_EXPIRED"                     # instruction expired before a safe (re)send
+    RETRY_PENDING = "X_RETRY_PENDING"         # transient/ambiguous: held, not terminal
 
 
 # broker retcode -> (reason code). Only DONE is success.
@@ -68,6 +70,57 @@ _RETCODE_REASON = {
 }
 
 _DIRECTION_TO_ORDER_TYPE = {"LONG": mt5c.ORDER_TYPE_BUY, "SHORT": mt5c.ORDER_TYPE_SELL}
+
+
+# -- M1: broker-retcode taxonomy ------------------------------------------------
+# Distinguishes TERMINAL business rejection from TRANSIENT/AMBIGUOUS conditions so a
+# routine requote/off-quote/timeout does not silently drop a valid entry. Retry NEVER
+# resends blindly: every (re)send is preceded by a broker-truth check for this
+# signal_id, and ambiguous outcomes (order may already exist) are never resent.
+#
+# TERMINAL   -> EXECUTION_FAILED now (a business rejection; a resend cannot help).
+# TRANSIENT  -> the order was NOT accepted (definitely no position), so a small
+#               BOUNDED in-cycle resend is duplicate-safe; if it keeps failing it is
+#               held unresolved rather than dropped.
+# AMBIGUOUS  -> the order MAY have executed (or the request was throttled); never
+#               resend in-cycle — consult broker truth, then hold unresolved.
+_TERMINAL_RETCODES = frozenset({
+    mt5c.TRADE_RETCODE_REJECT, mt5c.TRADE_RETCODE_MARKET_CLOSED,
+    mt5c.TRADE_RETCODE_INVALID_VOLUME, mt5c.TRADE_RETCODE_INVALID_STOPS,
+    mt5c.TRADE_RETCODE_NO_MONEY, mt5c.TRADE_RETCODE_TRADE_DISABLED,
+    mt5c.TRADE_RETCODE_INVALID,
+})
+_TRANSIENT_RETCODES = frozenset({          # rejected before placement -> resend-safe
+    mt5c.TRADE_RETCODE_REQUOTE, mt5c.TRADE_RETCODE_PRICE_OFF,
+    mt5c.TRADE_RETCODE_INVALID_PRICE,
+})
+_AMBIGUOUS_RETCODES = frozenset({          # may have placed / throttled -> never resend
+    mt5c.TRADE_RETCODE_TIMEOUT, mt5c.TRADE_RETCODE_CONNECTION,
+    mt5c.TRADE_RETCODE_TOO_MANY_REQUESTS,
+})
+
+
+class RetClass:
+    SUCCESS = "SUCCESS"
+    TERMINAL = "TERMINAL"
+    TRANSIENT = "TRANSIENT"
+    AMBIGUOUS = "AMBIGUOUS"
+    UNKNOWN = "UNKNOWN"
+
+
+def classify_retcode(retcode):
+    """Classify a broker retcode. An unclassified retcode is UNKNOWN, which the
+    caller treats fail-closed (broker-truth check, then held unresolved — never a
+    terminal drop and never a blind resend)."""
+    if retcode == mt5c.TRADE_RETCODE_DONE:
+        return RetClass.SUCCESS
+    if retcode in _TERMINAL_RETCODES:
+        return RetClass.TERMINAL
+    if retcode in _TRANSIENT_RETCODES:
+        return RetClass.TRANSIENT
+    if retcode in _AMBIGUOUS_RETCODES:
+        return RetClass.AMBIGUOUS
+    return RetClass.UNKNOWN
 
 
 def normalize_symbol(canonical, broker_suffix=""):
@@ -93,10 +146,15 @@ class ExecutionConsumer:
 
     def __init__(self, paths, cfg, ledger, audit, mt5, resolver=None,
                  broker_suffix="", ea_id="SessionEdgeExecutionEA/1.0",
-                 default_volume=0.10):
+                 default_volume=0.10, max_execution_attempts=3):
         self.mt5 = mt5
         self.broker_suffix = broker_suffix
         self.ea_id = ea_id
+        # M1: total bounded order-send attempts for a single execution call. Only
+        # TRANSIENT (definitely-not-placed) failures consume extra attempts, and only
+        # after re-confirming no position exists — so retries can never duplicate.
+        # Finite and small; a conservative default.
+        self.max_execution_attempts = max(1, int(max_execution_attempts))
         # Operator-configured constant lot. The EA NEVER sizes trades from risk;
         # see _resolve_volume. This is a broker/account operational input, not a
         # strategy decision.
@@ -213,28 +271,85 @@ class ExecutionConsumer:
             "tp": record["take_profit"],
             "comment": signal_id,          # ticket <-> signal_id correlation
         }
-        try:
-            res = self.mt5.order_send(request)
-        except mt5c.MT5Disconnected:
-            return self._fail(signal_id, XReason.DISCONNECTED,
-                              {"execution_error": "terminal_disconnected"})
+        # M1: bounded, duplicate-safe execution. TRANSIENT (not-placed) failures earn
+        # a small bounded resend; TERMINAL fails now; AMBIGUOUS/UNKNOWN never resend
+        # and are held unresolved after a broker-truth check. Expiration is respected
+        # before every send. `now` is fixed for this call (deterministic).
+        exp = serialize.parse_iso(record.get("expiration_timestamp"))
+        for attempt in range(1, self.max_execution_attempts + 1):
+            # never execute past the strategy's valid window (terminal expiry).
+            if exp is not None and now >= exp:
+                return ResultState.EXPIRED, XReason.EXPIRED, {
+                    "execution": {"execution_error": "expired_before_send",
+                                  "attempt": attempt}}
+            # exactly-once: re-confirm no position exists for this signal_id before a
+            # RESEND (attempt 1 was pre-checked above). A disconnect here means we
+            # cannot prove no execution -> hold unresolved, never resend.
+            if attempt > 1:
+                try:
+                    dup = self.mt5.position_by_comment(signal_id)
+                except mt5c.MT5Disconnected:
+                    return self._retry_pending(signal_id, XReason.DISCONNECTED,
+                                               {"attempt": attempt, "note": "recheck_disconnected"})
+                if dup is not None:
+                    return self._executed_detail(record, dup, XReason.ADOPTED, now, adopted=True)
 
-        if not res.ok:
+            try:
+                res = self.mt5.order_send(request)
+            except mt5c.MT5Disconnected:
+                # ambiguous: the send may have reached the server -> never resend.
+                return self._retry_pending(signal_id, XReason.DISCONNECTED,
+                                           {"attempt": attempt, "note": "send_disconnected"})
+
+            if res.ok:
+                self.active_tickets[signal_id] = res.order
+                pos = self.mt5.position_by_comment(signal_id)
+                return self._executed_detail(record, pos, XReason.OK, now, result=res)
+
+            cls = classify_retcode(res.retcode)
             reason = _RETCODE_REASON.get(res.retcode, XReason.BROKER_ERROR)
-            return ResultState.EXECUTION_FAILED, reason, {
-                "execution": {
-                    "broker_order_id": None,
-                    "requested_price": record["entry_price"],
-                    "requested_volume": vol,
-                    "filled_price": None,
-                    "filled_volume": None,
-                    "slippage": None,
-                    "execution_error": {"retcode": res.retcode, "comment": res.comment},
-                }}
+            if cls == RetClass.TERMINAL:
+                return ResultState.EXECUTION_FAILED, reason, self._exec_error_detail(record, vol, res)
+            if cls == RetClass.TRANSIENT and attempt < self.max_execution_attempts:
+                self.audit.emit(serialize.iso_utc(now), "execute", "X_RETRY", signal_id=signal_id,
+                                detail={"attempt": attempt, "retcode": res.retcode, "reason": reason})
+                continue                             # bounded resend (not-placed -> safe)
+            # AMBIGUOUS / UNKNOWN, or TRANSIENT budget exhausted: consult broker truth,
+            # then hold unresolved (capacity-reserved, no resend, not a terminal drop).
+            try:
+                pos = self.mt5.position_by_comment(signal_id)
+            except mt5c.MT5Disconnected:
+                pos = None
+            if pos is not None:
+                return self._executed_detail(record, pos, XReason.ADOPTED, now, adopted=True)
+            return self._retry_pending(signal_id, reason,
+                                       {"attempt": attempt, "retcode": res.retcode,
+                                        "class": cls})
 
-        self.active_tickets[signal_id] = res.order
-        pos = self.mt5.position_by_comment(signal_id)
-        return self._executed_detail(record, pos, XReason.OK, now, result=res)
+        # unreachable: the loop always returns; guard fail-closed just in case.
+        return self._retry_pending(signal_id, XReason.BROKER_ERROR, {"note": "budget_exhausted"})
+
+    def _exec_error_detail(self, record, vol, res):
+        return {"execution": {
+            "broker_order_id": None,
+            "requested_price": record["entry_price"],
+            "requested_volume": vol,
+            "filled_price": None,
+            "filled_volume": None,
+            "slippage": None,
+            "execution_error": {"retcode": res.retcode, "comment": res.comment},
+        }}
+
+    def _retry_pending(self, signal_id, reason, extra=None):
+        """Return the NON-TERMINAL retry-pending signal. The bridge consumer routes
+        this to reconciliation-required: the claimed instruction stays outstanding
+        (capacity-reserved, ACK'd) and is never resent until broker truth resolves
+        it. Capacity is NOT released and no failure result is written."""
+        detail = {"execution": {"execution_error": "transient_or_ambiguous",
+                                "reason": reason}}
+        if extra:
+            detail["execution"].update(extra)
+        return ResultState.RETRY_PENDING, reason, detail
 
     # -- helpers ------------------------------------------------------------
     def _resolve_volume(self, record):

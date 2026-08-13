@@ -99,6 +99,12 @@ class Consumer:
             state, hreason, detail = self.hook(record, now)
         except Exception as exc:
             state, hreason, detail = ResultState.FAILED, ReasonCode.E_HOOK, {"error": type(exc).__name__}
+        # M1: a transient/ambiguous execution outcome is NOT terminalized — the
+        # claimed instruction is held for broker-truth reconciliation (no result, no
+        # archive, no resend), staying outstanding/capacity-reserved. Never happens
+        # for the validation-only posture (it only returns terminal states).
+        if state == ResultState.RETRY_PENDING:
+            return self.mark_reconciliation_required(signal_id, now)
         return self._finish(signal_id, now, received_iso, state, hreason, record, detail)
 
     # -- terminal transition (the ONE terminal-result writer) ---------------

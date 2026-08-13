@@ -206,25 +206,56 @@ def test_market_closed(env, mt5):
     _reject_case(env, mt5, mock_mt5.TRADE_RETCODE_MARKET_CLOSED, XReason.MARKET_CLOSED)
 
 
-def test_requote(env, mt5):
-    _reject_case(env, mt5, mock_mt5.TRADE_RETCODE_REQUOTE, XReason.REQUOTE)
+def test_requote_then_success(env, mt5):
+    # M1: a transient REQUOTE is not terminal — a bounded resend (2nd attempt, no
+    # queued failure left) fills. Duplicate-safe: only one position results.
+    mt5.script(mock_mt5.TRADE_RETCODE_REQUOTE)     # one requote, then DONE by default
+    result = _produce(env, make_instruction())
+    assert result["status"] == ResultState.EXECUTED
+    assert len(mt5.order_log) == 2                  # requote + successful resend
+    assert mt5.position_by_comment("a1b2c3d4e5f60718") is not None
 
 
-def test_off_quotes(env, mt5):
-    _reject_case(env, mt5, mock_mt5.TRADE_RETCODE_PRICE_OFF, XReason.OFF_QUOTES)
+def test_off_quotes_then_success(env, mt5):
+    mt5.script(mock_mt5.TRADE_RETCODE_PRICE_OFF)
+    result = _produce(env, make_instruction())
+    assert result["status"] == ResultState.EXECUTED
+    assert len(mt5.order_log) == 2
 
 
-def test_trade_context_busy(env, mt5):
-    _reject_case(env, mt5, mock_mt5.TRADE_RETCODE_TOO_MANY_REQUESTS, XReason.TRADE_BUSY)
+def test_transient_persists_held_not_failed(env, mt5):
+    # M1: transient every attempt -> NOT terminal EXECUTION_FAILED; held for
+    # reconciliation (capacity-reserved), never dropped, never a phantom position.
+    from forex_swing_orb.bridge.contract import ReasonCode
+    mt5.script(*[mock_mt5.TRADE_RETCODE_REQUOTE] * 5)
+    result = _produce(env, make_instruction())
+    assert result["status"] == ReasonCode.RECONCILIATION_REQUIRED
+    assert len(mt5.order_log) == 3                  # bounded to max_execution_attempts
+    assert mt5.position_by_comment("a1b2c3d4e5f60718") is None
+    # claimed instruction is HELD (no terminal result, not archived)
+    assert (env.paths.claimed / instruction_name("a1b2c3d4e5f60718")).exists()
+    assert not (env.paths.archive_rejected / instruction_name("a1b2c3d4e5f60718")).exists()
 
 
-def test_terminal_disconnected(env, mt5):
+def test_trade_context_busy_ambiguous_held(env, mt5):
+    # M1: TOO_MANY_REQUESTS is ambiguous/throttled -> never resent in-cycle; held.
+    from forex_swing_orb.bridge.contract import ReasonCode
+    mt5.script(mock_mt5.TRADE_RETCODE_TOO_MANY_REQUESTS)
+    result = _produce(env, make_instruction())
+    assert result["status"] == ReasonCode.RECONCILIATION_REQUIRED
+    assert len(mt5.order_log) == 1                  # NOT hammered
+    assert mt5.position_by_comment("a1b2c3d4e5f60718") is None
+
+
+def test_terminal_disconnected_ambiguous_held(env, mt5):
+    # M1: a disconnect during send is ambiguous (may have reached the server) ->
+    # NEVER marked definitely-failed; held for broker-truth reconciliation.
+    from forex_swing_orb.bridge.contract import ReasonCode
     mt5.connected = False
     result = _produce(env, make_instruction())
-    assert result["status"] == ResultState.EXECUTION_FAILED
-    assert result["reason_code"] == XReason.DISCONNECTED
-    assert len(mt5.order_log) == 1          # attempt logged, but no fill/position
-    assert mt5.position_by_comment("a1b2c3d4e5f60718") is None
+    assert result["status"] == ReasonCode.RECONCILIATION_REQUIRED
+    assert len(mt5.order_log) == 1          # attempt logged, but no terminal drop
+    assert (env.paths.claimed / instruction_name("a1b2c3d4e5f60718")).exists()
 
 
 # -- duplicate prevention ---------------------------------------------------
