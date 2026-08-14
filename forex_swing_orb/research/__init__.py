@@ -25,11 +25,11 @@ from __future__ import annotations
 
 from .provenance import ExperimentRecord, git_head, ProvenanceError
 from . import (portfolio, execution_analytics, reporting, walk_forward, montecarlo,
-               lifecycle, quality_facts)
+               lifecycle, quality_facts, calibration)
 from .experiments import ExperimentManager, Experiment
 
 __all__ = [
     "ExperimentRecord", "git_head", "ProvenanceError", "portfolio",
     "execution_analytics", "reporting", "walk_forward", "montecarlo", "lifecycle",
-    "quality_facts", "ExperimentManager", "Experiment",
+    "quality_facts", "calibration", "ExperimentManager", "Experiment",
 ]
