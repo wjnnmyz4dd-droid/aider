@@ -63,8 +63,12 @@ class MemoryStore:
 
     def write_raw(self, kind, subject, content, source, timestamp,
                   correlation_id=None):
-        """Append one immutable raw record. Idempotent on content: the same
-        content maps to the same id and is written at most once."""
+        """Append one immutable raw record. Content-addressed on the FULL tuple
+        (kind, subject, content, source, timestamp): an identical tuple maps to the
+        same id and is written at most once. Note the timestamp is part of the id, so
+        the same semantic content at two timestamps yields two records — per-signal
+        idempotency for outcomes is enforced upstream by the reconciler's signal_id
+        guard, not by content addressing alone."""
         if kind not in RECORD_KINDS:
             raise MemoryError(f"unknown record kind: {kind}")
         if not source:

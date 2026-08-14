@@ -29,7 +29,7 @@ ingest/join: `research/lifecycle.py::quality_dataset`. Cohorts remain owned sole
 
 | Fact | Formula (from emitted evidence) | Unit |
 |---|---|---|
-| `range_width_price` | `range_high − range_low` | price |
+| `range_width_price` | `abs(range_high − range_low)` | price |
 | `range_width_atr` | `range_width_price / atr14` | ATR (dimensionless) |
 | `retest_depth_price` | `abs(retest_extreme − boundary)` | price |
 | `retest_depth_atr` | `retest_depth_price / atr14` | ATR |
@@ -40,6 +40,12 @@ ingest/join: `research/lifecycle.py::quality_dataset`. Cohorts remain owned sole
 | `stop_distance_price` | `abs(entry_price − stop_loss)` | price |
 | `stop_distance_atr` | `stop_distance_price / atr14` | ATR |
 | `rr_planned` | passthrough of emitted `rr_planned` | ratio (currently constant = `rr_target`) |
+
+Every `_price` fact is a non-negative **magnitude** (`abs`); the OR width is
+non-negative by engine contract, and `abs()` keeps it a magnitude even for a malformed
+non-engine dict. The emitted `atr14` field is surfaced as `null`/UNAVAILABLE when the
+engine's ATR is non-positive (no usable denominator), consistent with the `_atr` facts
+which already fail closed to `null`.
 
 Naming is canonical (raw `_price` + normalized `_atr`); no aliases. `confirm_close` is
 the engine's confirmation/entry close, so the extent beyond the boundary is named

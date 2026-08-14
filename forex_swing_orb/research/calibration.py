@@ -145,12 +145,16 @@ def pearson(xs, ys):
     if _is_constant(px) or _is_constant(py):    # constant feature or constant outcome
         return None
     mx, my = sum(px) / n, sum(py) / n
-    sxx = sum((x - mx) ** 2 for x in px)
-    syy = sum((y - my) ** 2 for y in py)
-    if sxx <= 0 or syy <= 0:
-        return None
-    sxy = sum((x - mx) * (y - my) for x, y in zip(px, py))
-    return round(sxy / math.sqrt(sxx * syy), 6)
+    try:                                # extreme magnitudes -> overflow -> fail closed
+        sxx = sum((x - mx) ** 2 for x in px)
+        syy = sum((y - my) ** 2 for y in py)
+        if sxx <= 0 or syy <= 0:
+            return None
+        sxy = sum((x - mx) * (y - my) for x, y in zip(px, py))
+        r = sxy / math.sqrt(sxx * syy)
+    except (OverflowError, ValueError):
+        return None                     # undefined (not fabricated) on numeric overflow
+    return round(r, 6)
 
 
 def _ranks(values):
@@ -326,18 +330,23 @@ def monotonicity(dataset, fact, *, bins=4, quality_fact_version=None):
         return {"fact": fact, "classification": INSUFFICIENT, "count": uni.get("count", 0)}
     rho = uni.get("spearman_r")
     if rho is None:
+        # rank correlation undefined: a constant feature OR a constant outcome
         return {"fact": fact, "classification": FLAT, "count": uni["count"],
-                "spearman_r": None, "reason": "constant feature"}
+                "spearman_r": None, "reason": "constant feature or outcome"}
     bq = uni.get("by_quantile") or {}
     trend = _is_monotone([bq[b]["mean_r"] for b in sorted(bq)])
+    # POSITIVE/NEGATIVE require BOTH a rank-correlation sign AND a per-quantile
+    # bucket trend of the SAME sign. trend == 0 (buckets not ordered: U-shaped,
+    # inverted-U, or one reversal) is NOT agreement -> NON-MONOTONIC, so a factor
+    # is never forced into "higher = better" from noise.
     if abs(rho) < FLAT_ABS_RHO:
         cls = FLAT
-    elif rho > 0 and trend >= 0:
+    elif rho > 0 and trend > 0:
         cls = POSITIVE
-    elif rho < 0 and trend <= 0:
+    elif rho < 0 and trend < 0:
         cls = NEGATIVE
     else:
-        cls = NON_MONOTONIC          # rank sign and bucket trend disagree
+        cls = NON_MONOTONIC          # rank sign and bucket trend disagree / not ordered
     return {"fact": fact, "classification": cls, "count": uni["count"],
             "spearman_r": rho, "quantile_trend": trend}
 
@@ -403,10 +412,24 @@ def stability_by(dataset, fact, key, *, quality_fact_version=None):
 # --------------------------------------------------------------------------- #
 def chronological_split(dataset, frac=0.7, *, quality_fact_version=None):
     """Split closed trades into an earlier calibration set and a later validation
-    set by ``generated_timestamp`` (lexicographic ISO-8601 order). NO shuffle, no
-    lookahead: every calibration row is chronologically <= every validation row."""
-    rows = sorted(closed_rows(dataset, quality_fact_version),
-                  key=lambda r: (str(r.get("generated_timestamp")), str(r.get("signal_id"))))
+    set by true UTC instant. NO shuffle, no lookahead: every calibration row is
+    chronologically <= every validation row.
+
+    Timestamps are parsed to real UTC instants via the canonical
+    ``bridge.serialize.parse_iso`` (the single ISO owner), so timezone-offset
+    variants order by instant, not by lexicographic string — a ``+09:00`` row can
+    never leak past an earlier ``Z`` row. Rows whose ``generated_timestamp`` is
+    missing or unparseable are EXCLUDED (fail closed: they cannot be safely
+    ordered), never silently assumed earliest/latest. Ties break on signal_id."""
+    from ..bridge import serialize
+    dated = []
+    for r in closed_rows(dataset, quality_fact_version):
+        dt = serialize.parse_iso(r.get("generated_timestamp"))
+        if dt is None:
+            continue                        # unorderable timestamp -> fail closed
+        dated.append((dt, str(r.get("signal_id")), r))
+    dated.sort(key=lambda t: (t[0], t[1]))
+    rows = [t[2] for t in dated]
     if not rows:
         return [], []
     cut = max(1, int(len(rows) * frac)) if len(rows) > 1 else 1

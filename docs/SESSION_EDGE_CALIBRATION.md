@@ -79,9 +79,11 @@ statement, ≥20 before a monotonicity classification.
 - **Univariate (§H):** count, missing, mean/median/stdev/min/max, p25/p50/p75,
   Pearson & Spearman vs realized R, and per-quantile mean R / median R / win rate /
   profit factor via the **canonical** `portfolio` calculators.
-- **Monotonicity (§I):** `POSITIVE / NEGATIVE / NON-MONOTONIC / FLAT / INSUFFICIENT`
-  from the Spearman sign **and** the per-quantile mean-R trend. No factor is forced
-  into "higher = better".
+- **Monotonicity (§I):** `POSITIVE / NEGATIVE / NON-MONOTONIC / FLAT / INSUFFICIENT`.
+  `POSITIVE`/`NEGATIVE` require the Spearman sign **and** a per-quantile mean-R bucket
+  trend of the **same** sign; a non-ordered bucket trend (U-shaped, inverted-U, one
+  reversal) is `NON-MONOTONIC`, never coerced into "higher = better" from the raw rank
+  sign alone.
 - **Correlation / redundancy (§J–K):** pairwise Pearson + Spearman; pairs above a
   |0.9| threshold flagged so two correlated measurements never get independent full
   weight. Interpretability over fitted performance (§AA — no ML, no boosted trees).
@@ -89,8 +91,11 @@ statement, ≥20 before a monotonicity classification.
   stratum; sign reversals flagged. This PR builds no session- or direction-specific
   model.
 - **Time / OOS (§O–P):** a strictly **chronological** split (never shuffled) into an
-  earlier calibration window and a later validation window; OOS relationships are
-  reported separately and marked `UNVALIDATED` when the later window is too thin.
+  earlier calibration window and a later validation window, ordered by **true UTC
+  instant** via the canonical `bridge.serialize.parse_iso` (so timezone-offset variants
+  never mis-order and no future row leaks into the earlier window); rows whose timestamp
+  is missing/unparseable are excluded (fail closed). OOS relationships are reported
+  separately and marked `UNVALIDATED` when the later window is too thin.
 - **Robustness (§Q):** does a factor's Spearman sign survive removing the single
   best and worst trade? A relationship that vanishes when one trade is removed is
   flagged not-robust.

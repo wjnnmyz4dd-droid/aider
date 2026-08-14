@@ -68,7 +68,8 @@ def equity_curve(trades, key="r_multiple", starting=0.0):
     eq, cur = [], starting
     for t in trades:
         v = t.get(key)
-        cur += float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+        cur += float(v) if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                            and math.isfinite(v)) else 0.0     # NaN/Inf never poison equity
         eq.append(round(cur, 10))
     return eq
 

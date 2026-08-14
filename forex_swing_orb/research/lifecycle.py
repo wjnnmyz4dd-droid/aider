@@ -31,11 +31,39 @@ docs/SESSION_EDGE_ANALYTICS_OWNERSHIP.md).
 from __future__ import annotations
 
 import math
+import re
 
 from . import portfolio, reporting
 
 # Canonical closed-trade fact kind in the shared MemoryStore (manage.outcome).
 OUTCOME_KIND = "execution_outcome"
+
+# A production signal_id is sha256[:16] (same trivial format the writer enforces in
+# manage.outcome / runtime.adoption / manage.paths). The reader is kept as strict as
+# the writer so a malformed / case / whitespace variant can never be counted as a
+# distinct trade.
+_SIGNAL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+# Realized-outcome-defining fields that MUST agree for a repeated signal_id; any
+# disagreement is a genuine terminal-fact conflict (fail closed, never keep-first).
+_OUTCOME_IDENTITY_FIELDS = ("status", "won", "r_multiple", "direction", "symbol",
+                            "entry", "initial_stop", "weighted_close", "closed_volume")
+
+
+def _valid_sid(sid):
+    """A well-formed production signal_id (sha256[:16]); anything else is ignored."""
+    return isinstance(sid, str) and bool(_SIGNAL_ID_RE.match(sid))
+
+
+def _finite_num(x):
+    """Finite real number (rejects bool / NaN / Inf / non-numeric)."""
+    return (isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x))
+
+
+def _outcomes_conflict(a, b):
+    """True iff two normalized outcome records for the same signal_id disagree on
+    any realized-outcome-defining field (a real conflict, not a benign duplicate)."""
+    return any(a.get(k) != b.get(k) for k in _OUTCOME_IDENTITY_FIELDS)
 
 # Provenance classes (§10 / K): never present an estimate as broker truth.
 REALIZED_BROKER_FACT = "REALIZED_BROKER_FACT"   # observed from MT5 (deal history / fills)
@@ -115,18 +143,39 @@ def load_closed_trades(memory, *, limit=1_000_000):
     """Read the canonical per-signal ``execution_outcome`` facts from the shared
     MemoryStore and return normalized closed-trade dicts, deduped by signal_id and in
     deterministic signal_id order. Only TAKEN (executed) signals become trades, so a
-    rejected / HELD / never-reconciled signal never appears. Read-only."""
+    rejected / HELD / never-reconciled signal never appears. Read-only.
+
+    Fails closed on bad terminal facts (the writer prevents these on the canonical
+    path; this is defense-in-depth against a non-canonical writer / store damage):
+
+      * a malformed signal_id (not sha256[:16]) is ignored (F2);
+      * a present-but-non-finite ``r_multiple`` (string / bool / NaN / Inf) is a
+        corrupt record and is dropped — ``None`` (R_UNDEFINED, zero-risk edge) is
+        preserved, never fabricated to 0 (F4);
+      * two records for one signal_id that DISAGREE on any realized-outcome-defining
+        field are a conflict: the signal_id is QUARANTINED and yields NO trade,
+        rather than silently keeping whichever was written first (F1)."""
     rows = memory.query(kind=OUTCOME_KIND, limit=limit)
     by_sid = {}
+    conflicts = set()
     for row in rows:
         content = (row.get("content") if isinstance(row, dict) else None) or {}
         sid = content.get("signal_id")
-        if not isinstance(sid, str) or sid in by_sid:
-            continue                              # dedup: one canonical outcome per signal_id
+        if not _valid_sid(sid):                   # F2: reject malformed signal_id
+            continue
         if content.get("taken") is not True:
             continue                              # never count a non-executed signal as a trade
-        by_sid[sid] = _trade_from_outcome(content)
-    return [by_sid[s] for s in sorted(by_sid)]
+        rm = content.get("r_multiple")
+        if rm is not None and not _finite_num(rm):
+            continue                              # F4: corrupt R -> drop (None is kept below)
+        trade = _trade_from_outcome(content)
+        if sid in by_sid:
+            if _outcomes_conflict(by_sid[sid], trade):
+                conflicts.add(sid)                # F1: divergent terminal facts -> quarantine
+            continue                              # benign duplicate -> dedup (identical content)
+        by_sid[sid] = trade
+    # fail closed: a signal_id with contradictory outcomes contributes NO trade.
+    return [by_sid[s] for s in sorted(by_sid) if s not in conflicts]
 
 
 def cohort_breakdown(trades):
@@ -158,8 +207,8 @@ def quality_dataset(instructions, memory=None):
     for instr in instructions:
         qf = quality_facts.extract(instr)
         sid = qf.get("signal_id") if isinstance(qf, dict) else None
-        if not isinstance(sid, str) or sid in rows:
-            continue                                  # dedup: one immutable fact set per signal_id
+        if not _valid_sid(sid) or sid in rows:
+            continue                                  # reject malformed sid; dedup one set per signal_id
         qf = dict(qf)
         qf["outcome_r"] = outcome_r.get(sid)          # None until the trade closes
         qf["closed"] = sid in outcome_r

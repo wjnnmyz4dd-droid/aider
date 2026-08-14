@@ -69,6 +69,10 @@ def extract(instruction):
     ev = ev if isinstance(ev, dict) else {}
 
     atr = _num(ev.get("atr14"))
+    if atr is not None and atr <= 0:
+        atr = None                      # non-positive ATR is not a usable denominator;
+                                        # surface it as UNAVAILABLE for a self-consistent
+                                        # record (all _atr facts already fail closed).
     boundary = _num(ev.get("boundary"))
     retest = _num(ev.get("retest_extreme"))
     rhigh = _num(ev.get("range_high"))
@@ -78,7 +82,10 @@ def extract(instruction):
     entry = _num(instruction.get("entry_price"))
     stop = _num(instruction.get("stop_loss"))
 
-    range_width_price = (rhigh - rlow) if (rhigh is not None and rlow is not None) else None
+    # magnitude (like every other _price fact): the OR width is non-negative by
+    # engine contract (range_high >= range_low); abs() keeps it a magnitude even for
+    # a malformed non-engine dict, so no _price fact can ever go negative.
+    range_width_price = (abs(rhigh - rlow) if (rhigh is not None and rlow is not None) else None)
     retest_depth_price = (abs(retest - boundary)
                           if (retest is not None and boundary is not None) else None)
     entry_ext_price = (abs(confirm - boundary)

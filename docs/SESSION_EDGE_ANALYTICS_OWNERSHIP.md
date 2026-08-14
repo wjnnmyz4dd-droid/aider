@@ -17,6 +17,8 @@ never touches a broker or bypasses compliance/news/session/FTMO).
 | FTMO levels / report | `compliance/contract.py::ftmo_levels` (read-through by `research/reporting.ftmo_report`) | AUTHORITATIVE |
 | Monte-Carlo, walk-forward, provenance/experiments | `research/montecarlo.py`, `research/walk_forward.py`, `research/provenance.py`, `research/experiments.py` | AUTHORITATIVE |
 | **Lifecycle fact ingestion (NEW, PR-3M)** — stitch persisted `execution_outcome` facts into the trade records the calculators consume, + score-cohort readiness | `research/lifecycle.py` | AUTHORITATIVE (reader; recomputes nothing) |
+| **Observational setup-quality fact extraction (PR-3P)** — pure function of an immutable authorized instruction; no score | `research/quality_facts.py::extract` | AUTHORITATIVE (extractor) |
+| **Score-model calibration research + correlation (PR-3Q)** — Pearson/Spearman, quantile/univariate stats, monotonicity, cross-stratum & chronological OOS stability, robustness, sample-size class, A/B/C/D decision; delegates all trade-metric math to `research/portfolio` | `research/calibration.py` | AUTHORITATIVE (research; no live score/threshold/sizing) |
 | Trade lifecycle correlation key | `signal_id` (16-hex sha256) | AUTHORITATIVE |
 | Audit facts (per stage) | 6 append-only JSONL writers (see below), unified by shared `bridge/atomic`+`bridge/serialize` and by `signal_id` | AUTHORITATIVE (per domain) |
 | Reason-code vocabularies | 7 registries (see below) — REUSED, never redefined | AUTHORITATIVE |
