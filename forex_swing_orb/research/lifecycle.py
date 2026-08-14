@@ -140,6 +140,33 @@ def cohort_breakdown(trades):
     return {c: portfolio.summary(ts) for c, ts in sorted(buckets.items())}
 
 
+def quality_dataset(instructions, memory=None):
+    """Observational research dataset joining per-signal setup-quality facts (extracted
+    purely from the immutable authorized instructions by research.quality_facts) with
+    realized outcome R (from the canonical execution_outcome fact, if a MemoryStore is
+    given), keyed by signal_id. Measurement only — recomputes no metric, owns no
+    authority. Deterministic, idempotent (deduped by signal_id, sorted), and immutable
+    (a pure function of immutable instructions). ``outcome_r`` / ``closed`` /
+    ``trade_score`` are UNAVAILABLE until a closed outcome / score exists; a written-but-
+    unexecuted signal is a candidate observation, NOT a closed trade (never phantom P&L)."""
+    from . import quality_facts
+    outcome_r = {}
+    if memory is not None:
+        for t in load_closed_trades(memory):
+            outcome_r[t["signal_id"]] = t.get("r_multiple")
+    rows = {}
+    for instr in instructions:
+        qf = quality_facts.extract(instr)
+        sid = qf.get("signal_id") if isinstance(qf, dict) else None
+        if not isinstance(sid, str) or sid in rows:
+            continue                                  # dedup: one immutable fact set per signal_id
+        qf = dict(qf)
+        qf["outcome_r"] = outcome_r.get(sid)          # None until the trade closes
+        qf["closed"] = sid in outcome_r
+        rows[sid] = qf
+    return [rows[s] for s in sorted(rows)]
+
+
 def lifecycle_report(memory):
     """One observational report composed ENTIRELY from the canonical calculators —
     this module recomputes nothing. Distinguishes realized broker facts / derived
