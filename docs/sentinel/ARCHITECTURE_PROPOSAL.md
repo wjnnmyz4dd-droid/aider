@@ -1,9 +1,19 @@
 # Sentinel AI — Foundation & Architecture Proposal
 
-**Status:** PROPOSED — awaiting owner review
+**Status:** SUPERSEDED by `ARCHITECTURE_BASELINE_v1.0.md` (owner review complete, 2026-08-15)
 **Scope:** Architecture preparation only. No Phase 0 implementation has been performed.
 **Author:** Principal architect (Claude Code session)
 **Date:** 2026-08-15
+
+> **This document is retained as the historical record of the pre-review
+> proposal.** All six proposed deviations were approved and all nine owner
+> decisions resolved; the authoritative document is now
+> `ARCHITECTURE_BASELINE_v1.0.md`. Two positions in this document were
+> explicitly **corrected** by owner review and must not be carried forward:
+> (a) the suggestion that Phantom become Sentinel's first integration adapter
+> (§B.27, §N.8, §O) — Sentinel has no relationship to Phantom of any kind;
+> (b) the rule "`kernel` imports nothing, ever" (§E.2 rule 4) — replaced by the
+> approved-foundational-facilities wording in the baseline.
 
 > Nothing in this document is wired into a build. No frameworks installed, no
 > production code written, no directories created beyond `docs/sentinel/`.
