@@ -31,6 +31,9 @@ import time
 from pathlib import Path
 
 from ..live import mt5_client as mc
+from ..bridge import serialize
+from ..bridge.atomic import atomic_write_text
+from . import capital
 
 DEFAULT_SYMBOLS = ("EURUSD.FX",)
 DEFAULT_SESSIONS = ("LONDON",)
@@ -148,6 +151,58 @@ def attestation_ok(*, flag, tty_confirm=None):
     return str(tty_confirm).strip() == "VERIFIED"
 
 
+def bridge_handshake(bridge_root, now_iso, *, use_common_folder=False):
+    """Read-only-safe bridge self-check (no trade). Ensures the bridge tree the
+    producer/EA share (the producer would create it anyway), then proves Python can
+    write AND read back a diagnostic probe under ``health/`` — a directory the EA never
+    claims (it only claims ``outbox/pending``), so this never looks like an instruction
+    and never places an order. Returns (ok, detail). ``use_common_folder`` documents the
+    EA toggle; the launcher always resolves the terminal's own Files folder path."""
+    from ..bridge.paths import BridgePaths
+    try:
+        paths = BridgePaths(bridge_root).ensure()
+        probe = Path(paths.health) / "startup_probe.json"
+        atomic_write_text(probe, serialize.canonical_json(
+            {"probe": "session_edge_startup", "at": now_iso}))
+        ok, _ = serialize.loads(probe.read_text(encoding="utf-8"))
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        if not ok:
+            return False, f"probe read-back failed at {bridge_root}"
+        return True, f"read/write OK at {bridge_root}"
+    except Exception as exc:                             # noqa: BLE001 - report, never raise
+        return False, f"cannot write/read the bridge at {bridge_root}: {exc}"
+
+
+def _line(label, status, extra=""):
+    dots = "." * max(4, 20 - len(label))
+    return f" {label} {dots} {status}" + (f" — {extra}" if extra else "")
+
+
+def _did_not_start(disc, bridge_root, *, reason="", detail=""):  # pragma: no cover - console UX
+    """Plain-English startup-failure screen for a double-click operator. Never prints a
+    traceback for an expected operator error, and never exposes credentials."""
+    demo = account_is_demo(disc.get("trade_mode"))
+    print("=" * 60)
+    print(" SESSION EDGE DID NOT START")
+    print("=" * 60)
+    print(_line("MT5", "CONNECTED"))
+    print(_line("Account", "DEMO" if demo else "NOT DEMO"))
+    print(_line("Account ID", capital.mask_account(disc.get("login")) + f" @ {disc.get('server')}"))
+    print(_line("Capital Base", "NOT ESTABLISHED" if reason and "CAPITAL" in (reason or "")
+                else "—"))
+    if reason:
+        print(f"\n REASON: {reason}")
+    if detail:
+        print(f" {detail}")
+    print("\n Action required: resolve the above, then double-click run_session_edge.bat")
+    print(" again. (For first-time capital setup you can also run:")
+    print("  run_session_edge.bat --initial-balance <your FTMO starting capital>)")
+    print("=" * 60)
+
+
 # --------------------------------------------------------------------------- #
 # MT5-touching layer (Windows/terminal only)
 # --------------------------------------------------------------------------- #
@@ -177,6 +232,7 @@ def _discover(mt5):  # pragma: no cover - live terminal only
         "balance": g(acct, "balance"),
         "currency": g(acct, "currency"),
         "server": g(acct, "server", "UNKNOWN"),
+        "login": g(acct, "login"),
         "data_path": g(term, "data_path"),
         "mt5_version": getattr(mt5, "__version__", "UNKNOWN"),
     }
@@ -202,8 +258,14 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                    help="comma-separated sessions to trade: SYDNEY,TOKYO,LONDON,"
                         "NEW_YORK or ALL (default: LONDON)")
     p.add_argument("--initial-balance", type=float, default=None,
-                   help="REQUIRED: true FTMO challenge starting capital (pinned; "
-                        "never read from the live account)")
+                   help="OPTIONAL: true FTMO challenge starting capital. On first run "
+                        "for an account it pins this value; normally omitted (the launcher "
+                        "captures + pins it automatically). Never read from the live "
+                        "account after it is pinned.")
+    p.add_argument("--reinitialize", type=float, default=None,
+                   help="EXPLICIT reset: overwrite the pinned capital base for the "
+                        "connected account with this value (use only to correct a "
+                        "wrong starting capital).")
     p.add_argument("--currency", default=None,
                    help="override account currency (default: read from account)")
     p.add_argument("--runtime-dir", default=None,
@@ -265,27 +327,43 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         print(f"Session Edge launcher: invalid --sessions ({exc}). Nothing started.",
               file=sys.stderr)
         return 7
-    # H3: the FTMO initial balance (challenge starting capital) MUST be explicitly
-    # attested and pinned. It is NEVER re-anchored from the current live balance —
-    # doing so would drift the static max-loss floor downward after any drawdown on
-    # every restart. Fail closed if not provided; do not guess.
-    balance = resolve_initial_balance(args.initial_balance, disc.get("balance"))
-    if balance is None:
-        print("Session Edge launcher: --initial-balance is REQUIRED (the true FTMO "
-              "challenge starting capital, e.g. --initial-balance 50000). It is "
-              "never read from the live account. Nothing started.", file=sys.stderr)
-        return 7
+    now_iso = datetime.now(timezone.utc).isoformat()
     currency = args.currency or disc.get("currency")
     if not currency:
-        print("Session Edge launcher: could not determine account currency; pass "
-              "--currency. Nothing started.", file=sys.stderr)
+        _did_not_start(disc, bridge_root, reason="ACCOUNT CURRENCY UNAVAILABLE",
+                       detail="Could not read the account currency; pass --currency.")
         return 7
-    live_bal = disc.get("balance")
-    if isinstance(live_bal, (int, float)) and live_bal and float(live_bal) != float(balance):
-        where = "below" if float(live_bal) < float(balance) else "above"
-        print(f"Session Edge launcher: live balance ({live_bal}) is {where} the "
-              f"attested initial ({balance}); keeping initial PINNED — the max-loss "
-              f"floor is unchanged.", file=sys.stderr)
+
+    # Capital base: resolve the PINNED FTMO starting capital for THIS account via the
+    # single canonical owner (runtime.capital). First run captures + pins it; every
+    # restart reuses the pinned value (never re-derived from live balance — H3). A
+    # command-line value never silently overwrites an established base.
+    store = capital.CapitalBaseStore(Path(runtime_dir) / "capital_base.json")
+    try:
+        res = capital.resolve_capital_base(
+            store, login=disc.get("login"), server=disc.get("server"), currency=currency,
+            current_balance=disc.get("balance"), cli_initial=args.initial_balance,
+            reinitialize=args.reinitialize, now_iso=now_iso)
+    except capital.CapitalBaseError as exc:
+        res = capital.Resolution(False, reason="CAPITAL RECORD CORRUPT", message=str(exc))
+    if not res.ok:
+        _did_not_start(disc, bridge_root, reason=res.reason, detail=res.message)
+        return 7
+    balance = res.initial_balance
+
+    # Bridge self-check (no trade): prove Python can write/read the exact bridge folder
+    # the EA reads. Fail closed if it cannot.
+    bh_ok, bh_detail = bridge_handshake(bridge_root, now_iso)
+    if not bh_ok:
+        _did_not_start(disc, bridge_root, reason="BRIDGE NOT WRITABLE", detail=bh_detail)
+        return 8
+
+    # Timezone data (reuse the preflight check; missing tzdata on Windows fails closed).
+    from . import preflight as _pf
+    _, tz_status, tz_detail = _pf._check_timezones()
+    if tz_status == _pf.FAIL:
+        _did_not_start(disc, bridge_root, reason="TIMEZONE DATA MISSING", detail=tz_detail)
+        return 9
 
     env = build_env(
         os.environ, bridge_root=bridge_root, runtime_dir=str(runtime_dir),
@@ -295,21 +373,34 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         ftmo_source="FTMO 2-Step Swing (operator-attested via launcher)",
         ftmo_verified_at=datetime.now(timezone.utc).date().isoformat())
 
-    print("=" * 66)
-    print(" Session Edge — automatic DEMO launcher")
-    print(f"  account   : DEMO ({disc.get('server')})   {currency}")
-    print(f"  ftmo init : {balance} (pinned, attested)")
-    print(f"  symbols   : {', '.join(symbols)}")
-    print(f"  bridge    : {bridge_root}")
-    print(f"  runtime   : {runtime_dir}")
-    print(f"  news      : real calendar ({DEFAULT_PROVIDER}) -> {news_file}")
-    print("  starting  : newsfeed + producer + manager   (Ctrl+C to stop all)")
-    print("=" * 66)
+    acct_id = f"{capital.mask_account(disc.get('login'))} @ {disc.get('server')}"
+    print("=" * 60)
+    print(" SESSION EDGE STARTUP")
+    print("=" * 60)
+    print(_line("MT5 Terminal", "PASS"))
+    print(_line("DEMO Account", "PASS"))
+    print(_line("Account Identity", "PASS", acct_id))
+    print(_line("Capital Base", "PASS", f"{currency} {balance:,.2f}"))
+    print(f"     {res.message}")
+    print(_line("Timezone Data", tz_status, tz_detail if tz_status != _pf.PASS else ""))
+    print(_line("Bridge", "PASS", bridge_root))
+    print(f"     EA must use BridgeRoot=session_edge_bridge, UseCommonFolder=false "
+          f"(same folder). {bh_detail}")
+    print(_line("Symbol Metadata", _pf.ENV, "verify on-machine: python -m "
+                "forex_swing_orb.runtime.preflight"))
+    print("-" * 60)
+    print(_line("News Service", "STARTING"))
+    print(_line("Producer", "STARTING"))
+    print(_line("Manager", "STARTING"))
+    print("=" * 60)
 
     procs = []
     try:
         for module in CHILDREN:
             procs.append((module, _spawn(module, env)))
+        print(" SESSION EDGE STARTED")
+        print(" STATUS: WAITING FOR VALID MARKET CONDITIONS   (Ctrl+C to stop all)")
+        print("=" * 60)
         # wait until interrupted or a child exits
         while True:
             for module, proc in procs:

@@ -16,6 +16,43 @@ MetaTrader 5 **DEMO** machine. Every step below is derived from source at HEAD
 
 ---
 
+## NORMAL STARTUP (zero-friction)
+
+Once the machine is set up (§A–§G, done once):
+
+1. Start **MT5** and log into your **DEMO** account.
+2. Confirm the Session Edge **EA is attached** to a chart and **Algo Trading** is on.
+3. **Double-click `run_session_edge.bat`** — no arguments, no command line.
+4. Watch the startup screen run its real checks (MT5 / DEMO / account identity /
+   **capital base** / timezone / bridge), then start newsfeed + producer + manager.
+5. If you see **`SESSION EDGE STARTED` / `STATUS: WAITING FOR VALID MARKET
+   CONDITIONS`**, leave it running.
+6. If you see **`SESSION EDGE DID NOT START`**, follow the printed **Action required**.
+
+**Capital base is automatic.** On the **first run for an account**, the launcher
+captures the current DEMO balance and **pins** it as the FTMO starting capital
+(`SESSION_EDGE_INITIAL_BALANCE`); every later start reuses that pinned value — it is
+**never** re-read from the live balance, so a drawdown can never weaken your max-loss
+floor (H3 preserved). See **First-run initialization** below for when to override.
+
+### First-run initialization (only if needed)
+
+- If your **true FTMO starting capital differs** from the current demo balance (e.g.
+  you have already traded the demo), pin it explicitly the first time:
+  `run_session_edge.bat --initial-balance 50000`.
+- To **correct** an already-pinned value later (deliberate reset):
+  `run_session_edge.bat --reinitialize 50000`.
+- A plain `--initial-balance` that **conflicts** with an already-pinned base is
+  **refused** (fail closed) — use `--reinitialize` to change it on purpose.
+- **Switching to a different DEMO account** is detected automatically: the previous
+  account's base is never reused; the new account gets its own pinned base
+  (`ACCOUNT CHANGED — initializing a NEW capital base`).
+
+The pinned record lives in `…\MQL5\Files\session_edge_runtime\capital_base.json`
+(one immutable record per account identity; owned solely by `runtime/capital.py`).
+
+---
+
 ## A. Prerequisites
 
 - **Windows 10/11** (the launcher/producer/manager attach to a running MT5 terminal
@@ -74,7 +111,7 @@ terminal Files folder + account currency and sets every `SESSION_EDGE_*` variabl
 
 | Input | How | Required |
 |---|---|---|
-| FTMO starting capital | `--initial-balance <N>` (pinned) | **Yes** |
+| FTMO starting capital | **Auto-pinned on first run** (see Normal Startup); override with `--initial-balance <N>`, reset with `--reinitialize <N>` | No (auto) |
 | FTMO profile attestation | `--ftmo-verified` (the `.bat` passes it) | **Yes** |
 | DEMO account | must be the logged-in terminal account | enforced |
 | Symbols | `--symbols EURUSD,GBPUSD` (`.FX` added automatically) | default `EURUSD` |
@@ -145,17 +182,20 @@ same folder. Find the data folder in MT5 via **File → Open Data Folder**.
 **The one correct launcher is `forex_swing_orb.runtime.launcher`.** Do **not** use
 `run_demo.py` (that launches *Phantom*).
 
-Double-click friendly:
+Double-click friendly — **normally no arguments** (capital base is auto-pinned on
+first run):
 
 ```
-run_session_edge.bat --initial-balance 50000
-run_session_edge.bat --initial-balance 50000 --symbols EURUSD,GBPUSD --sessions LONDON,NEW_YORK
+run_session_edge.bat
+run_session_edge.bat --symbols EURUSD,GBPUSD --sessions LONDON,NEW_YORK
+run_session_edge.bat --initial-balance 50000      (first-run override only)
+run_session_edge.bat --reinitialize 50000         (deliberate reset)
 ```
 
 Equivalent explicit command:
 
 ```
-python -m forex_swing_orb.runtime.launcher --ftmo-verified --initial-balance 50000 --symbols EURUSD --sessions LONDON
+python -m forex_swing_orb.runtime.launcher --ftmo-verified --symbols EURUSD --sessions LONDON
 ```
 
 Auto-start at logon (optional): run `setup_autostart.bat` **once** after editing

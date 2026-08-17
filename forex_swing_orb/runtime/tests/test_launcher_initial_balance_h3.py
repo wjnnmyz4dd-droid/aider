@@ -43,12 +43,16 @@ def test_build_env_uses_pinned_initial_not_live():
 
 
 def test_autostart_bat_has_no_usable_default_initial_balance():
-    # P3A-2: the autostart wrapper must carry NO executable numeric default and
-    # must fail closed if the operator hasn't set the challenge capital.
+    # P3A-2 (updated for zero-friction startup): the autostart wrapper still carries NO
+    # executable numeric default. When INITIAL_BALANCE is left blank the launcher
+    # auto-captures + PINS the current DEMO balance ONCE (runtime.capital) and reuses
+    # that pinned value on every restart (H3 preserved by persistence, not re-entry);
+    # the wrapper passes --initial-balance ONLY when the operator explicitly set one.
     txt = (REPO_ROOT / "autostart_run.bat").read_text()
     assert "set INITIAL_BALANCE=50000" not in txt        # no guessed default
     assert 'set "INITIAL_BALANCE="' in txt               # empty by default
-    assert "exit /b 2" in txt                            # fail-closed guard when blank
+    assert 'if "%INITIAL_BALANCE%"==""' in txt           # blank -> auto-capture branch
+    assert "--initial-balance %INITIAL_BALANCE%" in txt  # explicit value only when set
 
 
 def test_config_loads_with_pinned_initial():
