@@ -10,8 +10,9 @@ external integration is the injected MT5 client (see ``mt5_client``).
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..bridge import serialize
@@ -67,6 +68,23 @@ class DailyAnchorTracker:
     R_CLOCK_INVALID = "anchor_clock_invalid"              # naive / non-tz-aware instant
     R_CONCURRENT = "anchor_concurrent_writer_conflict"    # lost the atomic claim, winner unreadable
     R_LEGACY = "anchor_legacy_incomplete"                # reused anchor lacks day_start_equity
+
+    # Cold-start BROKER-HISTORY reconstruction diagnostics (observational detail; the
+    # producer-level blocker stays R_ACCOUNT_ANCHOR_UNAVAILABLE). Each marks a case
+    # where the mid-day anchor could NOT be proven from authoritative broker history.
+    R_RECON_HISTORY_UNAVAILABLE = "recon_history_unavailable"     # range query returned None
+    R_RECON_HISTORY_INCOMPLETE = "recon_history_incomplete"       # window does not cover midnight
+    R_RECON_UNKNOWN_EVENT = "recon_unknown_balance_event"         # deal.type outside KNOWN set
+    R_RECON_TIMEBASE = "recon_timebase_unverified"               # naive/future/malformed deal time
+    R_RECON_OPEN_SPANS_MIDNIGHT = "recon_open_position_spans_midnight"  # equity != balance, unprovable
+    R_RECON_NONFINITE = "recon_nonfinite_value"                  # NaN/inf balance or result
+    R_RECON_IDENTITY = "recon_account_identity_mismatch"          # evidence account != expected
+    R_RECON_NO_EVIDENCE = "recon_evidence_unavailable"           # cold start but no evidence source
+
+    # Anchor provenance (observational metadata; compliance consumes the value the same
+    # way regardless of source). NOT a second authority.
+    SOURCE_LIVE_ROLLOVER = "LIVE_ROLLOVER"
+    SOURCE_BROKER_HISTORY = "BROKER_HISTORY_RECONSTRUCTION"
 
     def __init__(self, path, reset_timezone="Europe/Prague", cadence_sec=900):
         self.path = path
@@ -131,7 +149,8 @@ class DailyAnchorTracker:
 
     def record(self, now, balance, *, equity=None, initial_balance=None,
                daily_loss_pct=None, account_id=None, profile_id=None,
-               source_snapshot_id=None, safety_buffer_fraction=0.20):
+               source_snapshot_id=None, safety_buffer_fraction=0.20,
+               cold_start_evidence_fn=None):
         """Return the anchor record for the current Prague trading day, capturing
         the day-start BALANCE and day-start EQUITY on first sight (H2: FTMO's daily
         reference is the higher of the two). Idempotent; flags conflict on tamper."""
@@ -158,25 +177,44 @@ class DailyAnchorTracker:
         # CLOSED: never invent day-start balance/equity from a cold-start snapshot or
         # a materially late (stalled) observation.
         ok, reason = self._observed_rollover(prev_seen, prev_ts, tday, now)
-        if not ok:
+        if ok:
+            return self._first_write_anchor(
+                now, prev_ts, tday, balance, equity, initial_balance, daily_loss_pct,
+                account_id, profile_id, source_snapshot_id, safety_buffer_fraction,
+                source=self.SOURCE_LIVE_ROLLOVER)
+        # PR-3A.3 cold-start recovery: the live rollover was NOT observed this run
+        # (fresh install / reboot / outage / mid-day cold start). If the caller supplied
+        # a READ-ONLY broker-history evidence source, attempt a conservative,
+        # deterministic reconstruction of today's anchor. It NEVER uses current
+        # balance/equity/initial/yesterday as the anchor: it recomputes the Prague-
+        # midnight balance from complete deal history and accepts the anchor ONLY when
+        # the book was PROVABLY flat at midnight (so equity == balance). Any gap in the
+        # proof fails closed with a specific reason. It never overwrites an existing
+        # anchor (handled above) and uses the same first-writer atomic claim.
+        if cold_start_evidence_fn is None:
             return {"trading_day": tday, "anchor_unavailable": True,
                     "anchor_reason": reason}
-        return self._first_write_anchor(
-            now, prev_ts, tday, balance, equity, initial_balance, daily_loss_pct,
+        rec = self._reconstruct_cold_start(
+            now, tday, cold_start_evidence_fn, initial_balance, daily_loss_pct,
             account_id, profile_id, source_snapshot_id, safety_buffer_fraction)
+        return rec
 
     def _first_write_anchor(self, now, prev_ts, tday, balance, equity,
                             initial_balance, daily_loss_pct, account_id, profile_id,
-                            source_snapshot_id, safety_buffer_fraction):
+                            source_snapshot_id, safety_buffer_fraction,
+                            source=SOURCE_LIVE_ROLLOVER, provenance=None):
         """Build the schema-v2 anchor and persist it with FIRST-WRITER-WINS semantics
         (P3A1-3). The per-day hardlink claim is atomic and only ever fully-written, so
-        the first producer to observe the rollover establishes the authoritative
-        anchor; a concurrent producer reads and reuses it (never overwrites it)."""
+        the first producer to observe the rollover (or prove the cold-start
+        reconstruction) establishes the authoritative anchor; a concurrent producer
+        reads and reuses it (never overwrites it). ``source`` records provenance
+        (observational metadata only); the value is consumed identically regardless."""
         from zoneinfo import ZoneInfo
         rec = {
             "anchor_schema_version": 2,        # complete format: balance + equity
             "profile_id": profile_id, "account_id": account_id,
             "trading_day": tday, "timezone": self.reset_timezone,
+            "anchor_source": source,           # LIVE_ROLLOVER | BROKER_HISTORY_RECONSTRUCTION
             "anchor_timestamp_utc": serialize.iso_utc(now),
             "anchor_timestamp_prague": now.astimezone(ZoneInfo(self.reset_timezone)).strftime("%Y-%m-%dT%H:%M:%S"),
             # rollover-observation evidence (P3A1-2 audit trail): the prior-day
@@ -193,8 +231,16 @@ class DailyAnchorTracker:
             "internal_loss_amount": (daily_loss_pct * initial_balance * (1 - safety_buffer_fraction)
                                      if (daily_loss_pct and initial_balance) else None),
             "source_snapshot_id": source_snapshot_id,
+            # cold-start reconstruction provenance (None for live capture): history
+            # window, event count, algorithm version — observational audit only.
+            "reconstruction": provenance,
         }
         rec["integrity_digest"] = serialize.compute_integrity_digest(rec)
+        return self._finalize(tday, rec)
+
+    def _finalize(self, tday, rec):
+        """Atomically publish ``rec`` (first-writer-wins) and return the authoritative
+        record. A losing writer reuses the winner; an unreadable claim fails closed."""
         won = self._claim_day(tday, rec)
         if won:
             self._records[tday] = rec
@@ -209,6 +255,27 @@ class DailyAnchorTracker:
         # Claim exists but is unreadable/invalid -> fail closed (never overwrite).
         return {"trading_day": tday, "anchor_unavailable": True,
                 "anchor_reason": self.R_CONCURRENT}
+
+    def _reconstruct_cold_start(self, now, tday, evidence_fn, initial_balance,
+                                daily_loss_pct, account_id, profile_id,
+                                source_snapshot_id, safety_buffer_fraction):
+        """Cold-start reconstruction of today's anchor from authoritative broker
+        history. Returns the authoritative record on success, or an ``anchor_
+        unavailable`` dict with a specific reason on any failure (fail closed)."""
+        try:
+            evidence = evidence_fn()
+        except Exception:                              # noqa: BLE001 - never raise upward
+            evidence = None
+        fields, reason = reconstruct_cold_start_anchor(
+            tday=tday, now=now, evidence=evidence, expected_account_id=account_id)
+        if fields is None:
+            return {"trading_day": tday, "anchor_unavailable": True,
+                    "anchor_reason": reason}
+        return self._first_write_anchor(
+            now, None, tday, fields["day_start_balance"],
+            fields["day_start_equity"], initial_balance, daily_loss_pct, account_id,
+            profile_id, source_snapshot_id, safety_buffer_fraction,
+            source=self.SOURCE_BROKER_HISTORY, provenance=fields["provenance"])
 
     def _claim_day(self, tday, rec):
         """Atomically publish ``rec`` as the day's anchor iff no claim exists yet.
@@ -257,6 +324,124 @@ def _digest_ok(rec):
     claimed = rec.get("integrity_digest")
     body = {k: v for k, v in rec.items() if k != "integrity_digest"}
     return isinstance(claimed, str) and claimed == serialize.compute_integrity_digest(body)
+
+
+def _finite(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def reconstruct_cold_start_anchor(*, tday, now, evidence, expected_account_id=None):
+    """PURE, deterministic cold-start anchor reconstruction from authoritative broker
+    deal history. Returns ``(fields, None)`` on success or ``(None, reason)`` on any
+    failure (fail closed). NEVER uses current balance/equity/initial/yesterday as the
+    anchor: it recomputes the Prague-midnight BALANCE as
+
+        day_start_balance = current_balance
+                          - Σ_{deal.time >= midnight}(profit + commission + swap + fee)
+
+    (balance is a step function changed only by deals; every balance-affecting deal
+    encodes its delta in those four fields). It accepts the anchor ONLY when the book
+    was PROVABLY FLAT at Prague midnight, in which case day_start_equity == day_start_
+    balance (no floating P/L to reconstruct). Historical floating P/L at a past instant
+    is NOT recoverable from broker history, so any position open across midnight (or any
+    unprovable case) FAILS CLOSED — the daily-loss equity reference is never approximated.
+
+    ``evidence`` (all read-only, gathered by the account provider):
+      history_ok, current_balance, midnight_utc, history_from_utc, account_id,
+      deals=[{time,type,entry,profit,commission,swap,fee,position_id}],
+      open_positions=[{position_id,open_time}].
+    """
+    R = DailyAnchorTracker
+    if not isinstance(evidence, dict):
+        return None, R.R_RECON_NO_EVIDENCE
+    if not evidence.get("history_ok"):
+        return None, R.R_RECON_HISTORY_UNAVAILABLE
+    midnight = evidence.get("midnight_utc")
+    hist_from = evidence.get("history_from_utc")
+    # every instant must be tz-aware UTC; now strictly after midnight (mid-day start)
+    for inst in (now, midnight, hist_from):
+        if inst is None or getattr(inst, "tzinfo", None) is None:
+            return None, R.R_RECON_TIMEBASE
+    if (now - midnight).total_seconds() <= 0:
+        return None, R.R_RECON_TIMEBASE
+    # the fetched window MUST start at/before midnight to prove coverage of the boundary
+    if (midnight - hist_from).total_seconds() < 0:
+        return None, R.R_RECON_HISTORY_INCOMPLETE
+    ev_acct = evidence.get("account_id")
+    if (expected_account_id is not None and ev_acct is not None
+            and ev_acct != expected_account_id):
+        return None, R.R_RECON_IDENTITY
+    cur_bal = _finite(evidence.get("current_balance"))
+    if cur_bal is None:
+        return None, R.R_RECON_NONFINITE
+    deals = evidence.get("deals")
+    if deals is None:
+        return None, R.R_RECON_HISTORY_UNAVAILABLE
+
+    net = 0.0
+    opened_today = set()        # position_ids with an IN trade leg at time >= midnight
+    closed_after = []           # position_ids with an OUT trade leg at time >= midnight
+    future_skew = 120.0
+    for d in deals:
+        t = d.get("time")
+        if t is None or getattr(t, "tzinfo", None) is None:
+            return None, R.R_RECON_TIMEBASE
+        if (t - now).total_seconds() > future_skew:          # deal after 'now' -> bad clock/data
+            return None, R.R_RECON_TIMEBASE
+        dtype = d.get("type")
+        if dtype not in mc.KNOWN_DEAL_TYPES:                  # unknown broker balance event
+            return None, R.R_RECON_UNKNOWN_EVENT
+        at_or_after = (t - midnight).total_seconds() >= 0
+        if at_or_after:
+            for f in ("profit", "commission", "swap", "fee"):
+                fv = _finite(d.get(f, 0.0))
+                if fv is None:
+                    return None, R.R_RECON_NONFINITE
+                net += fv
+            if dtype in (mc.DEAL_TYPE_BUY, mc.DEAL_TYPE_SELL):   # trade legs carry position semantics
+                entry = d.get("entry")
+                pid = d.get("position_id")
+                if entry == mc.DEAL_ENTRY_IN:
+                    opened_today.add(pid)
+                elif entry == mc.DEAL_ENTRY_OUT:
+                    closed_after.append(pid)
+                else:                                            # reversal / out_by -> unprovable
+                    return None, R.R_RECON_OPEN_SPANS_MIDNIGHT
+    day_start_balance = _finite(cur_bal - net)
+    if day_start_balance is None or day_start_balance <= 0:
+        return None, R.R_RECON_NONFINITE
+
+    # Flat-book-at-midnight proof (equity == balance only if nothing was open then):
+    #   * no currently-open position that opened before midnight, AND
+    #   * every position that CLOSED after midnight also OPENED after midnight
+    #     (its IN leg is in-window at time >= midnight). A close-after-midnight whose
+    #     open is before/outside the window means it was open at midnight -> fail.
+    for p in (evidence.get("open_positions") or []):
+        ot = p.get("open_time")
+        if ot is None or getattr(ot, "tzinfo", None) is None:
+            return None, R.R_RECON_TIMEBASE
+        if (ot - midnight).total_seconds() < 0:
+            return None, R.R_RECON_OPEN_SPANS_MIDNIGHT
+    for pid in closed_after:
+        if pid not in opened_today:
+            return None, R.R_RECON_OPEN_SPANS_MIDNIGHT
+
+    provenance = {
+        "algorithm_version": 1,
+        "history_from_utc": serialize.iso_utc(hist_from),
+        "history_to_utc": serialize.iso_utc(now),
+        "prague_midnight_utc": serialize.iso_utc(midnight),
+        "event_count": len(deals),
+        "net_balance_change_since_midnight": net,
+        "flat_book_at_midnight": True,
+    }
+    return ({"day_start_balance": day_start_balance,
+             "day_start_equity": day_start_balance,     # provably flat -> equity == balance
+             "provenance": provenance}, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -314,11 +499,21 @@ class Mt5AccountStateProvider(AccountStateProvider):
         positions = self.client.positions_get() or ()
         balance = float(ai.balance)
         equity = float(ai.equity)
-        # M3/H2: anchor day-start BALANCE and EQUITY at the Prague rollover.
+        # PR-3A.3: a READ-ONLY broker-history evidence source for cold-start anchor
+        # reconstruction. Built lazily — the tracker invokes it ONLY on a mid-day cold
+        # start (no existing anchor, rollover not observed), never on a normal cycle, so
+        # there is no per-cycle history-fetch overhead. It fetches nothing but history;
+        # it never trades. Correctness of the reconstruction depends on the system-wide
+        # B2 UTC-timebase invariant (deal/position times in UTC), validated separately.
+        def _cold_start_evidence():
+            return self._cold_start_evidence(now, ai, balance, positions)
+        # M3/H2: anchor day-start BALANCE and EQUITY at the Prague rollover; on a mid-day
+        # cold start, reconstruct from authoritative broker history if provable.
         rec = self.anchor.record(now, balance, equity=equity,
                                  initial_balance=self.initial_balance,
                                  daily_loss_pct=self.daily_loss_pct,
-                                 account_id=getattr(ai, "login", None))
+                                 account_id=getattr(ai, "login", None),
+                                 cold_start_evidence_fn=_cold_start_evidence)
         if rec is None:
             return None                                 # tz unloadable -> fail closed
         return {
@@ -334,6 +529,9 @@ class Mt5AccountStateProvider(AccountStateProvider):
             "daily_anchor_unavailable": bool(rec.get("anchor_unavailable")),
             "daily_anchor_reason": rec.get("anchor_reason"),
             "daily_anchor_conflict": bool(rec.get("daily_anchor_conflict")),
+            # PR-3A.3 provenance (observational only): LIVE_ROLLOVER vs
+            # BROKER_HISTORY_RECONSTRUCTION; compliance consumes the value identically.
+            "daily_anchor_source": rec.get("anchor_source"),
             "anchor_snapshot_id": rec.get("integrity_digest"),
             "floating_pl": float(getattr(ai, "profit", 0.0)),
             "swaps": sum(float(getattr(p, "swap", 0.0) or 0.0) for p in positions),
@@ -351,6 +549,56 @@ class Mt5AccountStateProvider(AccountStateProvider):
             "margin_free": float(getattr(ai, "margin_free", 0.0)),
             "margin_level": float(getattr(ai, "margin_level", 0.0)),
         }
+
+    # Generous history margin BEFORE Prague midnight so recent position-open (IN) legs
+    # are visible for the flat-book proof. A larger margin is strictly safer (more
+    # evidence); reconstruction fails closed whenever an IN leg is missing regardless.
+    COLD_START_HISTORY_MARGIN_SEC = 7 * 24 * 3600
+
+    def _cold_start_evidence(self, now, ai, balance, positions):
+        """READ-ONLY evidence for cold-start anchor reconstruction. Returns the
+        normalized evidence dict, or ``{"history_ok": False}`` when the range query is
+        rejected (-> the tracker fails closed). Fetches history only; never trades."""
+        from zoneinfo import ZoneInfo
+        try:
+            prague = ZoneInfo(self.anchor.reset_timezone)
+            now_local = now.astimezone(prague)
+            midnight_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            midnight_utc = midnight_local.astimezone(timezone.utc)
+        except Exception:                               # noqa: BLE001 - tz unloadable
+            return {"history_ok": False}
+        hist_from = midnight_utc - timedelta(seconds=self.COLD_START_HISTORY_MARGIN_SEC)
+        raw = None
+        try:
+            raw = self.client.history_deals_range(hist_from, now)
+        except Exception:                               # noqa: BLE001 - query error -> unknown
+            raw = None
+        if raw is None:
+            return {"history_ok": False}
+        deals = []
+        for d in raw:
+            ts = int(getattr(d, "time", 0) or 0)
+            deals.append({
+                "time": datetime.fromtimestamp(ts, tz=timezone.utc),
+                "type": int(getattr(d, "type", -1)),
+                "entry": int(getattr(d, "entry", -1)),
+                "profit": getattr(d, "profit", 0.0),
+                "commission": getattr(d, "commission", 0.0),
+                "swap": getattr(d, "swap", 0.0),
+                "fee": getattr(d, "fee", 0.0),
+                "position_id": getattr(d, "position_id", 0),
+            })
+        open_positions = []
+        for p in (positions or ()):
+            pt = int(getattr(p, "time", 0) or 0)
+            open_positions.append({
+                "position_id": getattr(p, "ticket", getattr(p, "identifier", 0)),
+                "open_time": datetime.fromtimestamp(pt, tz=timezone.utc),
+            })
+        return {"history_ok": True, "current_balance": balance,
+                "midnight_utc": midnight_utc, "history_from_utc": hist_from,
+                "account_id": getattr(ai, "login", None),
+                "deals": deals, "open_positions": open_positions}
 
     def _open_risk(self, positions):
         """Worst-case equity drop if every open position hits its stop (money from

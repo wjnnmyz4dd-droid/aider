@@ -92,11 +92,28 @@ def test_account_snapshot_valid(client, tmp_path):
     assert snap["trading_day"] is not None
 
 
-def test_account_midday_cold_start_without_anchor_fails_closed(client, tmp_path):
-    # P3A-1: no persisted anchor + mid-day start -> anchor unavailable -> fail closed
+def test_account_midday_cold_start_reconstructs_from_flat_history(client, tmp_path):
+    # PR-3A.3: mid-day cold start with a PROVABLY flat book (broker history query
+    # succeeds, no deals since midnight, no position open across midnight) reconstructs
+    # today's anchor from authoritative broker history instead of deadlocking.
+    snap = _account(client, tmp_path).snapshot(NOW)
+    assert snap["daily_anchor_unavailable"] is False
+    assert snap["day_start_balance"] == 100000.0        # = current balance (flat, no events)
+    assert snap["day_start_equity"] == 100000.0         # provably flat -> equity == balance
+    assert snap["daily_anchor_source"] == "BROKER_HISTORY_RECONSTRUCTION"
+    ok, reason = validate_account(snap, NOW, 60)
+    assert ok, reason
+
+
+def test_account_midday_cold_start_unprovable_fails_closed(client, tmp_path):
+    # PR-3A.3: when reconstruction cannot be PROVEN (the broker history range query is
+    # rejected / returns None), a mid-day cold start still FAILS CLOSED — Session Edge
+    # never guesses the anchor from current balance/equity.
+    client.history_range_fails = True
     snap = _account(client, tmp_path).snapshot(NOW)
     assert snap["daily_anchor_unavailable"] is True
     assert snap["day_start_balance"] is None
+    assert snap["daily_anchor_reason"] == DailyAnchorTracker.R_RECON_HISTORY_UNAVAILABLE
     ok, reason = validate_account(snap, NOW, 60)
     assert ok is False
 

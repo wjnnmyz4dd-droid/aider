@@ -29,6 +29,31 @@ DEAL_ENTRY_OUT = 1
 DEAL_ENTRY_INOUT = 2
 DEAL_ENTRY_OUT_BY = 3
 
+# MetaTrader5 deal types (ENUM_DEAL_TYPE). Every balance-affecting deal encodes its
+# balance delta in (profit + commission + swap + fee), so the daily-anchor cold-start
+# reconstruction needs the exhaustive KNOWN set only to FAIL CLOSED on any value
+# outside it (an unrecognized broker balance event -> unverifiable). READ-ONLY use.
+DEAL_TYPE_BUY = 0
+DEAL_TYPE_SELL = 1
+DEAL_TYPE_BALANCE = 2                 # deposit / withdrawal
+DEAL_TYPE_CREDIT = 3
+DEAL_TYPE_CHARGE = 4
+DEAL_TYPE_CORRECTION = 5
+DEAL_TYPE_BONUS = 6
+DEAL_TYPE_COMMISSION = 7
+DEAL_TYPE_COMMISSION_DAILY = 8
+DEAL_TYPE_COMMISSION_MONTHLY = 9
+DEAL_TYPE_COMMISSION_AGENT_DAILY = 10
+DEAL_TYPE_COMMISSION_AGENT_MONTHLY = 11
+DEAL_TYPE_INTEREST = 12
+DEAL_TYPE_BUY_CANCELED = 13
+DEAL_TYPE_SELL_CANCELED = 14
+DEAL_DIVIDEND = 15
+DEAL_DIVIDEND_FRANKED = 16
+DEAL_TAX = 17
+# The exhaustive documented set (0..17). Any deal.type outside this -> fail closed.
+KNOWN_DEAL_TYPES = frozenset(range(0, 18))
+
 
 def create_real_client(*, terminal_path=None, login=None, server=None,
                        password=None):  # pragma: no cover - Windows/terminal only
@@ -92,6 +117,16 @@ class _RealMt5Client:  # pragma: no cover - requires a live terminal
         as a confirmed close."""
         return self._mt5.history_deals_get(position=position)
 
+    def history_deals_range(self, date_from, date_to):  # pragma: no cover - live terminal
+        """READ-ONLY: all deals with server time in [date_from, date_to] (no trading).
+
+        Delegates to ``MetaTrader5.history_deals_get(date_from, date_to)`` (the
+        time-range overload). Returns the MT5 tuple (possibly empty = a successful
+        query with zero deals), or ``None`` when the query is rejected/errors — the
+        caller MUST treat ``None`` as *unknown coverage* and FAIL CLOSED, never as
+        proof of zero deals."""
+        return self._mt5.history_deals_get(date_from, date_to)
+
 
 # --------------------------------------------------------------------------- #
 # Deterministic test double (mirrors the MetaTrader5 API surface used above).
@@ -100,10 +135,12 @@ class _Deal:
     """Deterministic stand-in for an MT5 history deal (read-only fields only)."""
 
     __slots__ = ("ticket", "order", "position_id", "time", "type", "entry",
-                 "volume", "price", "symbol", "reason", "profit")
+                 "volume", "price", "symbol", "reason", "profit",
+                 "commission", "swap", "fee")
 
     def __init__(self, position_id, entry, volume, price, *, deal_type=0,
-                 ticket=0, order=0, time=0, symbol="", reason=0, profit=0.0):
+                 ticket=0, order=0, time=0, symbol="", reason=0, profit=0.0,
+                 commission=0.0, swap=0.0, fee=0.0):
         self.position_id = position_id
         self.entry = entry
         self.volume = volume
@@ -115,6 +152,9 @@ class _Deal:
         self.symbol = symbol
         self.reason = reason
         self.profit = profit
+        self.commission = commission          # broker commission (balance delta component)
+        self.swap = swap                      # swap/rollover (balance delta component)
+        self.fee = fee                        # exchange/other fee (balance delta component)
 
     def __getitem__(self, k):        # MT5 deals behave like structured records
         return getattr(self, k)
@@ -181,3 +221,18 @@ class FakeMt5Client:
         if position is None:
             return tuple(d for lst in self.deals.values() for d in lst)
         return tuple(self.deals.get(position, ()))
+
+    # Set to True in a test to simulate a rejected/errored range query (-> None).
+    history_range_fails = False
+
+    def history_deals_range(self, date_from, date_to):
+        """READ-ONLY deals with POSIX ``time`` in [date_from, date_to]. Accepts
+        datetimes or POSIX seconds; returns a tuple (possibly empty) on success, or
+        None when ``history_range_fails`` is set (simulated query rejection)."""
+        if self.history_range_fails:
+            return None
+        def _sec(x):
+            return int(x.timestamp()) if hasattr(x, "timestamp") else int(x)
+        lo, hi = _sec(date_from), _sec(date_to)
+        return tuple(d for lst in self.deals.values() for d in lst
+                     if lo <= int(d.time) <= hi)

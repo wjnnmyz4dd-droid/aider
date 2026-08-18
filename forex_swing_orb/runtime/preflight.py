@@ -155,31 +155,49 @@ def _check_h5(cfg, now):
 
 
 def _check_daily_anchor(cfg, now):
-    """Daily-anchor VISIBILITY only (spec §J/§Q): report presence/validity for today's
-    Prague trading day. NEVER creates, repairs, or auto-fills it — a mid-day cold start
-    with no anchor is fail-closed BY DESIGN (producer -> R_ACCOUNT_ANCHOR_UNAVAILABLE)."""
+    """Daily-anchor VISIBILITY only (spec §J/§Q/§T): report presence/validity, SOURCE
+    (LIVE_ROLLOVER / BROKER_HISTORY_RECONSTRUCTION), Prague day, and cold-start history
+    coverage for today's Prague trading day. READ-ONLY: it reads the PERSISTED anchor
+    the producer wrote — it never creates, repairs, reconstructs, or auto-fills it (the
+    tracker is the sole reconstruction authority; a mid-day cold start with no provable
+    anchor stays fail-closed via R_ACCOUNT_ANCHOR_UNAVAILABLE)."""
+    name = "daily anchor (today, visibility only)"
     if cfg is None:
-        return ("daily anchor (today, visibility only)", ENV, "config unresolved")
+        return [(name, ENV, "config unresolved")]
     from ..compliance.contract import prague_trading_day
     try:
         tday = prague_trading_day(now)
         p = __import__("pathlib").Path(cfg.anchor_path)
         if not p.exists():
-            return ("daily anchor (today, visibility only)", ENV,
-                    f"absent for {tday}; a running producer captures it at the Prague "
-                    f"rollover (do NOT hand-create — cold start fails closed by design)")
+            return [(name, ENV,
+                     f"absent for {tday}; established at producer start (live rollover, "
+                     f"or verified broker-history reconstruction on a cold start)"),
+                    ("daily anchor source", ENV, f"not established yet for {tday}"),
+                    ("daily anchor history coverage", ENV, "requires the live terminal")]
         ok, obj = serialize.loads(p.read_text(encoding="utf-8"))
         rec = obj.get("records", {}).get(tday) if ok else None
         if not isinstance(rec, dict):
-            return ("daily anchor (today, visibility only)", ENV,
-                    f"no record for {tday} (producer will capture at rollover)")
+            return [(name, ENV, f"no record for {tday} (established at producer start)"),
+                    ("daily anchor source", ENV, f"not established yet for {tday}"),
+                    ("daily anchor history coverage", ENV, "requires the live terminal")]
         if not serialize.verify_integrity_digest(rec):
-            return ("daily anchor (today, visibility only)", FAIL,
-                    f"anchor for {tday} present but integrity digest INVALID")
-        return ("daily anchor (today, visibility only)", PASS,
-                f"present + valid for {tday}")
+            return [(name, FAIL, f"anchor for {tday} present but integrity digest INVALID"),
+                    ("daily anchor source", FAIL, "record integrity invalid"),
+                    ("daily anchor history coverage", FAIL, "record integrity invalid")]
+        source = rec.get("anchor_source") or "LIVE_ROLLOVER (legacy record)"
+        recon = rec.get("reconstruction") if isinstance(rec.get("reconstruction"), dict) else None
+        out = [(name, PASS, f"present + valid for {tday}"),
+               ("daily anchor source", PASS, source)]
+        if recon:
+            out.append(("daily anchor history coverage", PASS,
+                        f"from {recon.get('history_from_utc')} to {recon.get('history_to_utc')}; "
+                        f"{recon.get('event_count')} event(s); flat-book proven"))
+        else:
+            out.append(("daily anchor history coverage", PASS,
+                        "n/a (live rollover capture)"))
+        return out
     except Exception as exc:                             # noqa: BLE001
-        return ("daily anchor (today, visibility only)", ENV, f"could not read anchor: {exc}")
+        return [(name, ENV, f"could not read anchor: {exc}")]
 
 
 def _check_producer_state(cfg, now):
@@ -388,7 +406,7 @@ def run_checks(now=None):
     results.append(ea_result)
     results.append(_check_h5(cfg, now))
     results.append(_check_bridge_end_to_end(cfg, ea_result, bridge_present))
-    results.append(_check_daily_anchor(cfg, now))
+    results.extend(_check_daily_anchor(cfg, now))
     results.append(_check_producer_state(cfg, now))
     results.extend(_mt5_checks(cfg))
     return results
