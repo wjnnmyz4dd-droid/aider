@@ -24,10 +24,15 @@ REM     run_session_edge.bat --initial-balance 50000
 REM  To correct an already-pinned value later, reset it deliberately:
 REM     run_session_edge.bat --reinitialize 50000
 REM
-REM  Add symbols / sessions if you like (defaults: EURUSD, LONDON):
-REM     run_session_edge.bat --symbols EURUSD,GBPUSD --sessions LONDON,NEW_YORK
+REM  Choose sessions ONCE and they are remembered (persisted per machine):
 REM     run_session_edge.bat --sessions ALL
-REM  Session selection stays inside Session Edge; the EA never chooses sessions.
+REM     run_session_edge.bat --sessions LONDON,NEW_YORK
+REM  After that, a plain double-click reuses your saved selection — no flags, no env
+REM  edits. First run with no --sessions defaults to LONDON. Passing --sessions again
+REM  changes the saved default. Add symbols the same way (default EURUSD):
+REM     run_session_edge.bat --symbols EURUSD,GBPUSD
+REM  Session selection stays inside Session Edge (single Python authority); the EA
+REM  never chooses sessions and has no manual lot control — sizing is autonomous (PR-3J).
 REM ===================================================================
 setlocal
 cd /d "%~dp0"

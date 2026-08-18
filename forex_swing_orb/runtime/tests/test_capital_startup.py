@@ -190,9 +190,13 @@ def test_capital_layer_does_not_import_or_call_risk_sizing_ftmo():
         assert call not in src
 
 
-def test_ea_default_volume_inert_and_no_score_sizing():
+def test_ea_no_manual_lot_input_and_no_score_sizing():
     ea = (PKG / "ea_mt5" / "SessionEdgeExecutionEA.mq5").read_text()
-    assert "DEPRECATED" in ea and "DefaultVolume" in ea         # inert
+    # The EA exposes NO manual lot/volume/risk INPUT (the misleading DefaultVolume input
+    # was removed). Sizing is autonomous (PR-3J); the EA executes the authorized volume.
+    import re as _re
+    assert not _re.search(r"^\s*input\s+\w+\s+\w*(?:[Vv]olume|[Ll]ot|[Rr]isk)\w*", ea, _re.M)
+    assert "input double DefaultVolume" not in ea
     # no score-based sizing anywhere in trading
     for pkg in ("compliance", "producer", "ea_mt5", "runtime"):
         for p in (PKG / pkg).rglob("*.py"):

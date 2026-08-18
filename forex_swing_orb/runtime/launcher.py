@@ -76,23 +76,12 @@ def canonical_symbols(symbols):
 
 def canonical_sessions(raw):
     """Normalize an operator ``--sessions`` value into a validated, deduplicated,
-    canonically-ordered tuple. Accepts 'ALL' (expands to all supported sessions).
-    The launcher only NORMALIZES + validates shape; runtime.config remains the
-    single session authority (it validates again, fail closed). Raises ValueError
-    on an unknown/empty selection so the launcher can fail closed before start."""
-    from ..session.profiles import SUPPORTED_SESSION_IDS
-    tokens = [t.strip().upper() for t in str(raw).replace(",", " ").split()]
-    tokens = [t for t in tokens if t]
-    if not tokens:
-        raise ValueError("no sessions selected")
-    if "ALL" in tokens:
-        return tuple(SUPPORTED_SESSION_IDS)
-    unknown = [t for t in tokens if t not in SUPPORTED_SESSION_IDS]
-    if unknown:
-        raise ValueError(f"unknown session(s): {unknown} "
-                         f"(supported: {list(SUPPORTED_SESSION_IDS)} or ALL)")
-    # canonical order; dedup
-    return tuple(s for s in SUPPORTED_SESSION_IDS if s in set(tokens))
+    canonically-ordered tuple. Delegates to the ONE session-selection normalizer
+    (runtime.session_selection.normalize_sessions) so the launcher, persistence, and
+    CLI cannot diverge. runtime.config remains the single session AUTHORITY (it
+    re-validates, fail closed). Raises ValueError on an unknown/empty selection."""
+    from . import session_selection
+    return session_selection.normalize_sessions(raw)
 
 
 def build_env(base_env, *, bridge_root, runtime_dir, news_file, symbols,
@@ -257,9 +246,11 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                    help="comma-separated Forex majors, e.g. EURUSD,GBPUSD "
                         "(.FX suffix added automatically)")
     p.add_argument("--symbol-suffix", default="", help="broker symbol suffix, if any")
-    p.add_argument("--sessions", default="LONDON",
+    p.add_argument("--sessions", default=None,
                    help="comma-separated sessions to trade: SYDNEY,TOKYO,LONDON,"
-                        "NEW_YORK or ALL (default: LONDON)")
+                        "NEW_YORK or ALL. Omit to reuse your last saved selection "
+                        "(persisted per run); first run with none defaults to LONDON. "
+                        "Passing this pins it as your new default.")
     p.add_argument("--initial-balance", type=float, default=None,
                    help="OPTIONAL: true FTMO challenge starting capital. On first run "
                         "for an account it pins this value; normally omitted (the launcher "
@@ -359,10 +350,17 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     news_file = runtime_dir / "news_bundle.json"
 
     symbols = canonical_symbols(args.symbols.split(","))
+    # Zero-friction session selection (single authority preserved): explicit --sessions
+    # wins and is persisted as the new default; otherwise reuse the persisted selection;
+    # otherwise default LONDON. Invalid/corrupt selection fails closed (no silent
+    # fallback to a different session). runtime.config re-validates independently.
+    from . import session_selection
     try:
-        sessions = canonical_sessions(args.sessions)
-    except ValueError as exc:
-        print(f"Session Edge launcher: invalid --sessions ({exc}). Nothing started.",
+        sessions, sessions_source = session_selection.resolve(
+            args.sessions, session_selection.selection_store_path(), now_iso=now_iso)
+    except session_selection.SessionSelectionError as exc:
+        print(f"Session Edge launcher: invalid session selection ({exc}). Nothing "
+              f"started. Re-run with --sessions SYDNEY,TOKYO,LONDON,NEW_YORK or ALL.",
               file=sys.stderr)
         return 7
     currency = args.currency or disc.get("currency")
@@ -420,6 +418,20 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     print(_line("Account Identity", "PASS", acct_id))
     print(_line("Capital Base", "PASS", f"{currency} {balance:,.2f}"))
     print(f"     {res.message}")
+    # Trading sessions — the EFFECTIVE selection this run (single Python authority;
+    # the EA never chooses sessions). ALL renders the four canonical profiles.
+    _src = {"cli": "from --sessions (saved)", "persisted": "saved selection",
+            "default": "default"}.get(sessions_source, sessions_source)
+    if tuple(sessions) == tuple(session_selection.SUPPORTED_SESSION_IDS):
+        print(_line("Trading Sessions", "PASS", f"ALL (4) — {_src}"))
+        for s in sessions:
+            print(f"{' ' * 26}{s}")
+    else:
+        print(_line("Trading Sessions", "PASS", f"{', '.join(sessions)} — {_src}"))
+    # Lot sizing is fully autonomous (PR-3J is the sole live authority); the operator
+    # has no manual lot control anywhere (the EA's DefaultVolume input was removed).
+    print(_line("Lot Sizing", "PASS", "AUTONOMOUS — PR-3J (compliance/sizing)"))
+    print(_line("Manual Lot Override", "DISABLED"))
     print(_line("Timezone Data", tz_status, tz_detail if tz_status != _pf.PASS else ""))
 
     # Bridge readiness — split the old ambiguous single "Bridge PASS" (which only ever

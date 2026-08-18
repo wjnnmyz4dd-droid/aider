@@ -32,12 +32,16 @@
 #include <Trade\Trade.mqh>
 #include "JsonBridge.mqh"
 
-//--- inputs (operational config; NOT strategy parameters) -----------
+//--- inputs: EXECUTION-ADAPTER OPERATIONAL SETTINGS ONLY ------------
+// This Inputs tab is deliberately execution-only. It carries NO trading authority:
+// no session selector, no lot/volume, no risk %, no strategy/ORB/SL-TP/news/
+// compliance controls. Session eligibility lives solely in the Session Edge host
+// session/profile/compliance path; lot size is sized solely by the host sizing
+// authority (PR-3J) and delivered in the instruction. The EA executes the authorized
+// volume VERBATIM. (The former DefaultVolume input was removed in this hardening: it
+// was inert but appeared in the Inputs UI as a misleading manual lot control.)
 input string BridgeRoot      = "session_edge_bridge"; // bridge_root, under MQL5\Files (or common)
 input bool   UseCommonFolder = false;                 // true => terminal common Files folder
-input double DefaultVolume   = 0.10;                  // DEPRECATED (M9): NOT used for production
-                                                      // execution; volume is authoritative in the
-                                                      // instruction. Retained only as an inert input.
 input string BrokerSuffix    = "";                    // appended to the 6-char base symbol
 input string EaId            = "SessionEdgeExecutionEA/1.0";
 input int    PollSeconds     = 5;                      // bridge poll cadence (no busy-wait)
@@ -46,8 +50,8 @@ input long   MagicNumber     = 920240125;
 //--- allow-lists mirror bridge/config.py ----------------------------
 // PR-3J/M9: the production instruction schema is 3 (adds a required, authoritative
 // ``volume`` — the executable lot sized upstream and proven within risk-per-trade by
-// compliance; the EA executes it VERBATIM and never sizes from risk_fraction or the
-// DefaultVolume input). This MUST equal bridge/config.py schema_version_allowlist; a
+// compliance; the EA executes it VERBATIM and never sizes from risk_fraction nor from
+// any manual/default lot). This MUST equal bridge/config.py schema_version_allowlist; a
 // source-parity test guards divergence. Schema 1 (London-only) and schema 2 (no
 // authoritative volume) are retired and fail closed here.
 #define ALLOW_SCHEMA_VERSION   3
@@ -340,11 +344,11 @@ void Execute(const string sid, const string json, const string received)
 
    // M9: execute the AUTHORITATIVE instruction volume verbatim. Verify EXACT alignment
    // with live broker constraints and REJECT on mismatch — the EA never rounds up or
-   // substitutes DefaultVolume (single upstream sizing authority; no EA upsizing).
+   // substitutes any manual/default lot (single upstream sizing authority; no EA upsizing).
    double vmin = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MIN);
    double vmax = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MAX);
    double vstep = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_STEP);
-   double vol = volume;                // authoritative instruction volume (never DefaultVolume)
+   double vol = volume;                // authoritative instruction volume (never a manual lot)
    if(vol <= 0 || vol < vmin || vol > vmax || (vstep > 0 && MathAbs(MathRound((vol-vmin)/vstep)*vstep + vmin - vol) > vstep*1e-6))
    { WriteResult(sid, ST_EXECUTION_FAILED, "X_INVALID_VOLUME", received, sl, tp, 0, entry, 0, vol, 0,
                  StringFormat("{\"volume\":%.10g}", vol), "{}"); return; }

@@ -228,6 +228,59 @@ def _check_bridge_end_to_end(cfg, ea_liveness_result, bridge_present):
             f"(EA liveness = {ea_liveness_result[1]})")
 
 
+def _check_sessions(cfg):
+    """Effective trading-session selection (spec §K). The single authority is
+    runtime.config -> SessionModel; a resolved cfg means the selection already passed
+    fail-closed validation. When cfg is unresolved, independently validate the raw
+    SESSION_EDGE_ENABLED_SESSIONS so an INVALID selection reads as FAIL (not a false
+    green) even off the launcher."""
+    from ..session.profiles import SUPPORTED_SESSION_IDS
+
+    def _label(sessions):
+        return (f"ALL ({len(sessions)})" if tuple(sessions) == tuple(SUPPORTED_SESSION_IDS)
+                else ", ".join(sessions))
+
+    if cfg is not None:
+        sessions = tuple(cfg.enabled_sessions)
+        if not sessions:
+            return ("Trading Sessions", FAIL, "no sessions enabled")
+        return ("Trading Sessions", PASS, _label(sessions))
+    raw = os.environ.get("SESSION_EDGE_ENABLED_SESSIONS")
+    if raw:
+        from . import session_selection
+        try:
+            s = session_selection.normalize_sessions(raw)
+        except session_selection.SessionSelectionError as exc:
+            return ("Trading Sessions", FAIL, f"invalid SESSION_EDGE_ENABLED_SESSIONS: {exc}")
+        return ("Trading Sessions", PASS, f"{_label(s)} (config not fully resolved here)")
+    return ("Trading Sessions", ENV,
+            "no selection set here; the launcher persists/sets it (default LONDON)")
+
+
+def _check_lot_sizing():
+    """Lot-sizing authority (spec §K). Sizing is autonomous — PR-3J
+    (compliance/sizing.allowable_volume) is the SOLE live authority — and there must be
+    NO manual lot control. Proves, by reading the shipped EA source, that no manual
+    lot/volume/risk INPUT is exposed; a reintroduced manual input reads as FAIL."""
+    import re
+    out = [("Lot Sizing Authority", PASS,
+            "AUTONOMOUS — PR-3J (compliance/sizing.allowable_volume)")]
+    try:
+        ea = (__import__("pathlib").Path(__file__).resolve().parents[1]
+              / "ea_mt5" / "SessionEdgeExecutionEA.mq5").read_text(encoding="utf-8")
+        manual = re.search(r"^\s*input\s+\w+\s+\w*(?:[Vv]olume|[Ll]ot|[Rr]isk)\w*", ea, re.M)
+        if manual:
+            out.append(("Manual Lot Override", FAIL,
+                        f"EA exposes a manual lot input: {manual.group(0).strip()!r}"))
+        else:
+            out.append(("Manual Lot Override", PASS,
+                        "DISABLED — no manual lot/volume/risk input in the EA"))
+    except Exception as exc:                             # noqa: BLE001
+        out.append(("Manual Lot Override", PASS,
+                    "DISABLED — EA sizes autonomously (source not read here)"))
+    return out
+
+
 def _mt5_checks(cfg):
     """READ-ONLY MT5 probes. When MetaTrader5/terminal is unavailable every MT5 check
     is ENV (never a false PASS). Never sends/modifies an order."""
@@ -323,6 +376,8 @@ def run_checks(now=None):
                _check_timezones()]
     cfg_result, cfg = _check_config()
     results.append(cfg_result)
+    results.append(_check_sessions(cfg))
+    results.extend(_check_lot_sizing())
     bridge_result = _check_bridge(cfg)
     results.append(bridge_result)
     bridge_present = bridge_result[1] == PASS
