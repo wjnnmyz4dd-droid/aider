@@ -27,6 +27,7 @@ then shut the connection down.
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -123,11 +124,18 @@ def _mt5_checks(cfg):
     # Live terminal path (Windows). Read-only; shut down when done. pragma: not run in CI.
     connected = False                              # pragma: no cover - live terminal only
     try:                                            # pragma: no cover
-        connected = bool(mt5.initialize())
-        if not connected:
-            results.append(("MT5 terminal connection", FAIL,
-                            "MetaTrader5.initialize() failed; open + log into the DEMO terminal"))
+        # Pin to the SAME terminal the launcher/children use (one authority:
+        # SESSION_EDGE_MT5_TERMINAL_PATH / persisted selection). No bare fallback.
+        from . import mt5_terminal as term
+        plan = term.requested_plan(None, os.environ)
+        try:
+            sel = term.open_terminal(mt5, plan)
+            connected = True
+        except term.TerminalSelectionError as exc:
+            results.append(("MT5 terminal connection", FAIL, str(exc)))
             return results
+        results.append(("MT5 terminal selection", PASS,
+                        f"{plan.get('source')}: {sel.get('terminal_path')}"))
         results.append(("MT5 terminal connection", PASS, "connected"))
         acct = mt5.account_info()
         is_demo = getattr(acct, "trade_mode", None) == getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)

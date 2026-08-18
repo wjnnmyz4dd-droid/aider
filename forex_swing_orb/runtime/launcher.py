@@ -34,6 +34,7 @@ from ..live import mt5_client as mc
 from ..bridge import serialize
 from ..bridge.atomic import atomic_write_text
 from . import capital
+from . import mt5_terminal as term
 
 DEFAULT_SYMBOLS = ("EURUSD.FX",)
 DEFAULT_SESSIONS = ("LONDON",)
@@ -97,10 +98,15 @@ def canonical_sessions(raw):
 def build_env(base_env, *, bridge_root, runtime_dir, news_file, symbols,
               symbol_suffix, initial_balance, account_currency, ftmo_source,
               ftmo_verified_at, enabled_sessions=DEFAULT_SESSIONS,
-              overlap_mode=DEFAULT_OVERLAP_MODE, calendar_provider=DEFAULT_PROVIDER):
+              overlap_mode=DEFAULT_OVERLAP_MODE, calendar_provider=DEFAULT_PROVIDER,
+              terminal_path=None):
     """Build the child environment. FTMO_PROFILE_VERIFIED is set true here because
-    the caller only reaches this step AFTER the operator has attested (see main)."""
+    the caller only reaches this step AFTER the operator has attested (see main).
+    ``terminal_path`` (when known) pins producer/manager to the SAME MT5 terminal the
+    launcher connected to (via the existing SESSION_EDGE_MT5_TERMINAL_PATH authority)."""
     env = dict(base_env)
+    if terminal_path:
+        env["SESSION_EDGE_MT5_TERMINAL_PATH"] = str(terminal_path)
     env.update({
         # producer / manager (consumed by runtime.config)
         "SESSION_EDGE_BRIDGE_ROOT": str(bridge_root),
@@ -206,17 +212,14 @@ def _did_not_start(disc, bridge_root, *, reason="", detail=""):  # pragma: no co
 # --------------------------------------------------------------------------- #
 # MT5-touching layer (Windows/terminal only)
 # --------------------------------------------------------------------------- #
-def _connect():  # pragma: no cover - requires a live Windows terminal
+def _import_mt5():  # pragma: no cover - requires the MetaTrader5 package
+    """Import the MetaTrader5 package (no initialize). The actual terminal-pinned
+    connection is done by mt5_terminal.open_terminal so every process binds identically."""
     try:
         import MetaTrader5 as _mt5  # noqa: N813
+        return _mt5
     except Exception:
         return None
-    try:
-        if not _mt5.initialize():
-            return None
-    except Exception:
-        return None
-    return _mt5
 
 
 def _discover(mt5):  # pragma: no cover - live terminal only
@@ -268,6 +271,11 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                         "wrong starting capital).")
     p.add_argument("--currency", default=None,
                    help="override account currency (default: read from account)")
+    p.add_argument("--mt5-terminal-path", default=None,
+                   help="Path to the MT5 terminal executable (terminal64.exe) to PIN "
+                        "Python to the SAME terminal that runs the Session Edge EA. "
+                        "Normally omitted (discovered + persisted on first run). Set it "
+                        "if you have more than one MT5 installation.")
     p.add_argument("--runtime-dir", default=None,
                    help="override runtime dir (default: under the terminal Files folder)")
     p.add_argument("--wait-for-terminal", type=int, default=0,
@@ -275,15 +283,33 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                         "(use for auto-start at logon, e.g. 900)")
     args = p.parse_args(argv)
 
-    deadline = time.time() + max(0, args.wait_for_terminal)
-    mt5 = _connect()
-    while mt5 is None and time.time() < deadline:
-        print("Session Edge launcher: waiting for the MT5 terminal...", file=sys.stderr)
-        time.sleep(5)
-        mt5 = _connect()
+    # ONE terminal authority: pin every Python process to the same MT5 terminal
+    # (SESSION_EDGE_MT5_TERMINAL_PATH), so Python and the EA share the same
+    # MQL5\Files\session_edge_bridge. Bare initialize() could otherwise attach to a
+    # different installation than the one running the EA.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    plan = term.requested_plan(args.mt5_terminal_path, os.environ)
+    mt5 = _import_mt5()
     if mt5 is None:
-        print("Session Edge launcher: MetaTrader5 unavailable — open the terminal, "
-              "log into your DEMO account, and `pip install MetaTrader5`.", file=sys.stderr)
+        print("Session Edge launcher: MetaTrader5 package unavailable — `pip install "
+              "MetaTrader5` and run on the Windows/MT5 machine.", file=sys.stderr)
+        return 3
+    deadline = time.time() + max(0, args.wait_for_terminal)
+    sel, last_err = None, None
+    while True:
+        try:
+            sel = term.open_terminal(mt5, plan)
+            break
+        except term.TerminalSelectionError as exc:
+            last_err = exc
+            if time.time() >= deadline:
+                break
+            print(f"Session Edge launcher: waiting for the MT5 terminal... ({exc})",
+                  file=sys.stderr)
+            time.sleep(5)
+    if sel is None:
+        print(f"Session Edge launcher: {last_err}  (no silent fallback to another "
+              f"MT5 installation).", file=sys.stderr)
         return 3
     try:
         disc = _discover(mt5)
@@ -291,6 +317,18 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         try:
             mt5.shutdown()
         except Exception:
+            pass
+
+    # The one executable every child + preflight must pin to; persist it for next run.
+    terminal_exe = term.effective_terminal_exe(sel)
+    disc["data_path"] = sel.get("data_path")           # bridge derives from THIS terminal
+    disc["terminal_path"] = sel.get("terminal_path")
+    disc["terminal_exe"] = terminal_exe
+    disc["terminal_source"] = sel.get("source")
+    if terminal_exe:
+        try:
+            term.persist(term.selection_store_path(), terminal_exe, sel.get("data_path"), now_iso)
+        except Exception:                              # persistence is a convenience only
             pass
 
     if not account_is_demo(disc.get("trade_mode")):
@@ -327,7 +365,6 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         print(f"Session Edge launcher: invalid --sessions ({exc}). Nothing started.",
               file=sys.stderr)
         return 7
-    now_iso = datetime.now(timezone.utc).isoformat()
     currency = args.currency or disc.get("currency")
     if not currency:
         _did_not_start(disc, bridge_root, reason="ACCOUNT CURRENCY UNAVAILABLE",
@@ -369,23 +406,29 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         os.environ, bridge_root=bridge_root, runtime_dir=str(runtime_dir),
         news_file=str(news_file), symbols=symbols, symbol_suffix=args.symbol_suffix,
         initial_balance=balance, account_currency=currency,
-        enabled_sessions=sessions,
+        enabled_sessions=sessions, terminal_path=disc.get("terminal_exe"),
         ftmo_source="FTMO 2-Step Swing (operator-attested via launcher)",
         ftmo_verified_at=datetime.now(timezone.utc).date().isoformat())
 
     acct_id = f"{capital.mask_account(disc.get('login'))} @ {disc.get('server')}"
+    term_exe = disc.get("terminal_exe") or disc.get("terminal_path") or "?"
     print("=" * 60)
     print(" SESSION EDGE STARTUP")
     print("=" * 60)
-    print(_line("MT5 Terminal", "PASS"))
+    print(_line("MT5 Terminal", "PASS", f"{disc.get('terminal_source')}: {term_exe}"))
     print(_line("DEMO Account", "PASS"))
     print(_line("Account Identity", "PASS", acct_id))
     print(_line("Capital Base", "PASS", f"{currency} {balance:,.2f}"))
     print(f"     {res.message}")
     print(_line("Timezone Data", tz_status, tz_detail if tz_status != _pf.PASS else ""))
     print(_line("Bridge", "PASS", bridge_root))
-    print(f"     EA must use BridgeRoot=session_edge_bridge, UseCommonFolder=false "
-          f"(same folder). {bh_detail}")
+    print(f"     Python + producer/manager are pinned to this terminal; the EA in the "
+          f"SAME terminal (File > Open Data Folder) with BridgeRoot=session_edge_bridge, "
+          f"UseCommonFolder=false reads this exact path. {bh_detail}")
+    if not disc.get("terminal_exe"):
+        print("     WARNING: could not resolve the terminal executable to pin child "
+              "processes; if you run more than one MT5 install, pass --mt5-terminal-path "
+              "to the EA's terminal64.exe for a deterministic bind.")
     print(_line("Symbol Metadata", _pf.ENV, "verify on-machine: python -m "
                 "forex_swing_orb.runtime.preflight"))
     print("-" * 60)

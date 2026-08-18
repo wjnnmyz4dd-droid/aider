@@ -177,6 +177,26 @@ The launcher points the producer at exactly this path
 (`launcher.bridge_root_from_data_path`), and the EA's `BridgeRoot` default reads the
 same folder. Find the data folder in MT5 via **File → Open Data Folder**.
 
+**Same-terminal binding (why "bridge_root not found" happens and how it's prevented).**
+`initialize()` with no path can attach Python to a *different* MT5 installation than the
+one running the EA — then Python writes the bridge under terminal A while the EA reads
+terminal B. Session Edge now pins **all** Python processes (launcher, producer, manager,
+preflight) to **one** terminal via the single authority `SESSION_EDGE_MT5_TERMINAL_PATH`
+(owner: `runtime/mt5_terminal.py`). On first run it discovers the terminal, **persists**
+its executable to `~/.session_edge/terminal.json`, and pins every child to it; the
+startup screen prints `MT5 Terminal …… PASS  <source>: <terminal64.exe>` and the resolved
+`Bridge` path. If you run **more than one MT5 installation**, pin the EA's terminal
+explicitly (once):
+
+```
+run_session_edge.bat --mt5-terminal-path "C:\Program Files\FTMO MetaTrader 5\terminal64.exe"
+```
+
+A configured terminal that cannot be opened **fails closed** — Session Edge never
+silently falls back to another installation. Verify Python and the EA agree: the printed
+`Bridge` path must sit under the same folder that **File → Open Data Folder** opens in the
+EA's terminal.
+
 ## H. Starting Session Edge
 
 **The one correct launcher is `forex_swing_orb.runtime.launcher`.** Do **not** use
