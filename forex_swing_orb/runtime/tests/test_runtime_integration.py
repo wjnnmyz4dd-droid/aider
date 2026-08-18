@@ -296,7 +296,9 @@ def test_manager_build_from_env_and_status(env_config, client):
     env, paths = env_config()
     svc = ManagerService.build_from_env(env=env, client=client, now_fn=lambda: NOW)
     st = svc.status(NOW)
-    assert st["service_state"] == "READY" and st["terminal_connected"] is True
+    # Truthful manager state (no hard-coded READY): terminal connected + no open
+    # positions to manage -> MANAGER_IDLE (a healthy state).
+    assert st["service_state"] == "MANAGER_IDLE" and st["terminal_connected"] is True
     svc.run_once(NOW)                                  # no positions -> no-op, health written
     health = serialize.loads((paths["runtime_dir"] / "manager_health.json")
                              .read_text(encoding="utf-8"))[1]

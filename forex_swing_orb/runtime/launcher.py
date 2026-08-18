@@ -421,10 +421,29 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     print(_line("Capital Base", "PASS", f"{currency} {balance:,.2f}"))
     print(f"     {res.message}")
     print(_line("Timezone Data", tz_status, tz_detail if tz_status != _pf.PASS else ""))
-    print(_line("Bridge", "PASS", bridge_root))
-    print(f"     Python + producer/manager are pinned to this terminal; the EA in the "
-          f"SAME terminal (File > Open Data Folder) with BridgeRoot=session_edge_bridge, "
-          f"UseCommonFolder=false reads this exact path. {bh_detail}")
+
+    # Bridge readiness — split the old ambiguous single "Bridge PASS" (which only ever
+    # proved Python could R/W a folder) into the four TRUTHFUL lines. Filesystem is the
+    # Python probe above; EA Bridge Liveness is proven ONLY by a fresh, same-bridge
+    # EA-written heartbeat; Instruction Health is H5; End-to-End requires BOTH filesystem
+    # AND a live EA. A missing/stale EA heartbeat now reads as NOT READY, never PASS.
+    from . import ea_liveness as _el
+    from . import operator_status as _os
+    live = _el.read_ea_status(bridge_root, datetime.now(timezone.utc),
+                              expected_bridge_root_name="session_edge_bridge",
+                              expected_use_common=False, expected_bridge_abspath=bridge_root)
+    e2e = _os.bridge_end_to_end(bh_ok, live.state)
+    print(_line("Bridge Filesystem", "PASS" if bh_ok else "FAIL", bridge_root))
+    print(f"     {bh_detail}")
+    print(_line("EA Bridge Liveness", live.state, live.detail))
+    if not live.ok:
+        print("     The EA must be attached in the SAME terminal (File > Open Data Folder), "
+              "BridgeRoot=session_edge_bridge, UseCommonFolder=false, and writing "
+              "health\\ea_status.json on its timer. Start/attach it, then re-check with "
+              "python -m forex_swing_orb.runtime.preflight")
+    print(_line("Bridge End-to-End",
+                "READY" if e2e["ready"] else "NOT READY",
+                "" if e2e["ready"] else "; ".join(e2e["blockers"])))
     if not disc.get("terminal_exe"):
         print("     WARNING: could not resolve the terminal executable to pin child "
               "processes; if you run more than one MT5 install, pass --mt5-terminal-path "
@@ -441,8 +460,15 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     try:
         for module in CHILDREN:
             procs.append((module, _spawn(module, env)))
-        print(" SESSION EDGE STARTED")
-        print(" STATUS: WAITING FOR VALID MARKET CONDITIONS   (Ctrl+C to stop all)")
+        print(" SESSION EDGE PROCESSES STARTED")
+        print(" STARTED is not READY: the child processes are up, but end-to-end")
+        print(" readiness (a LIVE EA heartbeat on this bridge, producer not blocked,")
+        print(" a valid daily anchor, and fresh market data) is proven separately.")
+        if not e2e["ready"]:
+            print(f" Bridge is NOT end-to-end ready yet: {'; '.join(e2e['blockers'])}")
+        print(" For the authoritative SYSTEM STATUS (READY / NOT READY + blockers), run:")
+        print("   python -m forex_swing_orb.runtime.preflight")
+        print(" (Ctrl+C to stop all)")
         print("=" * 60)
         # wait until interrupted or a child exits
         while True:

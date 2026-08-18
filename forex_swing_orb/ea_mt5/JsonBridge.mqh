@@ -111,6 +111,39 @@ bool BridgeExists(const string relpath, const bool common)
 }
 
 //+------------------------------------------------------------------+
+//| Robust DIRECTORY-existence probe. FileIsExist() is documented to  |
+//| check a FILE; on a directory path its result is build-dependent   |
+//| (commonly false), which made the OnInit bridge probe warn         |
+//| spuriously. FileFindFirst enumerates the sandbox and returns a    |
+//| valid handle when the directory contains ANY entry (file OR        |
+//| subfolder), so it detects a producer-initialized bridge tree      |
+//| deterministically. ``reldir`` must end with a backslash.          |
+//+------------------------------------------------------------------+
+bool BridgeDirHasEntries(const string reldir, const bool common)
+{
+   string name;
+   long h = FileFindFirst(reldir + "*", name, (common ? FILE_COMMON : 0));
+   if(h == INVALID_HANDLE)
+      return false;
+   FileFindClose(h);
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Minimal JSON string escaper for values the EA emits into a JSON   |
+//| beacon (e.g. the Windows data_path, which contains backslashes).  |
+//| Canonical JSON is ensure_ascii=False, so only '\' and '"' need    |
+//| escaping; backslash MUST be replaced first.                       |
+//+------------------------------------------------------------------+
+string JsonEscape(const string s)
+{
+   string out = s;
+   StringReplace(out, "\\", "\\\\");
+   StringReplace(out, "\"", "\\\"");
+   return out;
+}
+
+//+------------------------------------------------------------------+
 //| SHA-256 of a byte range -> lowercase hex (64 chars).              |
 //+------------------------------------------------------------------+
 string Sha256Hex(const uchar &data[], const int count)

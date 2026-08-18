@@ -379,11 +379,15 @@ def test_dashboard_status_fields(make_runner):
     runner, d = make_runner()
     runner.run_cycle(NOW)
     s = RunnerDashboard(runner).status(NOW)
-    for k in ("service_state", "demo_verified", "mt5_connected", "last_cycle",
-              "last_processed_bar", "news_as_of", "pending_instructions",
-              "unresolved_reconciliations", "last_error"):
+    for k in ("service_state", "producer_state", "last_reason", "demo_verified",
+              "mt5_connected", "last_cycle", "last_processed_bar", "news_as_of",
+              "pending_instructions", "unresolved_reconciliations", "last_error"):
         assert k in s
     assert s["demo_verified"] is True
+    # Truthful producer state (no blanket "READY"): a demo-verified producer reflects
+    # its last-cycle outcome via the single owner operator_status.
+    assert s["service_state"] == s["producer_state"]
+    assert s["service_state"].startswith("PRODUCER_")
 
 
 # 32 -------------------------------------------------------------------------

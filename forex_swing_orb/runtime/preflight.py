@@ -31,6 +31,8 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from ..bridge import serialize
+
 PASS = "PASS"
 FAIL = "FAIL"
 ENV = "ENV VALIDATION REQUIRED"
@@ -104,6 +106,126 @@ def _check_bridge(cfg):
         return ("bridge folders", PASS, f"present under {cfg.bridge_root}")
     return ("bridge folders", ENV,
             f"absent under {cfg.bridge_root} (created automatically on producer start)")
+
+
+def _check_ea_liveness(cfg, now):
+    """EA_LIVENESS — proven ONLY by a fresh, same-bridge EA heartbeat (never by a
+    Python filesystem probe). Kept DELIBERATELY SEPARATE from H5 instruction health.
+    PASS -> ready; MISSING -> ENV (EA not started/attached here); STALE/WRONG_BRIDGE/
+    MALFORMED/UNKNOWN_SCHEMA -> FAIL (a real misconfiguration or stopped EA)."""
+    if cfg is None:
+        return ("EA liveness (bridge heartbeat)", ENV, "config unresolved; cannot locate bridge_root")
+    from . import ea_liveness as el
+    try:
+        r = el.read_ea_status(cfg.bridge_root, now,
+                              expected_bridge_root_name="session_edge_bridge",
+                              expected_use_common=False,
+                              expected_bridge_abspath=cfg.bridge_root)
+    except Exception as exc:                             # noqa: BLE001
+        return ("EA liveness (bridge heartbeat)", ENV, f"could not read heartbeat: {exc}")
+    if r.state == el.PASS:
+        return ("EA liveness (bridge heartbeat)", PASS, r.detail)
+    if r.state == el.MISSING:
+        return ("EA liveness (bridge heartbeat)", ENV,
+                f"{r.detail}; attach the EA in the pinned terminal (BridgeRoot="
+                f"session_edge_bridge, UseCommonFolder=false) and re-run on-machine")
+    return ("EA liveness (bridge heartbeat)", FAIL, f"{r.state}: {r.detail}")
+
+
+def _check_h5(cfg, now):
+    """H5 instruction/ACK health (producer.bridge_health) — the SEPARATE authority for
+    whether written instructions are being acknowledged. Not a proxy for EA liveness."""
+    if cfg is None:
+        return ("H5 instruction health (ACKs)", ENV, "config unresolved")
+    from ..bridge.paths import BridgePaths
+    from ..producer import bridge_health
+    try:
+        paths = BridgePaths(cfg.bridge_root)
+        if not (paths.pending.exists() and paths.results.exists()):
+            return ("H5 instruction health (ACKs)", ENV,
+                    f"bridge not present under {cfg.bridge_root} (created on producer start)")
+        obs = bridge_health.observe_entry_bridge(paths, now)
+    except Exception as exc:                             # noqa: BLE001
+        return ("H5 instruction health (ACKs)", ENV, f"could not observe bridge: {exc}")
+    if obs.healthy:
+        return ("H5 instruction health (ACKs)", PASS,
+                f"healthy; missing_ack_count={obs.missing_ack_count}")
+    return ("H5 instruction health (ACKs)", FAIL,
+            f"unhealthy; missing_ack_count={obs.missing_ack_count}")
+
+
+def _check_daily_anchor(cfg, now):
+    """Daily-anchor VISIBILITY only (spec §J/§Q): report presence/validity for today's
+    Prague trading day. NEVER creates, repairs, or auto-fills it — a mid-day cold start
+    with no anchor is fail-closed BY DESIGN (producer -> R_ACCOUNT_ANCHOR_UNAVAILABLE)."""
+    if cfg is None:
+        return ("daily anchor (today, visibility only)", ENV, "config unresolved")
+    from ..compliance.contract import prague_trading_day
+    try:
+        tday = prague_trading_day(now)
+        p = __import__("pathlib").Path(cfg.anchor_path)
+        if not p.exists():
+            return ("daily anchor (today, visibility only)", ENV,
+                    f"absent for {tday}; a running producer captures it at the Prague "
+                    f"rollover (do NOT hand-create — cold start fails closed by design)")
+        ok, obj = serialize.loads(p.read_text(encoding="utf-8"))
+        rec = obj.get("records", {}).get(tday) if ok else None
+        if not isinstance(rec, dict):
+            return ("daily anchor (today, visibility only)", ENV,
+                    f"no record for {tday} (producer will capture at rollover)")
+        if not serialize.verify_integrity_digest(rec):
+            return ("daily anchor (today, visibility only)", FAIL,
+                    f"anchor for {tday} present but integrity digest INVALID")
+        return ("daily anchor (today, visibility only)", PASS,
+                f"present + valid for {tday}")
+    except Exception as exc:                             # noqa: BLE001
+        return ("daily anchor (today, visibility only)", ENV, f"could not read anchor: {exc}")
+
+
+def _check_producer_state(cfg, now):
+    """Producer last-cycle state (visibility) via the single owner operator_status,
+    read from the runner audit. BLOCKED/ERROR -> FAIL (a real readiness blocker);
+    WAITING/READY -> PASS; no recorded cycle -> ENV."""
+    if cfg is None:
+        return ("producer last-cycle state", ENV, "config unresolved")
+    from . import operator_status as ops
+    try:
+        p = __import__("pathlib").Path(cfg.runner_audit_path)
+        if not p.exists():
+            return ("producer last-cycle state", ENV, "no runner audit yet (producer not started)")
+        last = None
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            ok, obj = serialize.loads(line)
+            if ok:
+                last = obj
+        if last is None:
+            return ("producer last-cycle state", ENV, "no cycle recorded yet")
+        st = ops.producer_state(True, last)
+        if st["state"] in (ops.PRODUCER_BLOCKED, ops.PRODUCER_ERROR):
+            return ("producer last-cycle state", FAIL, st["detail"])
+        return ("producer last-cycle state", PASS, st["detail"])
+    except Exception as exc:                             # noqa: BLE001
+        return ("producer last-cycle state", ENV, f"could not read runner audit: {exc}")
+
+
+def _check_bridge_end_to_end(cfg, ea_liveness_result, bridge_present):
+    """BRIDGE_END_TO_END — READY requires BOTH the Python filesystem presence AND a
+    fresh EA heartbeat (ea_liveness PASS). Python-side presence alone is NOT end-to-end."""
+    ea_pass = ea_liveness_result[1] == PASS
+    if bridge_present and ea_pass:
+        return ("bridge END-TO-END (Python + live EA)", PASS,
+                "filesystem present AND fresh same-bridge EA heartbeat")
+    if not bridge_present:
+        return ("bridge END-TO-END (Python + live EA)", ENV,
+                "bridge filesystem not present here")
+    # filesystem present but EA not proven live
+    return ("bridge END-TO-END (Python + live EA)",
+            ENV if ea_liveness_result[1] == ENV else FAIL,
+            "NOT end-to-end: no fresh same-bridge EA heartbeat "
+            f"(EA liveness = {ea_liveness_result[1]})")
 
 
 def _mt5_checks(cfg):
@@ -191,8 +313,9 @@ def _bars_check(mt5, cfg):                           # pragma: no cover - live t
     return ("bar history sufficiency (M15 >= 60)", PASS, "sufficient closed M15 history")
 
 
-def run_checks():
+def run_checks(now=None):
     """Return a list of (name, status, detail). Pure/read-only; never raises."""
+    now = now or datetime.now(timezone.utc)
     results = [_check_python(),
                _check_import("pandas", required=True),
                _check_import("numpy", required=True),
@@ -200,7 +323,18 @@ def run_checks():
                _check_timezones()]
     cfg_result, cfg = _check_config()
     results.append(cfg_result)
-    results.append(_check_bridge(cfg))
+    bridge_result = _check_bridge(cfg)
+    results.append(bridge_result)
+    bridge_present = bridge_result[1] == PASS
+    # Readiness-truthfulness checks (spec §M). EA liveness is a heartbeat proof, kept
+    # DELIBERATELY SEPARATE from H5 instruction health; bridge END-TO-END requires BOTH
+    # the filesystem AND a live EA — never Python-only.
+    ea_result = _check_ea_liveness(cfg, now)
+    results.append(ea_result)
+    results.append(_check_h5(cfg, now))
+    results.append(_check_bridge_end_to_end(cfg, ea_result, bridge_present))
+    results.append(_check_daily_anchor(cfg, now))
+    results.append(_check_producer_state(cfg, now))
     results.extend(_mt5_checks(cfg))
     return results
 
@@ -232,6 +366,19 @@ def main(argv=None):
     if overall == ENV:
         print(" (No failures. Remaining items need the Windows/MT5 DEMO terminal — see")
         print("  docs/SESSION_EDGE_INSTALLATION.md and the Phase-5 validation matrix.)")
+    # SYSTEM STATUS (spec §M): READY only when EVERY check PASSes — which by
+    # construction requires a fresh EA heartbeat (EA liveness PASS), an end-to-end
+    # bridge, a valid daily anchor, and an un-blocked producer. READY here means
+    # "correctly wired and unblocked", NOT "a trade should exist". Any non-PASS check
+    # is listed as a blocker so a false green is impossible.
+    blockers = [(n, s) for n, s, _ in results if s != PASS]
+    system_ready = not blockers
+    print("=" * (width + 34))
+    print(f" SYSTEM STATUS: {'READY' if system_ready else 'NOT READY'}")
+    if blockers:
+        print(" Blockers (each must reach PASS for SYSTEM READY):")
+        for n, s in blockers:
+            print(f"   - [{s}] {n}")
     print("=" * (width + 34))
     return code
 

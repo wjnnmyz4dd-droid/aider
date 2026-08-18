@@ -446,6 +446,32 @@ void ProcessClaimed(const string sid)
 }
 
 //+------------------------------------------------------------------+
+//| EA LIVENESS HEARTBEAT (observability only — ZERO trade authority). |
+//| Writes health\ea_status.json every timer tick so the host verifier |
+//| (runtime ea_liveness) can PROVE, from an EA-originated artifact,    |
+//| that an EA is running, polling, and bound to the SAME bridge the    |
+//| host selected. It places/claims/executes NOTHING and carries no    |
+//| digest: it authorizes no action, it only reports liveness. A failed |
+//| write is ignored (never affects execution/claim/reconciliation).   |
+//+------------------------------------------------------------------+
+void WriteEaStatus()
+{
+   string json = StringFormat(
+      "{\"account_login\":%I64d,\"artifact\":\"session_edge_ea_status\","
+      "\"bridge_root\":\"%s\",\"data_path\":\"%s\",\"ea_id\":\"%s\","
+      "\"poll_seconds\":%d,\"polling_active\":true,\"schema_version\":1,"
+      "\"timestamp\":\"%s\",\"use_common_folder\":%s}",
+      AccountInfoInteger(ACCOUNT_LOGIN),
+      JsonEscape(BridgeRoot),
+      JsonEscape(TerminalInfoString(TERMINAL_DATA_PATH)),
+      JsonEscape(EaId),
+      PollSeconds,
+      NowIso(),
+      (UseCommonFolder ? "true" : "false"));
+   BridgeWriteTextAtomic(Path(BR_HEALTH, "ea_status.json"), UseCommonFolder, json);
+}
+
+//+------------------------------------------------------------------+
 //| Broker-aware restart recovery. Never submits a second order.      |
 //+------------------------------------------------------------------+
 void Recover()
@@ -502,10 +528,16 @@ int OnInit()
       return INIT_FAILED;
    }
    // The bridge tree must already exist (the strategy engine/producer owns it).
-   if(!BridgeExists(Path(BR_PENDING, ""), UseCommonFolder) &&
-      !BridgeExists(BridgeRoot + "\\outbox", UseCommonFolder))
+   // Probe with FileFindFirst (BridgeDirHasEntries), NOT FileIsExist on a directory
+   // path: FileIsExist checks a FILE and is build-dependent on a folder, which made
+   // this warning fire spuriously even when the producer-created tree was present.
+   // A producer-initialized bridge always has entries under outbox\\ (pending +
+   // claimed) and under the root (outbox/inbox/archive/quarantine/health).
+   if(!BridgeDirHasEntries(BridgeRoot + "\\outbox\\", UseCommonFolder) &&
+      !BridgeDirHasEntries(BridgeRoot + "\\", UseCommonFolder))
       Print("Session Edge EA: bridge_root '", BridgeRoot, "' not found under the terminal Files folder.");
    EventSetTimer(MathMax(1, PollSeconds));
+   WriteEaStatus();                    // emit the first liveness beacon immediately
    Print("Session Edge Execution Adapter initialised. bridge_root=", BridgeRoot);
    return INIT_SUCCEEDED;
 }
@@ -513,6 +545,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTimer()
 {
+   WriteEaStatus();                    // liveness beacon FIRST (observability only)
    if(!g_recovered)                    // reconstruct state from bridge + terminal
    {
       Recover();

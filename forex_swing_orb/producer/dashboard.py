@@ -40,8 +40,24 @@ class RunnerDashboard:
         cycles = r.audit.read_all()
         last_cycle = cycles[-1] if cycles else None
 
+        # Truthful producer state. Demo-safety is still an absolute admission gate
+        # (non-demo -> REFUSED, unchanged), but a verified-demo producer is NOT
+        # blanket-"READY": its real state is derived from the last cycle outcome by
+        # the single owner runtime.operator_status (RUNNING/WAITING/BLOCKED/READY/
+        # ERROR). "READY" here means the last cycle wrote an instruction end-to-end,
+        # never "a trade should exist".
+        from ..runtime import operator_status
+        if not demo_verified:
+            pstate = {"state": "REFUSED", "outcome": None, "reason_codes": (),
+                      "detail": "account not verified DEMO"}
+        else:
+            pstate = operator_status.producer_state(True, last_cycle)
+
         return {
-            "service_state": "READY" if demo_verified else "REFUSED",
+            "service_state": pstate["state"],
+            "producer_state": pstate["state"],
+            "last_reason": ",".join(pstate["reason_codes"]) or None,
+            "producer_state_detail": pstate["detail"],
             "mode": r.config.mode,
             "demo_verified": demo_verified,
             "ftmo_profile_verified": r.config.ftmo_profile_verified,

@@ -71,7 +71,10 @@ def test_health_written_despite_ticket_fault(wired, long_pos):
     wired["manager"].run_cycle(NOW, market={1: 1.10, 2: 1.10, 3: 1.10})
     hp = Path(wired["tmp"] / "manager_health.json")
     assert hp.exists()                                        # cycle-level health still written
-    assert json.loads(hp.read_text())["service_state"] == "READY"
+    # Truthful state (no hard-coded READY): with open positions tracked and only an
+    # ISOLATED per-ticket fault (which must not poison the whole service), the manager
+    # reports a healthy managing state — never ERROR, never a blanket "READY".
+    assert json.loads(hp.read_text())["service_state"] == "MANAGER_MANAGING"
 
 
 def test_reconcile_inflight_failure_isolated(wired, long_pos):

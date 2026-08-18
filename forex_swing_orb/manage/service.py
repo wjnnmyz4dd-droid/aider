@@ -104,15 +104,29 @@ class ManagerService:
         if model is not None:
             from ..session.model import session_snapshot
             sess = session_snapshot(model, now, getattr(self, "_capability", None))
-        return {
-            "service_state": "READY",
+        facts = {
             "terminal_connected": self._safe_connected(),
             "tracked_tickets": len(self.pm.states),
             "in_flight_count": len(inflight),
-            "in_flight": inflight,
             "unresolved_reconciliation_count": len(inflight),
-            "recovery_reconciliation_required": recovery,
             "recovery_reconciliation_count": len(recovery),
+            "last_error": self._last_error,
+        }
+        # Truthful manager state (no hard-coded READY): the single owner of the
+        # manager health-vocabulary mapping is runtime.operator_status. IDLE and
+        # MANAGING are healthy; ERROR/DISCONNECTED/RECONCILIATION_REQUIRED are not.
+        from ..runtime import operator_status
+        mstate = operator_status.manager_state(True, facts)
+        return {
+            "service_state": mstate["state"],
+            "service_state_detail": mstate["detail"],
+            "terminal_connected": facts["terminal_connected"],
+            "tracked_tickets": facts["tracked_tickets"],
+            "in_flight_count": facts["in_flight_count"],
+            "in_flight": inflight,
+            "unresolved_reconciliation_count": facts["unresolved_reconciliation_count"],
+            "recovery_reconciliation_required": recovery,
+            "recovery_reconciliation_count": facts["recovery_reconciliation_count"],
             "tracked_signals": list(self.pm.states.keys()),
             # Phase 9A: session context is for AUDIT/REPORTING only — protective
             # management (BE/lock/trail/authorized close) is NEVER blocked by session.

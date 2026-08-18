@@ -125,6 +125,92 @@ def test_preflight_reuses_canonical_authorities_not_reimplemented():
     assert "bridge.paths" in src or "BridgePaths" in src
 
 
+# --------------------------------------------------------------------------- #
+# TRUE READINESS: EA liveness + end-to-end + SYSTEM STATUS (spec §M) with a
+# resolved config (bridge tree + heartbeat + anchor seeded in a tmp terminal).
+# --------------------------------------------------------------------------- #
+from datetime import datetime, timedelta, timezone                   # noqa: E402
+from forex_swing_orb.bridge import serialize                         # noqa: E402
+from forex_swing_orb.bridge.paths import BridgePaths                 # noqa: E402
+
+NOW = datetime(2026, 1, 7, 10, 0, 0, tzinfo=timezone.utc)   # matches conftest.NOW
+
+
+def _apply_env(monkeypatch, env):
+    for k, v in env.items():
+        monkeypatch.setenv(k, str(v))
+    # ensure no stale external config file overrides the env
+    monkeypatch.delenv("SESSION_EDGE_CONFIG", raising=False)
+
+
+def _write_heartbeat(bridge_root, ts, *, poll_seconds=5, polling_active=True,
+                     bridge_name="session_edge_bridge", use_common=False):
+    rec = {"artifact": "session_edge_ea_status", "schema_version": 1,
+           "ea_id": "SessionEdgeExecutionEA", "timestamp": serialize.iso_utc(ts),
+           "bridge_root": bridge_name, "use_common_folder": use_common,
+           "poll_seconds": poll_seconds, "data_path": None, "account_login": 123,
+           "polling_active": polling_active}
+    hp = Path(bridge_root) / "health" / "ea_status.json"
+    hp.parent.mkdir(parents=True, exist_ok=True)
+    hp.write_text(serialize.canonical_json(rec), encoding="utf-8")
+
+
+def _by(results):
+    return {name: status for name, status, _ in results}
+
+
+def test_preflight_ea_liveness_pass_and_e2e_with_fresh_heartbeat(env_config, monkeypatch):
+    env, paths = env_config()                       # seeds a valid daily anchor
+    BridgePaths(paths["bridge_root"]).ensure()      # producer-created bridge tree
+    _write_heartbeat(paths["bridge_root"], NOW)     # fresh, same-bridge EA beat
+    _apply_env(monkeypatch, env)
+    by = _by(P.run_checks(now=NOW))
+    assert by["EA liveness (bridge heartbeat)"] == P.PASS
+    assert by["bridge END-TO-END (Python + live EA)"] == P.PASS
+    assert by["daily anchor (today, visibility only)"] == P.PASS
+
+
+def test_preflight_ea_liveness_env_and_e2e_not_ready_when_no_heartbeat(env_config, monkeypatch):
+    env, paths = env_config()
+    BridgePaths(paths["bridge_root"]).ensure()      # bridge present, but NO EA beat
+    _apply_env(monkeypatch, env)
+    by = _by(P.run_checks(now=NOW))
+    # Python filesystem present, yet without a live EA beat this is NOT end-to-end.
+    assert by["bridge folders"] == P.PASS
+    assert by["EA liveness (bridge heartbeat)"] == P.ENV
+    assert by["bridge END-TO-END (Python + live EA)"] == P.ENV
+
+
+def test_preflight_ea_liveness_fail_when_stale(env_config, monkeypatch):
+    env, paths = env_config()
+    BridgePaths(paths["bridge_root"]).ensure()
+    _write_heartbeat(paths["bridge_root"], NOW - timedelta(seconds=600))  # stale
+    _apply_env(monkeypatch, env)
+    by = _by(P.run_checks(now=NOW))
+    assert by["EA liveness (bridge heartbeat)"] == P.FAIL
+    # a stale/stopped EA makes end-to-end a hard FAIL, never a false green
+    assert by["bridge END-TO-END (Python + live EA)"] == P.FAIL
+
+
+def test_preflight_daily_anchor_env_when_absent(env_config, monkeypatch):
+    env, paths = env_config(seed_anchor=False)      # mid-day cold start: no anchor
+    BridgePaths(paths["bridge_root"]).ensure()
+    _apply_env(monkeypatch, env)
+    by = _by(P.run_checks(now=NOW))
+    # visibility only: absent anchor is ENV (do NOT auto-create; producer fails closed)
+    assert by["daily anchor (today, visibility only)"] == P.ENV
+
+
+def test_preflight_system_status_not_ready_without_ea(env_config, monkeypatch, capsys):
+    env, paths = env_config()
+    BridgePaths(paths["bridge_root"]).ensure()
+    _apply_env(monkeypatch, env)
+    P.main()
+    out = capsys.readouterr().out
+    assert "SYSTEM STATUS: NOT READY" in out
+    assert "EA liveness (bridge heartbeat)" in out          # listed as a blocker
+
+
 def test_install_tooling_does_not_import_phantom():
     for mod in ("preflight.py", "deploy_manifest.py"):
         src = (RT / mod).read_text()
