@@ -52,6 +52,12 @@ class BridgeObservation:
     oldest_unacked_age_sec: float = None
     stale_signal_ids: tuple = ()      # signal_ids counted as missing-ack
     outstanding_signal_ids: tuple = ()
+    # H-1: aggregate DECLARED risk_fraction of the outstanding (pending+claimed) entry
+    # intents — the account-level monetary reservation for unfilled/same-cycle risk
+    # (× initial_balance downstream). ``outstanding_risk_unverifiable`` forces the
+    # committed-risk aggregation to FAIL CLOSED (never a silent zero).
+    outstanding_risk_fraction: float = 0.0
+    outstanding_risk_unverifiable: bool = False
 
     def as_dict(self):
         return {
@@ -61,6 +67,8 @@ class BridgeObservation:
             "missing_ack_count": int(self.missing_ack_count),
             "oldest_unacked_age_sec": self.oldest_unacked_age_sec,
             "stale_signal_ids": list(self.stale_signal_ids),
+            "outstanding_risk_fraction": float(self.outstanding_risk_fraction),
+            "outstanding_risk_unverifiable": bool(self.outstanding_risk_unverifiable),
         }
 
 
@@ -68,12 +76,25 @@ def _unhealthy(reason, *, outstanding_count=0, outstanding_symbols=(),
                outstanding_signal_ids=()):
     """An unhealthy observation still fails closed on ACK: unknown bridge state can
     never lower missing_ack_count to zero, so a positive stale count is reported and
-    capacity is still reserved for any intents we could enumerate."""
+    capacity is still reserved for any intents we could enumerate. H-1: it also marks
+    the outstanding monetary risk UNVERIFIABLE so the committed-risk aggregation fails
+    closed (an unhealthy bridge can never authorize new risk via a silent zero)."""
     return BridgeObservation(
         healthy=False, reason=reason, outstanding_count=outstanding_count,
         outstanding_symbols=tuple(outstanding_symbols), missing_ack_count=1,
         oldest_unacked_age_sec=None, stale_signal_ids=(),
-        outstanding_signal_ids=tuple(outstanding_signal_ids))
+        outstanding_signal_ids=tuple(outstanding_signal_ids),
+        outstanding_risk_fraction=0.0, outstanding_risk_unverifiable=True)
+
+
+def _risk_fraction_of(obj):
+    """DECLARED per-trade risk fraction of one outstanding instruction, or None when it
+    is missing / non-finite / non-positive (-> caller fails closed; never a silent 0)."""
+    import math
+    v = obj.get("risk_fraction")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        return None
+    return float(v)
 
 
 def _terminal_evidence(paths, sid):
@@ -167,6 +188,8 @@ def observe_entry_bridge(paths, now):
 
     outstanding_ids = {}          # signal_id -> {"state","symbol"}; claimed wins over pending
     outstanding_syms = set()
+    outstanding_risk = {}         # H-1: signal_id -> DECLARED risk_fraction (deduped)
+    risk_unverifiable = False     # H-1: an outstanding intent whose risk cannot be read
     missing = []
     oldest_age = None
     corrupt = None
@@ -212,6 +235,16 @@ def observe_entry_bridge(paths, now):
             outstanding_ids[sid] = {"state": eff_state, "symbol": symbol}
             if symbol:
                 outstanding_syms.add(symbol)
+            # H-1: reserve this outstanding intent's DECLARED monetary risk. A readable
+            # schema-3 instruction carries a valid risk_fraction; a missing/invalid one
+            # marks the outstanding RISK unverifiable (so the committed-risk aggregation
+            # fails closed) WITHOUT changing the H5 ACK/health verdict — the two concerns
+            # are deliberately kept separate. It is never silently counted as zero.
+            rf = _risk_fraction_of(obj)
+            if rf is None:
+                risk_unverifiable = True
+            else:
+                outstanding_risk[sid] = rf
             # ACK liveness only applies to still-unclaimed (PENDING) intents; a CLAIMED
             # intent is acknowledged by the atomic claim.
             if eff_state == "PENDING":
@@ -244,4 +277,6 @@ def observe_entry_bridge(paths, now):
         outstanding_symbols=tuple(sorted(outstanding_syms)),
         missing_ack_count=len(missing), oldest_unacked_age_sec=oldest_age,
         stale_signal_ids=tuple(sorted(missing)),
-        outstanding_signal_ids=outstanding_all_ids)
+        outstanding_signal_ids=outstanding_all_ids,
+        outstanding_risk_fraction=sum(outstanding_risk.values()),
+        outstanding_risk_unverifiable=risk_unverifiable)

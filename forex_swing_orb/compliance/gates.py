@@ -24,6 +24,28 @@ def _no(stage, codes, evidence=None):
     return GateVerdict(stage, False, tuple(codes), evidence or {})
 
 
+def _committed_risk(account_state):
+    """H-1: aggregate account risk already committed BEFORE the current candidate
+    (open-position downside + outstanding + same-cycle authorized intents), supplied by
+    the runner as an account-state field. Returns ``(amount, reason)``:
+      * ``reason`` is None and ``amount>=0`` when the reservation is trustworthy;
+      * ``reason`` is a non-None string (caller FAILS CLOSED) when a reservation is
+        present but unverifiable / non-finite / negative — NEVER a silent zero;
+      * an ABSENT field yields ``(0.0, None)`` — backward compatible: a legacy or
+        single-candidate caller reserves nothing extra and behaves exactly as before.
+    This adds NO second risk authority: it only reads a reserved amount the runner
+    computed from the existing sizing/lifecycle facts; the gate still owns the decision.
+    """
+    if account_state.get("committed_risk_unverifiable"):
+        return 0.0, "committed_risk_unverifiable"
+    if "committed_risk_at_stop" not in account_state:
+        return 0.0, None
+    c = finite(account_state.get("committed_risk_at_stop"))
+    if c is None or c < 0:
+        return 0.0, "committed_risk_at_stop"
+    return c, None
+
+
 # -- Stage 1: Kill switch ---------------------------------------------------
 def gate_kill_switch(kill_switch):
     if bool(kill_switch):
@@ -133,6 +155,12 @@ def gate_ftmo(candidate, account_state, profile, cfg, session_cfg, now):
     risk_amt = candidate_risk_amount(candidate, profile)
     if equity is None or risk_amt is None:
         return _no(Stage.FTMO, [ReasonCode.UNKNOWN_STATE], {"missing": "equity/risk"})
+    # H-1: the AGGREGATE committed-risk projection (open + outstanding + same-cycle) is
+    # enforced in gate_risk (which runs AFTER gate_broker_health, so a genuinely
+    # unhealthy bridge is still reported with its specific reason). gate_ftmo keeps the
+    # single-candidate projection AND the current-equity level checks below; because the
+    # internal daily level gate_risk aggregates against is strictly tighter (safer) than
+    # the official daily level, protecting the internal level protects the official one.
     projected = equity - risk_amt        # worst-case post-trade equity (breach iff < level)
 
     odl, idl = levels["official_daily_level"], levels["internal_daily_level"]
@@ -315,11 +343,16 @@ def gate_risk(candidate, account_state, profile, cfg, now, broker_health=None):
                     "volume": volume})
 
     # daily-buffer defense-in-depth uses the DECLARED amount (>= actual loss), so this
-    # check is never weakened by the tighter authoritative loss figure.
-    projected = equity - risk_amt        # (FTMO gate catches first)
+    # check is never weakened by the tighter authoritative loss figure. H-1: also
+    # reserve already-committed account risk (open + outstanding + same-cycle) here,
+    # consistent with gate_ftmo; fail closed if it cannot be verified.
+    committed, c_reason = _committed_risk(account_state)
+    if c_reason is not None:
+        return _no(Stage.RISK, [ReasonCode.UNKNOWN_STATE], {"missing": c_reason})
+    projected = equity - committed - risk_amt        # (FTMO gate catches first)
     if projected < levels["internal_daily_level"]:
         return _no(Stage.RISK, [ReasonCode.RISK_PROJECTED_BREACH],
-                   {"projected_post_trade_equity": projected,
+                   {"projected_post_trade_equity": projected, "committed_risk_at_stop": committed,
                     "internal_daily_level": levels["internal_daily_level"]})
     return _ok(Stage.RISK, {"risk_amount": risk_amt, "loss_at_stop": loss,
                             "volume": volume, "projected_post_trade_equity": projected})

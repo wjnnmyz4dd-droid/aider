@@ -56,6 +56,10 @@ class MockAccountProvider(AccountStateProvider):
             "initial_balance": 100000.0, "day_start_balance": 100000.0,
             "day_start_equity": 100000.0,          # H2/P3A-3: complete anchor
             "floating_pl": 0.0, "swaps": 0.0, "commissions": 0.0,
+            # H-1: mirror the live account-snapshot contract (no open positions ->
+            # zero committed open risk, verifiable) so the runner's committed-risk
+            # aggregation has authoritative inputs.
+            "open_risk_at_stop": 0.0, "open_risk_unverifiable": False,
             "trading_day": None, "open_position_count": 0, "open_symbols": (),
             "terminal_connected": True, "as_of": serialize.iso_utc(now),
             "is_demo": True, "account_type": "DEMO",

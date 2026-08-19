@@ -36,7 +36,7 @@ def _write(paths, sid, *, symbol="EURUSD.FX", gen=GEN, exp=EXP_FRESH, where="pen
     d = {"pending": paths.pending, "claimed": paths.claimed}[where]
     if body is None:
         body = serialize.canonical_json({
-            "signal_id": sid, "symbol": symbol,
+            "signal_id": sid, "symbol": symbol, "risk_fraction": 0.0025,  # H-1: real intent risk
             "generated_timestamp": serialize.iso_utc(gen),
             "expiration_timestamp": serialize.iso_utc(exp)})
     (d / (sid + ".json")).write_text(body, encoding="utf-8")

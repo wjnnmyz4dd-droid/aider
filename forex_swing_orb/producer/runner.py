@@ -174,6 +174,27 @@ class ProducerRunner:
             eff["open_position_count"] = broker_open + int(obs.outstanding_count)
         broker_syms = acct.get("open_symbols") or ()
         eff["open_symbols"] = tuple(set(broker_syms) | set(obs.outstanding_symbols))
+        # H-1: aggregate committed ACCOUNT RISK before this candidate = worst-case open-
+        # position downside + DECLARED risk of all outstanding intents (pending+claimed,
+        # which — because each authorized instruction is written to pending BEFORE the
+        # next candidate is observed — already INCLUDES same-cycle authorized candidates
+        # and survives restart). The compliance gate subtracts this (plus the current
+        # candidate's own risk) from equity in the daily/static projection. Plumbing
+        # only: the runner never decides FTMO eligibility, it only reserves. Any
+        # unverifiable component (unhealthy bridge, unreadable outstanding risk, or an
+        # unquantifiable open position) sets committed_risk_at_stop=None so the gate
+        # FAILS CLOSED — never a silent zero.
+        from ..compliance.contract import finite
+        initial = finite(getattr(self.config.compliance.profile, "initial_balance", None))
+        open_risk = acct.get("open_risk_at_stop")
+        open_risk = finite(open_risk) if open_risk is not None else None
+        if (not obs.healthy or obs.outstanding_risk_unverifiable
+                or acct.get("open_risk_unverifiable") or initial is None or open_risk is None):
+            eff["committed_risk_at_stop"] = None
+            eff["committed_risk_unverifiable"] = True
+        else:
+            eff["committed_risk_at_stop"] = open_risk + float(obs.outstanding_risk_fraction) * initial
+            eff["committed_risk_unverifiable"] = False
         return eff
 
     def _size_volume(self, candidate, bh):

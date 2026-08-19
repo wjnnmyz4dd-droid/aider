@@ -499,6 +499,11 @@ class Mt5AccountStateProvider(AccountStateProvider):
         positions = self.client.positions_get() or ()
         balance = float(ai.balance)
         equity = float(ai.equity)
+        # H-1: worst-case remaining downside of CURRENT open positions (monetary),
+        # with an explicit unverifiable flag so a position whose stop risk cannot be
+        # quantified (no SL / no price / no tick metadata) fails the committed-risk
+        # aggregation CLOSED rather than being silently counted as zero.
+        open_risk_amount, open_risk_unverifiable = self._open_risk(positions)
         # PR-3A.3: a READ-ONLY broker-history evidence source for cold-start anchor
         # reconstruction. Built lazily — the tracker invokes it ONLY on a mid-day cold
         # start (no existing anchor, rollover not observed), never on a normal cycle, so
@@ -536,7 +541,8 @@ class Mt5AccountStateProvider(AccountStateProvider):
             "floating_pl": float(getattr(ai, "profit", 0.0)),
             "swaps": sum(float(getattr(p, "swap", 0.0) or 0.0) for p in positions),
             "commissions": sum(float(getattr(p, "commission", 0.0) or 0.0) for p in positions),
-            "open_risk_at_stop": self._open_risk(positions),
+            "open_risk_at_stop": open_risk_amount,
+            "open_risk_unverifiable": open_risk_unverifiable,
             "open_position_count": len(positions),
             "open_symbols": tuple(sorted(self.map.to_canonical(p.symbol) for p in positions)),
             "terminal_connected": connected,
@@ -602,26 +608,36 @@ class Mt5AccountStateProvider(AccountStateProvider):
 
     def _open_risk(self, positions):
         """Worst-case equity drop if every open position hits its stop (money from
-        CURRENT price to SL). Aggregation of broker fields; no strategy/decision."""
+        CURRENT price to SL). Aggregation of broker fields; no strategy/decision.
+
+        Returns ``(total, unverifiable)``. ``unverifiable`` is True when ANY open
+        position's stop risk cannot be quantified authoritatively — no usable SL
+        (unbounded downside), no current price, or missing tick metadata (H-1 / §D/§M).
+        Such a position is NEVER silently counted as zero: the caller reserves the
+        partial total AND fails the committed-risk aggregation closed."""
         total = 0.0
+        unverifiable = False
         for p in positions:
             sl = float(getattr(p, "sl", 0.0) or 0.0)
-            if sl <= 0:
-                continue
             cur = float(getattr(p, "price_current", 0.0) or 0.0)
             vol = float(getattr(p, "volume", 0.0) or 0.0)
             si = self.client.symbol_info(p.symbol)
             tick_size = float(getattr(si, "trade_tick_size", 0.0) or 0.0) if si else 0.0
             tick_value = float(getattr(si, "trade_tick_value", 0.0) or 0.0) if si else 0.0
+            # a position with no usable stop, no current price, or no tick metadata has
+            # UNQUANTIFIABLE downside -> mark unverifiable (fail closed), never zero.
+            if sl <= 0 or cur <= 0 or vol <= 0 or tick_size <= 0 or tick_value <= 0:
+                unverifiable = True
+                continue
             if p.type == mc.POSITION_TYPE_BUY:
                 dist = max(0.0, cur - sl)
             else:
                 dist = max(0.0, sl - cur)
-            if tick_size > 0 and tick_value > 0:
-                total += (dist / tick_size) * tick_value * vol
-            else:
-                total += dist * vol                     # degraded fallback
-        return total
+            total += (dist / tick_size) * tick_value * vol
+        if not math.isfinite(total):
+            unverifiable = True
+            total = 0.0
+        return total, unverifiable
 
 
 # --------------------------------------------------------------------------- #
