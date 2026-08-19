@@ -254,6 +254,11 @@ class ManagerService:
         decision per ticket. One-in-flight and restart rules are preserved."""
         from ..runtime import adoption
         self.discover_and_register(now)
+        # M-5: heal any crash orphan (in-flight marker persisted before its
+        # instruction was durably written) at the top of the cycle, so a stranded
+        # ticket can be managed again this same cycle. Proven-orphan-only; never
+        # clears a genuine in-flight (see BridgeMt5Adapter.recover_orphans).
+        self.adapter.recover_orphans(now)
         truth = getattr(self, "_truth", None)
         if truth is None:
             return self.run_cycle(now)

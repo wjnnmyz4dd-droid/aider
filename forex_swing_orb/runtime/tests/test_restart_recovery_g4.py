@@ -292,7 +292,12 @@ def test_unresolved_inflight_remains_reconciliation_required(env_config):
     _archive_enter(paths)                                 # genuinely new -> register
     mgr.discover_and_register(NOW)
     assert mgr.pm.states[SID]["phase"] == StopPhase.INITIAL
-    mgr.ledger.set_inflight(TICKET, "cafecafecafecafe")  # simulate unresolved in-flight
+    # GENUINE unresolved in-flight: its instruction is durably present in the
+    # bridge (pending). Distinct from an M-5 orphan (no instruction ever written,
+    # which self-heals) — a genuine in-flight must remain reconciliation-required.
+    mid = "cafecafecafecafe"
+    (mgr.paths.pending / f"{mid}.json").write_text("{}", encoding="utf-8")
+    mgr.ledger.set_inflight(TICKET, mid)                 # unresolved in-flight
     mgr.run_cycle(NOW, market={TICKET: 1.10050})
     st = mgr.status(NOW)
     assert st["in_flight_count"] == 1 and st["unresolved_reconciliation_count"] == 1

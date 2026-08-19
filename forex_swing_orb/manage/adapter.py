@@ -146,8 +146,19 @@ class BridgeMt5Adapter:
             waited += self.poll_interval_sec
 
     def reconcile_inflight(self, ticket):
-        """Clear a persisted in-flight entry if its manage_id has since reached a
-        terminal result (the uncertain->converged path). Returns the status or None."""
+        """Resolve a persisted in-flight entry. Returns the terminal status if one
+        converged, else None. Two convergent paths:
+
+        1. A terminal result has arrived (the uncertain->converged path): record
+           it (which clears in-flight).
+        2. M-5 proven orphan: the in-flight marker persisted but its manage_id
+           exists NOWHERE durable in the bridge (crash between ``set_inflight`` and
+           the atomic ``write_manage_instruction``). Nothing reached the EA/broker,
+           so the instruction never happened — clearing is duplicate-safe and lets
+           the PositionManager re-decide fresh through the normal broker-verified
+           emit path. Conservative: only clear on POSITIVE proof of absence
+           everywhere (``_bridge_has`` fails closed on any read error), never on
+           mere elapsed time and never while any instruction/result exists."""
         mid = self.ledger.get_inflight(ticket)
         if mid is None:
             return None
@@ -156,9 +167,63 @@ class BridgeMt5Adapter:
             self.ledger.record_terminal(mid, ticket, res["status"],
                                         self.ledger.seq.get(str(ticket), 0))
             return res["status"]
+        if res is None and not self._bridge_has(mid):
+            self.ledger.clear_inflight(ticket)       # proven orphan -> self-heal
+            self._audit_orphan(mid, ticket)
         return None
 
+    def recover_orphans(self, now=None):
+        """Startup/cycle sweep: reconcile every persisted in-flight entry so a
+        crash orphan is healed at the top of the autonomous cycle. A proven orphan
+        is cleared; a genuine in-flight (instruction present / result pending) is
+        left untouched for the normal reconcile/recover path. Returns the list of
+        tickets whose in-flight was cleared this sweep (observational)."""
+        cleared = []
+        for tkey in list(self.ledger.inflight.keys()):
+            if self.ledger.inflight.get(tkey) is None:
+                continue
+            self.reconcile_inflight(tkey)
+            if self.ledger.get_inflight(tkey) is None:
+                cleared.append(tkey)
+        return cleared
+
     # -- helpers ------------------------------------------------------------
+    def _bridge_has(self, manage_id):
+        """True iff ``manage_id`` appears in ANY durable bridge location: a pending
+        or claimed instruction, an archived instruction (applied/rejected/closed),
+        a quarantined instruction, or a result file. Absence everywhere proves the
+        instruction was never written (an M-5 orphan). Any OS error -> True (fail
+        closed: an unreadable bridge is never treated as proof of absence)."""
+        name = P.instruction_name(manage_id)
+        try:
+            for d in (self.paths.pending, self.paths.claimed,
+                      self.paths.archive_applied, self.paths.archive_rejected,
+                      self.paths.archive_closed, self.paths.quarantine):
+                if (d / name).exists():
+                    return True
+            if self.paths.results.exists():
+                for _ in self.paths.results.glob(f"{manage_id}.*.json"):
+                    return True
+            return False
+        except OSError:
+            return True
+
+    def _audit_orphan(self, manage_id, ticket):
+        """Observational-only diagnostic recording that a proven-orphan in-flight
+        marker was cleared. Best-effort: observability must NEVER break the
+        management path, so every failure is swallowed."""
+        from ..bridge.atomic import append_line_fsync
+        try:
+            now = self._now_fn() if self._now_fn is not None else None
+            rec = {"kind": "manage_orphan_cleared", "manage_id": manage_id,
+                   "ticket": str(ticket), "outcome": "INFLIGHT_ORPHAN_CLEARED",
+                   "timestamp": serialize.iso_utc(now) if now is not None else None,
+                   "note": ("no durable instruction or result found for a persisted "
+                            "in-flight marker; cleared for fresh PM re-decision")}
+            append_line_fsync(self.paths.audit_log, serialize.canonical_json(rec))
+        except Exception:
+            pass
+
     def _map_status(self, status, ticket):
         S = MC.ManageStatus
         if status in (S.APPLIED, S.ALREADY_APPLIED, S.NO_OP_CLOSED):

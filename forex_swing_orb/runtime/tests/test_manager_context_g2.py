@@ -286,7 +286,13 @@ def test_kill_switch_blocks_trail_but_allows_protective_close(tmp_path):
 def test_one_inflight_enforced_with_context(tmp_path):
     mt5, mgr = _manager(tmp_path)
     _drive_to_locked(mt5, mgr)
-    mgr.ledger.set_inflight(TICKET, "feedfeedfeedfeed")        # simulate unresolved in-flight
+    # a GENUINE unresolved in-flight: the instruction is durably present in the
+    # bridge (pending) but not yet resolved. This is distinct from an M-5 orphan
+    # (no instruction ever written), which self-heals; a genuine in-flight must
+    # still hold the ticket and NOT be bypassed by rich market context.
+    mid = "feedfeedfeedfeed"
+    (mgr.paths.pending / f"{mid}.json").write_text("{}", encoding="utf-8")
+    mgr.ledger.set_inflight(TICKET, mid)                       # unresolved in-flight
     mgr.run_cycle(NOW, market={TICKET: 1.10400}, swings={TICKET: 1.10250},
                   structures={TICKET: "hl-1"}, bars_since={TICKET: 1})
     assert mgr.ledger.get_inflight(TICKET) is not None         # not bypassed by context
