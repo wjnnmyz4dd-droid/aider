@@ -60,12 +60,14 @@ def _closed_trade(pid, *, profit=0.0, commission=0.0, swap=0.0, buy=True,
 
 
 def _ev(*, now=W_NOW, midnight=W_MIDNIGHT, current_balance=100000.0, deals=None,
-        open_positions=None, account_id=123, history_ok=True, margin_days=7):
+        open_positions=None, account_id=123, history_ok=True, margin_days=7,
+        positions_verified=True):
     return {"history_ok": history_ok, "current_balance": current_balance,
             "midnight_utc": midnight,
             "history_from_utc": midnight - timedelta(days=margin_days),
             "account_id": account_id, "deals": deals or [],
-            "open_positions": open_positions or []}
+            "open_positions": open_positions or [],
+            "positions_verified": positions_verified}
 
 
 def _rc(ev, *, now=W_NOW, tday=W_TDAY, acct=123):
@@ -228,6 +230,13 @@ def test_U17_history_query_failure_fails_closed():
     assert f is None and r == R.R_RECON_HISTORY_UNAVAILABLE
 
 
+def test_M1_positions_unverified_fails_closed():
+    # UNKNOWN position state (positions_verified False) fails closed even with complete,
+    # flat deal history — history alone cannot prove no position spans midnight.
+    f, r = _rc(_ev(positions_verified=False))
+    assert f is None and r == R.R_RECON_POSITIONS_UNAVAILABLE
+
+
 def test_U18_incomplete_history_window_fails_closed():
     ev = _ev()
     ev["history_from_utc"] = W_MIDNIGHT + timedelta(hours=1)   # window starts AFTER midnight
@@ -357,6 +366,42 @@ def test_R_autumn_dst_transition_day_boundary(tmp_path):
     now = datetime(2026, 10, 25, 10, 0, tzinfo=UTC)
     snap = _provider(c, tmp_path).snapshot(now)
     assert snap["daily_anchor_unavailable"] is False and snap["day_start_balance"] == 100000.0
+
+
+def test_M1_positions_query_none_fails_closed(tmp_path):
+    # M-1: a FAILED positions query (None = UNKNOWN state) must NEVER be treated as an
+    # empty (flat) book. A flat-history cold start that would otherwise reconstruct must
+    # fail closed when position state is unknown -> R_ACCOUNT_ANCHOR_UNAVAILABLE.
+    c = _client(balance=100000.0)
+    c.positions_unavailable = True                      # positions_get() -> None (UNKNOWN)
+    snap = _provider(c, tmp_path).snapshot(W_NOW)
+    assert snap["daily_anchor_unavailable"] is True
+    assert snap["daily_anchor_reason"] == R.R_RECON_POSITIONS_UNAVAILABLE
+
+
+def test_M1_known_empty_positions_still_reconstructs(tmp_path):
+    # a KNOWN-empty book (positions_get() -> ()) with flat history still reconstructs —
+    # the fix distinguishes UNKNOWN (None) from KNOWN-EMPTY (()), never over-blocks.
+    c = _client(balance=100000.0)                       # no positions, no deals -> flat
+    snap = _provider(c, tmp_path).snapshot(W_NOW)
+    assert snap["daily_anchor_unavailable"] is False
+    assert snap["daily_anchor_source"] == "BROKER_HISTORY_RECONSTRUCTION"
+
+
+def test_M1_existing_anchor_reused_despite_positions_none(tmp_path):
+    # existing valid same-day anchor + None positions -> existing anchor reused,
+    # reconstruction NEVER attempted, anchor NOT erased/rewritten.
+    from forex_swing_orb.live.providers import DailyAnchorTracker
+    p = str(tmp_path / "anchor.json")
+    tr = DailyAnchorTracker(p)
+    tr._records[W_TDAY] = _seed_rec(W_TDAY, 100000.0, 100000.0)
+    tr._sync_aggregate()
+    c = _client(balance=55555.0); c.positions_unavailable = True
+    prov = Mt5AccountStateProvider(c, initial_balance=100000.0,
+                                   anchor_tracker=DailyAnchorTracker(p))
+    snap = prov.snapshot(W_NOW)
+    assert snap["day_start_balance"] == 100000.0        # reused, not recomputed from 55555
+    assert snap["daily_anchor_unavailable"] is False
 
 
 def test_U29_pre_midnight_deal_excluded(tmp_path):

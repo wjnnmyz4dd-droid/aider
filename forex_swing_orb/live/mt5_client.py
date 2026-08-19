@@ -202,7 +202,13 @@ class FakeMt5Client:
     def account_info(self):
         return self.account
 
+    # Set True in a test to simulate a rejected/errored positions query (-> None),
+    # i.e. UNKNOWN position state (never to be confused with a known-empty book).
+    positions_unavailable = False
+
     def positions_get(self, symbol=None):
+        if self.positions_unavailable:
+            return None
         if symbol is not None:
             return tuple(p for p in self.positions if p.symbol == symbol)
         return tuple(self.positions)

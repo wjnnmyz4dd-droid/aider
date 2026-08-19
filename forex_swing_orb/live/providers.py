@@ -80,6 +80,7 @@ class DailyAnchorTracker:
     R_RECON_NONFINITE = "recon_nonfinite_value"                  # NaN/inf balance or result
     R_RECON_IDENTITY = "recon_account_identity_mismatch"          # evidence account != expected
     R_RECON_NO_EVIDENCE = "recon_evidence_unavailable"           # cold start but no evidence source
+    R_RECON_POSITIONS_UNAVAILABLE = "recon_positions_unavailable"  # M-1: positions_get UNKNOWN (None/err)
 
     # Anchor provenance (observational metadata; compliance consumes the value the same
     # way regardless of source). NOT a second authority.
@@ -360,6 +361,11 @@ def reconstruct_cold_start_anchor(*, tday, now, evidence, expected_account_id=No
         return None, R.R_RECON_NO_EVIDENCE
     if not evidence.get("history_ok"):
         return None, R.R_RECON_HISTORY_UNAVAILABLE
+    # M-1: the flat-book proof requires KNOWN current position state. A failed/errored
+    # positions query (UNKNOWN) can NEVER be treated as an empty book — complete deal
+    # history alone does not prove no position spans midnight, so fail closed.
+    if not evidence.get("positions_verified"):
+        return None, R.R_RECON_POSITIONS_UNAVAILABLE
     midnight = evidence.get("midnight_utc")
     hist_from = evidence.get("history_from_utc")
     # every instant must be tz-aware UTC; now strictly after midnight (mid-day start)
@@ -496,14 +502,26 @@ class Mt5AccountStateProvider(AccountStateProvider):
             return None                                 # fail closed
         ti = self.client.terminal_info()
         connected = getattr(ti, "connected", None) if ti is not None else None
-        positions = self.client.positions_get() or ()
+        # M-1: distinguish UNKNOWN position state from a KNOWN-empty book. positions_get()
+        # returns None / raises on a failed query (UNKNOWN) and a (possibly empty) iterable
+        # on success. UNKNOWN must NEVER be coerced to an empty book — it makes open risk
+        # unverifiable (H-1 fails closed) and the flat-book proof unverifiable (M-1 fails
+        # closed) without erasing any existing anchor.
+        try:
+            raw_positions = self.client.positions_get()
+        except Exception:                               # noqa: BLE001 - query error -> UNKNOWN
+            raw_positions = None
+        positions_known = isinstance(raw_positions, (list, tuple))
+        positions = tuple(raw_positions) if positions_known else ()
         balance = float(ai.balance)
         equity = float(ai.equity)
-        # H-1: worst-case remaining downside of CURRENT open positions (monetary),
-        # with an explicit unverifiable flag so a position whose stop risk cannot be
-        # quantified (no SL / no price / no tick metadata) fails the committed-risk
-        # aggregation CLOSED rather than being silently counted as zero.
+        # H-1: worst-case remaining downside of CURRENT open positions (monetary), with an
+        # explicit unverifiable flag so a position whose stop risk cannot be quantified
+        # (no SL / no price / no tick metadata) — or an UNKNOWN positions query (M-1) —
+        # fails the committed-risk aggregation CLOSED rather than being counted as zero.
         open_risk_amount, open_risk_unverifiable = self._open_risk(positions)
+        if not positions_known:
+            open_risk_unverifiable = True
         # PR-3A.3: a READ-ONLY broker-history evidence source for cold-start anchor
         # reconstruction. Built lazily — the tracker invokes it ONLY on a mid-day cold
         # start (no existing anchor, rollover not observed), never on a normal cycle, so
@@ -511,7 +529,7 @@ class Mt5AccountStateProvider(AccountStateProvider):
         # it never trades. Correctness of the reconstruction depends on the system-wide
         # B2 UTC-timebase invariant (deal/position times in UTC), validated separately.
         def _cold_start_evidence():
-            return self._cold_start_evidence(now, ai, balance, positions)
+            return self._cold_start_evidence(now, ai, balance, positions, positions_known)
         # M3/H2: anchor day-start BALANCE and EQUITY at the Prague rollover; on a mid-day
         # cold start, reconstruct from authoritative broker history if provable.
         rec = self.anchor.record(now, balance, equity=equity,
@@ -561,10 +579,13 @@ class Mt5AccountStateProvider(AccountStateProvider):
     # evidence); reconstruction fails closed whenever an IN leg is missing regardless.
     COLD_START_HISTORY_MARGIN_SEC = 7 * 24 * 3600
 
-    def _cold_start_evidence(self, now, ai, balance, positions):
+    def _cold_start_evidence(self, now, ai, balance, positions, positions_known):
         """READ-ONLY evidence for cold-start anchor reconstruction. Returns the
         normalized evidence dict, or ``{"history_ok": False}`` when the range query is
-        rejected (-> the tracker fails closed). Fetches history only; never trades."""
+        rejected (-> the tracker fails closed). Fetches history only; never trades.
+        ``positions_known`` carries the M-1 distinction: a FAILED positions query
+        (UNKNOWN) sets ``positions_verified=False`` so the flat-book proof fails closed
+        rather than mistaking UNKNOWN for an empty book."""
         from zoneinfo import ZoneInfo
         try:
             prague = ZoneInfo(self.anchor.reset_timezone)
@@ -604,7 +625,8 @@ class Mt5AccountStateProvider(AccountStateProvider):
         return {"history_ok": True, "current_balance": balance,
                 "midnight_utc": midnight_utc, "history_from_utc": hist_from,
                 "account_id": getattr(ai, "login", None),
-                "deals": deals, "open_positions": open_positions}
+                "deals": deals, "open_positions": open_positions,
+                "positions_verified": bool(positions_known)}
 
     def _open_risk(self, positions):
         """Worst-case equity drop if every open position hits its stop (money from
