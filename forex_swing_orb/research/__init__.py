@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from .provenance import ExperimentRecord, git_head, ProvenanceError
 from . import (portfolio, execution_analytics, reporting, walk_forward, montecarlo,
-               lifecycle, quality_facts, calibration)
+               lifecycle, quality_facts, calibration, report_suite)
 from .experiments import ExperimentManager, Experiment
 
 __all__ = [

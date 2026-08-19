@@ -84,6 +84,44 @@ def max_drawdown(equity):
     return round(mdd, 10) if equity else 0.0
 
 
+def drawdown_duration(equity):
+    """Longest drawdown DURATION as a count of steps spent below a prior equity peak
+    (0 when the series only makes new highs / is empty). Companion to max_drawdown;
+    deterministic, pure. Duration is measured in trades, not wall-clock time."""
+    peak = -math.inf
+    longest = 0
+    current = 0
+    for e in equity:
+        if e >= peak:
+            peak = e
+            current = 0
+        else:
+            current += 1
+            longest = max(longest, current)
+    return longest
+
+
+def rolling_expectancy(trades, window, key="r_multiple"):
+    """Rolling mean R over a fixed trailing ``window`` (deterministic input order).
+    Returns one value per fully-formed window; empty when fewer than ``window`` finite
+    observations exist. No wall clock."""
+    xs = _nums(trades, key)
+    if window <= 0 or len(xs) < window:
+        return []
+    return [round(sum(xs[i:i + window]) / window, 6)
+            for i in range(0, len(xs) - window + 1)]
+
+
+def rolling_hit_rate(trades, window, key="r_multiple"):
+    """Rolling win rate (fraction of R>0) over a fixed trailing ``window``. One value
+    per fully-formed window; empty below ``window`` finite observations."""
+    xs = _nums(trades, key)
+    if window <= 0 or len(xs) < window:
+        return []
+    return [round(sum(1 for x in xs[i:i + window] if x > 0) / window, 6)
+            for i in range(0, len(xs) - window + 1)]
+
+
 def recovery_factor(trades, key="r_multiple"):
     xs = _nums(trades, key)
     net = sum(xs)
@@ -122,6 +160,7 @@ def summary(trades, key="r_multiple"):
         "risk_adjusted": risk_adjusted(trades, key),
         "net": round(sum(_nums(trades, key)), 10),
         "max_drawdown": max_drawdown(eq),
+        "max_drawdown_duration": drawdown_duration(eq),
         "win_loss": win_loss(trades, key),
         "mae_mfe": mae_mfe(trades),
         "final_equity": eq[-1] if eq else 0.0,
