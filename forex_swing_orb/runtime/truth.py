@@ -24,19 +24,63 @@ class Mt5TruthSource:
 
     def __init__(self, client):
         self.client = client
+        self._last_positions_error = None      # observational diagnostic only (K)
 
     def terminal_connected(self):
         ti = self.client.terminal_info()
         return bool(getattr(ti, "connected", False)) if ti is not None else False
 
     def positions(self):
-        return list(self.client.positions_get() or ())
+        """Broker open positions as a KNOWN list, or ``None`` when UNKNOWN.
+
+        F3 — three DISTINCT semantics; UNKNOWN must never collapse to KNOWN_EMPTY:
+
+          * ``[]`` / ``()``            -> KNOWN_EMPTY   (a proven flat book)
+          * ``[p, ...]``               -> KNOWN_NONEMPTY
+          * ``None`` / an exception /
+            a malformed (non-list/tuple) return -> UNKNOWN, returned as ``None``
+
+        A transient query failure is NEVER read as an empty (flat) book. Callers must
+        handle ``None`` explicitly (defer / hold / fail closed) — see runtime.adoption
+        and :meth:`position_by_ticket`."""
+        try:
+            raw = self.client.positions_get()
+        except Exception:                      # query raised -> UNKNOWN
+            self._last_positions_error = self._read_last_error()
+            return None
+        if raw is None:                        # broker/API could not answer -> UNKNOWN
+            self._last_positions_error = self._read_last_error()
+            return None
+        if not isinstance(raw, (list, tuple)):  # malformed return type -> UNKNOWN
+            self._last_positions_error = self._read_last_error()
+            return None
+        self._last_positions_error = None
+        return list(raw)                       # KNOWN (possibly empty)
 
     def position_by_ticket(self, ticket):
-        for p in self.positions():
+        raw = self.positions()
+        if raw is None:                        # UNKNOWN -> not found (caller fails closed; M-6)
+            return None
+        for p in raw:
             if getattr(p, "ticket", None) == ticket and not getattr(p, "closed", False):
                 return p
         return None
+
+    def last_positions_error(self):
+        """Last positions_get() error detail (observational diagnostic only; never
+        trading authority, never credentials). None when the last query was KNOWN."""
+        return self._last_positions_error
+
+    def _read_last_error(self):
+        """Best-effort MT5 last_error() for diagnostics; None if unavailable. Pure
+        observation — it never influences the UNKNOWN classification above."""
+        getter = getattr(self.client, "last_error", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
 
     def symbol_info(self, symbol):
         return self.client.symbol_info(symbol)

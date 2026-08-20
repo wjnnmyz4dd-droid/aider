@@ -29,9 +29,16 @@ def discover_positions(truth):
 
     Returns ``[{signal_id, ticket, symbol}]`` (broker symbol), deduped by
     signal_id (first occurrence wins). Read-only; closed positions never appear
-    (the truth source returns only open positions)."""
+    (the truth source returns only open positions).
+
+    F3: an UNKNOWN position query (``positions() is None``) is DEFERRED — return
+    nothing to adopt THIS cycle (retried next cycle) rather than concluding a flat
+    book. UNKNOWN is never treated as KNOWN_EMPTY."""
+    raw = truth.positions()
+    if raw is None:
+        return []                          # UNKNOWN -> defer adoption (not "flat")
     out, seen = [], set()
-    for pos in truth.positions():
+    for pos in raw:
         sid = getattr(pos, "comment", None)
         ticket = getattr(pos, "ticket", None)
         if not isinstance(sid, str) or not _SIGNAL_ID_RE.match(sid):
@@ -92,9 +99,15 @@ def audit_ticket(records):
 
 
 def market_from_truth(truth):
-    """Current broker price per ticket (read-only), for the manager's evaluate."""
+    """Current broker price per ticket (read-only), for the manager's evaluate.
+
+    F3: UNKNOWN (``positions() is None``) -> empty snapshot; the PM then holds
+    (market_price None -> DATA_INSUFFICIENT), never acting on a guessed flat book."""
     m = {}
-    for pos in truth.positions():
+    raw = truth.positions()
+    if raw is None:
+        return m                           # UNKNOWN -> no market snapshot (PM holds)
+    for pos in raw:
         ticket = getattr(pos, "ticket", None)
         price = getattr(pos, "price_current", None)
         if ticket is not None and isinstance(price, (int, float)):
@@ -105,9 +118,15 @@ def market_from_truth(truth):
 def open_times_from_truth(truth):
     """Broker position OPEN times per ticket (epoch seconds), read-only. The single
     source of verified position-open evidence for deterministic bars_open. A
-    position missing an open time is simply absent (bars_open then fails closed)."""
+    position missing an open time is simply absent (bars_open then fails closed).
+
+    F3: UNKNOWN (``positions() is None``) -> empty; bars_open then fails closed
+    (the max-duration decision holds), never inferred from a guessed flat book."""
     out = {}
-    for pos in truth.positions():
+    raw = truth.positions()
+    if raw is None:
+        return out                         # UNKNOWN -> no open-time evidence (fail closed)
+    for pos in raw:
         ticket = getattr(pos, "ticket", None)
         t = getattr(pos, "time", None)
         if ticket is not None and isinstance(t, (int, float)) and not isinstance(t, bool):

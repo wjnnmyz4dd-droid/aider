@@ -412,12 +412,20 @@ def _connect():  # pragma: no cover - requires a live Windows terminal
     return _mt5
 
 
-def _positions_by_comment(mt5, sid):  # pragma: no cover - live terminal only
+def _positions_by_comment(mt5, sid):
+    """Matching OPEN positions for ``sid``, or ``None`` when the query is UNKNOWN.
+
+    F3: a positions_get() that returns None / raises / is malformed is UNKNOWN
+    (could-not-query) and returns ``None`` — NEVER an empty list. A diagnostic probe
+    must distinguish "no open positions" ([]) from "could not query positions" (None)
+    so it never reports a false flat/absent state after an API failure."""
     try:
-        positions = mt5.positions_get() or ()
+        raw = mt5.positions_get()
     except Exception:
-        return []
-    return [p for p in positions if _get(p, "comment") == sid]
+        return None
+    if raw is None or not isinstance(raw, (list, tuple)):
+        return None
+    return [p for p in raw if _get(p, "comment") == sid]
 
 
 def _probe_history(mt5, position_id):  # pragma: no cover - live terminal only
@@ -448,14 +456,20 @@ def _watch_history(mt5, position_id, max_seconds):  # pragma: no cover - live on
     first_netflat_at = None
     samples = []
     while time.time() - start < max_seconds:
-        present = bool(_positions_by_comment(mt5, position_id.get("sid"))
-                       if isinstance(position_id, dict) else None)
+        matches = (_positions_by_comment(mt5, position_id.get("sid"))
+                   if isinstance(position_id, dict) else None)
+        # F3: None = UNKNOWN (could not query) — NEVER a false "absent". Only a KNOWN
+        # empty list proves the position is absent.
+        positions_queryable = matches is not None
+        present = bool(matches) if matches is not None else None
         ok, deals = _probe_history(mt5, position_id if not isinstance(position_id, dict)
                                    else position_id.get("pid"))
         analysis = analyze_close(deals) if ok else {"classification": "UNAVAILABLE",
                                                     "net_flat": False}
         t = round(time.time() - start, 2)
         samples.append({"t": t, "history_available": ok,
+                        "positions_queryable": positions_queryable,
+                        "position_present": present,
                         "deal_count": len(deals) if ok else 0,
                         "classification": analysis["classification"]})
         if first_netflat_at is None and analysis.get("net_flat"):
@@ -505,6 +519,8 @@ def _build_report(*, mt5, args, commit):  # pragma: no cover - live terminal onl
 
     facts = known_facts(pm_audit_path, sid)
     positions = _positions_by_comment(mt5, sid)
+    # F3: None = UNKNOWN (could not query positions) — never a false "no position".
+    positions_queryable = positions is not None
     pos = positions[0] if positions else None
     pm_ticket = facts.get("ticket") if facts else args.ticket
     pos_ticket = _get(pos, "ticket")
@@ -513,9 +529,11 @@ def _build_report(*, mt5, args, commit):  # pragma: no cover - live terminal onl
     report["identity"] = {
         "signal_id": sid, "pm_ticket": pm_ticket, "position_ticket": pos_ticket,
         "position_identifier": pos_identifier, "symbol": _get(pos, "symbol"),
-        "comment_match": bool(pos), "pm_matches_position": (
+        "comment_match": bool(pos),
+        "positions_queryable": positions_queryable,   # F3: False => UNKNOWN, not "absent"
+        "pm_matches_position": (
             pm_ticket is not None and pos_ticket is not None and pm_ticket == pos_ticket),
-        "classification": identity_class,
+        "classification": identity_class if positions_queryable else "POSITIONS_UNAVAILABLE",
     }
 
     # history probes: PM ticket, and identifier if different/available
