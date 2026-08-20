@@ -366,7 +366,9 @@ def test_bridge_is_stdlib_only(bridge):
     roots = _bridge_import_roots(bridge)
     stdlib = {"os", "re", "json", "hashlib", "math", "datetime", "pathlib",
               "dataclasses", "", "__future__", "typing", "sys", "shutil", "stat",
-              "tempfile"}   # M-2: unique per-write temp files (stdlib, non-networking)
+              "tempfile",
+              # F1: canonical OS process-lock primitive (bridge/process_lock.py)
+              "platform", "time", "fcntl", "msvcrt"}   # M-2: unique per-write temp files (stdlib, non-networking)
     assert roots <= stdlib, f"unexpected imports: {roots - stdlib}"
 
 

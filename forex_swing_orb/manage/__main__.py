@@ -16,6 +16,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
+from .manager_lock import ManagerLock, ManagerLockError, ManagerLockHeld
 from .service import ManagerService
 
 
@@ -70,7 +71,27 @@ def main(argv=None):
     except Exception as exc:                            # fail closed on any startup error
         print(f"manager startup refused: {exc}", file=sys.stderr)
         return 2
-    _Loop(service).run()
+    # F1: take single-owner MANAGEMENT authority BEFORE any management work (adoption,
+    # orphan recovery, reconciliation, evaluation, bridge emission, or health write).
+    # A second manager on the same domain fails closed HERE and never manages a
+    # position. Distinct lock identity from the producer, so they never block one
+    # another. The OS lock frees automatically on crash — no stale-lock heuristic.
+    lock = ManagerLock(service.paths.root)
+    try:
+        lock.acquire()
+    except ManagerLockHeld as exc:                      # another live manager owns this domain
+        print(f"manager refused to run: {exc}. MANAGER_ALREADY_RUNNING — another "
+              f"manager already owns this management domain; not starting a second "
+              f"manager (its health/status is left untouched).", file=sys.stderr)
+        return 4
+    except ManagerLockError as exc:                     # ownership could not be established
+        print(f"manager refused to run: management authority could not be established "
+              f"({exc}); failing closed.", file=sys.stderr)
+        return 4
+    try:
+        _Loop(service).run()
+    finally:
+        lock.release()                                  # graceful release; crash frees via OS
     return 0
 
 
