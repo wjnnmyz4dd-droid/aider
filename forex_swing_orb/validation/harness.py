@@ -149,17 +149,29 @@ def fail_os_replace():
 
 @contextmanager
 def _fail_open_for_write(exc):
-    """Patch the builtin ``open`` so any write/append open raises ``exc`` (reads
-    pass through). Bridge writes go through ``atomic_write_text``/
-    ``append_line_fsync``, both of which use the builtin ``open``."""
+    """Patch write-mode file creation so any write/append open raises ``exc`` (reads
+    pass through). Bridge writes reach the filesystem two ways: ``append_line_fsync``
+    via the builtin ``open``, and ``atomic_write_text`` via ``tempfile.mkstemp``
+    (which uses ``os.open`` with O_CREAT for its unique per-write temp — M-2). Both
+    creation paths are intercepted so the injected fault fires regardless of which
+    writer is exercised; read-only opens (e.g. the directory fsync) pass through."""
     import builtins
     real_open = builtins.open
+    real_os_open = os.open
+    _write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_TRUNC", 0)
 
     def guarded(file, mode="r", *a, **k):
         if any(c in mode for c in ("w", "a", "x", "+")):
             raise exc
         return real_open(file, mode, *a, **k)
-    with mock.patch("builtins.open", side_effect=guarded):
+
+    def guarded_os_open(path, flags, *a, **k):
+        if flags & _write_flags:                      # a create/write open (mkstemp temp)
+            raise exc
+        return real_os_open(path, flags, *a, **k)     # read-only (dir fsync) passes through
+
+    with mock.patch("builtins.open", side_effect=guarded), \
+            mock.patch("os.open", side_effect=guarded_os_open):
         yield
 
 

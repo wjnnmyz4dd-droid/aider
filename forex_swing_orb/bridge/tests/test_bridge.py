@@ -365,7 +365,8 @@ def test_bridge_is_stdlib_only(bridge):
     # bridge depends only on the stdlib (+ its own package) — no third-party
     roots = _bridge_import_roots(bridge)
     stdlib = {"os", "re", "json", "hashlib", "math", "datetime", "pathlib",
-              "dataclasses", "", "__future__", "typing", "sys", "shutil", "stat"}
+              "dataclasses", "", "__future__", "typing", "sys", "shutil", "stat",
+              "tempfile"}   # M-2: unique per-write temp files (stdlib, non-networking)
     assert roots <= stdlib, f"unexpected imports: {roots - stdlib}"
 
 

@@ -122,17 +122,24 @@ def test_filesystem_full_on_produce(tmp_path):
 
 
 def test_partial_write_leaves_no_visible_artifact(tmp_path):
-    """Power-loss during an atomic write: os.replace fails, so only a .tmp
-    remains and it never becomes visible. Recovery cleans it."""
+    """A failed atomic write (os.replace raises) never makes a torn target visible.
+
+    M-2: on a handled failure the writer removes ONLY its own unique temp inline, so
+    no orphan .tmp is left behind and the destination keeps its previous value. (A
+    true power loss, where the except never runs, leaves a stray .tmp — covered by
+    the recovery sweep below via a directly-planted temp.)"""
     ec, paths, ledger, audit, mt5 = H.build(tmp_path)
     rec = H.make_instruction(); sid = rec["signal_id"]
     with H.fail_os_replace():
         with pytest.raises(OSError):
             H.produce(paths, rec)
     assert not (paths.pending / instruction_name(sid)).exists()   # never visible
-    tmps = [p for p in paths.pending.iterdir() if p.name.endswith(".tmp")]
-    assert tmps, "a torn temp file remains"
-    ec.recover(NOW)                                              # cleans .tmp
+    # handled failure cleans up this writer's own temp -> no orphan
+    assert not [p for p in paths.pending.iterdir() if p.name.endswith(".tmp")]
+    # a genuine power-loss stray temp (except never ran) is still cleaned by recovery
+    stray = paths.pending / (".stray." + instruction_name(sid) + ".tmp")
+    stray.write_text("half-written")
+    ec.recover(NOW)                                              # cleans stray .tmp
     assert not [p for p in paths.pending.iterdir() if p.name.endswith(".tmp")]
     # after recovery a fresh produce/execute works
     H.produce(paths, rec)
