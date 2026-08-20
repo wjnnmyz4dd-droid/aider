@@ -145,7 +145,16 @@ class ManagerService:
 
     def _write_health(self, now):
         try:
-            atomic_write_text(self.health_path, serialize.canonical_json(self.status(now)))
+            # F2: stamp the canonical service-health envelope (service id + schema +
+            # generated_timestamp + loop cadence + pid/host) so runtime.service_health
+            # can prove the manager process is RECENTLY ALIVE. Every cycle refreshes it
+            # (IDLE/MANAGING/RECONCILIATION_REQUIRED alike) — freshness is aliveness,
+            # not eligibility; a dead manager stops refreshing and goes STALE.
+            from ..runtime import service_health
+            s = self.status(now)
+            s = {**s, **service_health.stamp(service_health.MANAGER, now,
+                                             getattr(self, "_cadence_sec", 900))}
+            atomic_write_text(self.health_path, serialize.canonical_json(s))
         except Exception as exc:
             self._last_error = repr(exc)
 

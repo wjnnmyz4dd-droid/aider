@@ -229,6 +229,37 @@ def _check_producer_state(cfg, now):
         return ("producer last-cycle state", ENV, f"could not read runner audit: {exc}")
 
 
+def _check_service_health(cfg, now, service, path_attr, label):
+    """F2: producer/manager HEALTH-ARTIFACT freshness via the single owner
+    runtime.service_health (SEPARATE from EA liveness and H5). PASS -> fresh/alive;
+    MISSING -> ENV (service not started here); STALE/MALFORMED/WRONG_SERVICE/
+    UNKNOWN_SCHEMA -> FAIL (a stale artifact from a dead process is never a false green)."""
+    if cfg is None:
+        return (label, ENV, "config unresolved; cannot locate health artifact")
+    from . import service_health as svc
+    try:
+        path = getattr(cfg, path_attr)
+        r = svc.read_service_health(path, service, now)
+    except Exception as exc:                             # noqa: BLE001 - report, never raise
+        return (label, ENV, f"could not read {service} health: {exc}")
+    if r.state == svc.PASS:
+        return (label, PASS, r.detail)
+    if r.state == svc.MISSING:
+        return (label, ENV,
+                f"{r.detail}; the {service} writes it once started (verify on-machine)")
+    return (label, FAIL, f"{r.state}: {r.detail}")
+
+
+def _check_producer_health(cfg, now):
+    return _check_service_health(cfg, now, "producer", "producer_health_path",
+                                 "producer health (process alive)")
+
+
+def _check_manager_health(cfg, now):
+    return _check_service_health(cfg, now, "manager", "manager_health_path",
+                                 "manager health (process alive)")
+
+
 def _check_bridge_end_to_end(cfg, ea_liveness_result, bridge_present):
     """BRIDGE_END_TO_END — READY requires BOTH the Python filesystem presence AND a
     fresh EA heartbeat (ea_liveness PASS). Python-side presence alone is NOT end-to-end."""
@@ -408,6 +439,11 @@ def run_checks(now=None):
     results.append(_check_bridge_end_to_end(cfg, ea_result, bridge_present))
     results.extend(_check_daily_anchor(cfg, now))
     results.append(_check_producer_state(cfg, now))
+    # F2: producer/manager process aliveness proven by fresh health artifacts (a stale
+    # artifact from a dead process can never read as current). Separate from EA liveness
+    # and H5.
+    results.append(_check_producer_health(cfg, now))
+    results.append(_check_manager_health(cfg, now))
     results.extend(_mt5_checks(cfg))
     return results
 

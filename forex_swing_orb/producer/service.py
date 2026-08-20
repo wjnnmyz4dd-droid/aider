@@ -40,9 +40,19 @@ def configure_logging(log_path):
 
 def write_health(health_path, dashboard, now, extra=None):
     """Atomically write the read-only status snapshot to a health file. ``extra`` is
-    an optional dict merged in (e.g. producer writer-lock diagnostics)."""
+    an optional dict merged in (e.g. producer writer-lock diagnostics).
+
+    F2: also stamps the canonical service-health envelope (service id + schema +
+    generated_timestamp + loop cadence + pid/host) so runtime.service_health can prove
+    the producer process is RECENTLY ALIVE. Every write (start, each cycle, blocked or
+    waiting) refreshes the timestamp — freshness is process-aliveness, not eligibility;
+    a dead producer simply stops refreshing and goes STALE."""
     from ..bridge.atomic import atomic_write_text
+    from ..runtime import service_health
     status = dashboard.status(now)
+    cadence = getattr(getattr(getattr(dashboard, "runner", None), "config", None),
+                      "cadence_sec", 900)
+    status = {**status, **service_health.stamp(service_health.PRODUCER, now, cadence)}
     if extra:
         status = {**status, **extra}
     atomic_write_text(health_path, serialize.canonical_json(status))

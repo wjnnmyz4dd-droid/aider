@@ -174,7 +174,8 @@ def bridge_end_to_end(filesystem_ok, ea_liveness_state):
             "ea_liveness_state": ea_liveness_state, "blockers": tuple(blockers)}
 
 
-def system_readiness(*, bridge_e2e, producer, manager, anchor_available=None):
+def system_readiness(*, bridge_e2e, producer, manager, anchor_available=None,
+                     producer_health=None, manager_health=None):
     """Aggregate the end-to-end SYSTEM state (spec §B).
 
     SYSTEM_READY requires:
@@ -183,7 +184,13 @@ def system_readiness(*, bridge_e2e, producer, manager, anchor_available=None):
       * manager not ERROR/DISCONNECTED/RECONCILIATION_REQUIRED, AND
       * daily anchor available when that fact is supplied (None = not evaluated here;
         the producer's own ACCOUNT_ANCHOR gate is the authority and already shows up
-        as PRODUCER_BLOCKED — this is visibility only, never a second authority).
+        as PRODUCER_BLOCKED — this is visibility only, never a second authority), AND
+      * F2: producer AND manager HEALTH ARTIFACTS fresh when those facts are supplied.
+        ``producer_health`` / ``manager_health`` are runtime.service_health state
+        strings (or None = not evaluated by this caller — back-compatible). Anything
+        other than the fresh sentinel "PASS" is a blocker, so a stale/missing/malformed
+        health artifact from a dead process can never satisfy SYSTEM_READY. This is
+        observational freshness, never a second trading authority.
 
     SYSTEM_READY means "correctly wired and unblocked", NOT "a trade should exist".
     Returns {state, ready, blockers, components}. Never raises.
@@ -200,9 +207,18 @@ def system_readiness(*, bridge_e2e, producer, manager, anchor_available=None):
         blockers.append(f"manager is {m_state} ({manager.get('detail','')})".rstrip(" ()"))
     if anchor_available is False:
         blockers.append("daily anchor unavailable (mid-day cold start; producer fails closed)")
+    # F2: health-artifact freshness (the fresh sentinel is the shared literal "PASS").
+    if producer_health is not None and producer_health != "PASS":
+        blockers.append(f"producer health is {producer_health} (stale/missing health "
+                        f"artifact — cannot prove the producer process is alive)")
+    if manager_health is not None and manager_health != "PASS":
+        blockers.append(f"manager health is {manager_health} (stale/missing health "
+                        f"artifact — cannot prove the manager process is alive)")
     ready = not blockers
     return {"state": SYSTEM_READY if ready else SYSTEM_NOT_READY,
             "ready": ready, "blockers": tuple(blockers),
             "components": {"bridge_end_to_end": bridge_e2e.get("state"),
                            "producer": p_state, "manager": m_state,
-                           "anchor_available": anchor_available}}
+                           "anchor_available": anchor_available,
+                           "producer_health": producer_health,
+                           "manager_health": manager_health}}
