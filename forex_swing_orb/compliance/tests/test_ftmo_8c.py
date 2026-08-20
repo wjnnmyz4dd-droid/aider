@@ -184,7 +184,9 @@ def test_no_ftmo_news_reason_for_swing():
     from forex_swing_orb.bridge import serialize
     ev = {"event_id": "E", "currency": "USD", "impact": "HIGH",
           "event_timestamp": serialize.iso_utc(NOW), "verification_state": "VERIFIED"}
-    v = gate_news(_cand(), {"as_of": serialize.iso_utc(NOW), "events": [ev]},
+    # M-3: the bundle itself must be verified to reach impact evaluation; this test
+    # exercises the impact-overlay reason, not the (separate) bundle-verification gate.
+    v = gate_news(_cand(), {"as_of": serialize.iso_utc(NOW), "verified": True, "events": [ev]},
                   NewsLockoutConfig(), NOW)
     assert RC.INTERNAL_NEWS_LOCKOUT in v.reason_codes
     assert not any(r.startswith("FTMO_") for r in v.reason_codes)

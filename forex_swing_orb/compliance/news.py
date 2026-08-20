@@ -70,6 +70,20 @@ def gate_news(candidate, news_bundle, cfg, now):
         return _reject([ReasonCode.NEWS_DATA_STALE],
                        {"age_sec": age, "max_age_sec": max_age})
 
+    # M-3: bundle-level verification is a property of the BUNDLE and is proven
+    # BEFORE any event filtering. When verification is required, an unverified /
+    # unproven bundle can NEVER pass — regardless of zero, irrelevant, or
+    # out-of-window events, or a malformed candidate symbol. Missing/false/wrongly
+    # typed `verified` is NOT trusted: no truthiness — a real boolean True or the
+    # canonical "VERIFIED" token is required (mirrors the per-event vocabulary,
+    # without the ``1 == True`` numeric leak). Freshness above and impact below
+    # remain independent fail-closed gates.
+    if cfg.require_verified:
+        v = news_bundle.get("verified")
+        if not (v is True or v == "VERIFIED"):
+            return _reject([ReasonCode.NEWS_SOURCE_UNVERIFIED],
+                           {"verified": v, "bundle_verification": "required"})
+
     symbol = candidate.get("symbol")
     pre = int(cfg.pre_lockout_min)
     post = int(cfg.post_lockout_min)
