@@ -394,6 +394,30 @@ def test_kill_switch_authorized_close_end_to_end(wired, long_pos):
     assert wired["mt5"].positions[ticket].closed is True      # PM->adapter->EA authorized close
 
 
+def test_m6_residual_after_bridge_close_not_marked_closed(wired, long_pos):
+    # M-6 end-to-end: the EA/consumer reports a success-like NO_OP_CLOSED (mapped to
+    # DONE by the adapter), but the broker still shows a residual position. The
+    # Python PM must re-verify broker truth and NOT enter CLOSED — the false
+    # "closed" assertion from the applier is neutralized Python-side.
+    from forex_swing_orb.position.contract import StopPhase
+    sid, ticket = long_pos()
+    wired["mt5"].script_close("residual")                     # close DONE but position remains
+    wired["pm"].evaluate(sid, market_price=1.10100, now=NOW, kill_switch=True)
+    assert wired["pm"].states[sid]["phase"] != StopPhase.CLOSED
+    assert wired["mt5"].position_by_ticket(ticket) is not None   # residual still open + owned
+    assert wired["pm"]._ticket_owner[ticket] == sid
+
+
+def test_m6_residual_then_full_close_reaches_closed(wired, long_pos):
+    from forex_swing_orb.position.contract import StopPhase
+    sid, ticket = long_pos()
+    wired["mt5"].script_close("residual")                     # cycle 1: residual remains
+    wired["pm"].evaluate(sid, market_price=1.10100, now=NOW, kill_switch=True)
+    assert wired["pm"].states[sid]["phase"] != StopPhase.CLOSED
+    wired["pm"].evaluate(sid, market_price=1.10100, now=NOW, kill_switch=True)  # cycle 2: full close
+    assert wired["pm"].states[sid]["phase"] == StopPhase.CLOSED   # confirmed flat
+
+
 def test_protective_close_reason_flows_through_adapter(wired, long_pos):
     # the adapter must carry the specific PMReason (not a coarse constant)
     sid, ticket = long_pos()

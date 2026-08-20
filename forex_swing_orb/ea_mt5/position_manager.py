@@ -410,11 +410,56 @@ class PositionManager:
         except mt5c.MT5Disconnected:
             return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
                               reconciliation_status="uncertain", broker_result="UNCERTAIN")
-        if res.retcode == mt5c.TRADE_RETCODE_DONE:
-            st["phase"] = StopPhase.CLOSED
-            return self._emit(st, reason, now, broker_result="DONE")
-        return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
-                          broker_result="CONSTRAINT")
+        if res.retcode != mt5c.TRADE_RETCODE_DONE:
+            return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
+                              broker_result="CONSTRAINT")
+        # M-6: a success-like close retcode (DONE / EA NO_OP_CLOSED) means the close
+        # REQUEST was accepted — it is NOT proof the book is flat (partial fill,
+        # residual volume, delayed terminal, DONE_PARTIAL-like conditions). The
+        # terminal CLOSED phase is entered ONLY when authoritative broker truth
+        # proves full closure, using the SAME canonical proof as reconcile/recover.
+        # Otherwise management ownership is kept and the protective close stays due.
+        return self._confirm_close(st, reason, now)
+
+    def _confirm_close(self, st, reason, now):
+        """Prove full-flat broker closure after a success-like protective-close
+        result. Reuses the broker read seam (terminal_connected / position_by_ticket)
+        and the canonical closure owner (``position.closure.confirm_full_close`` via
+        :meth:`_confirmed_closed`). Never enters CLOSED on the close retcode alone, on
+        a residual position, or when broker truth is unavailable — the close ``reason``
+        is preserved so the next cycle re-attempts the flatten on any residual (no
+        weekend orphan exposure)."""
+        try:
+            connected = self.mt5.terminal_connected()
+            pos = self.mt5.position_by_ticket(st["ticket"]) if connected else None
+        except mt5c.MT5Disconnected:
+            connected, pos = False, None
+        if not connected:
+            # close request accepted but flatness UNVERIFIABLE -> fail closed; do not
+            # mark CLOSED. Reconnect + recover/reconcile decides from broker truth.
+            return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
+                              broker_result="DONE",
+                              reconciliation_status="close_unverified_disconnected")
+        if pos is None:
+            # absence is NOT proof of closure (H1): require positive netted-flat deal
+            # evidence, exactly as reconcile/recover do.
+            if self._confirmed_closed(st["ticket"]):
+                st["phase"] = StopPhase.CLOSED
+                return self._emit(st, reason, now, broker_result="DONE",
+                                  reconciliation_status="close_confirmed_flat")
+            return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now,
+                              broker_result="DONE",
+                              reconciliation_status="close_absent_unconfirmed")
+        # residual position remains -> the book is NOT flat. Keep management ownership,
+        # reconcile any reduced volume, and leave the close due for the next cycle.
+        # Never mark CLOSED while any residual exposure exists.
+        if st.get("volume") is not None and pos.volume < st["volume"]:
+            st["volume"] = pos.volume
+            return self._emit(st, PMReason.PARTIAL_CLOSED, now, broker_result="DONE",
+                              manual_status="partial_close",
+                              reconciliation_status="residual_after_close")
+        return self._emit(st, PMReason.RECONCILIATION_REQUIRED, now, broker_result="DONE",
+                          reconciliation_status="residual_after_close")
 
     # -- weekend / max-duration (only if fully specified) -------------------
     def _weekend_due(self, now):

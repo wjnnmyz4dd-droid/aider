@@ -131,6 +131,8 @@ class MockMT5:
     order_log: list = field(default_factory=list)     # every order_send request seen
     modify_outcomes: list = field(default_factory=list)  # scripted stop-modify results
     modify_log: list = field(default_factory=list)    # every modify_stop attempt seen
+    close_outcomes: list = field(default_factory=list)  # scripted position_close results
+    close_log: list = field(default_factory=list)     # every position_close attempt seen
 
     # -- setup helpers ------------------------------------------------------
     def add_symbol(self, name, **kw):
@@ -259,9 +261,26 @@ class MockMT5:
         return OrderResult(retcode=codes.get(outcome, TRADE_RETCODE_INVALID),
                            position=ticket, comment=outcome)
 
+    def script_close(self, *outcomes):
+        """Queue scripted position_close behaviours (M-6 partial/residual testing).
+
+        Each outcome may be:
+          * ``"done"``                 -> full close (default behaviour);
+          * ``"residual"``             -> return DONE but leave the position fully
+            open (apparent success while the book is NOT flat — delayed terminal /
+            DONE_PARTIAL-like);
+          * ``("partial", new_volume)``-> return DONE, reduce the position to
+            ``new_volume`` and leave it open (a genuine partial fill);
+          * ``"disconnect_after"``     -> full close, then drop the terminal link so
+            the caller's post-close verification observes a disconnect;
+          * ``"reject"``               -> return TRADE_RETCODE_REJECT, no change.
+        """
+        self.close_outcomes.extend(outcomes)
+
     def position_close(self, ticket, price=None, reason=None):
         # ``reason`` (R3) is accepted for interface parity with the bridge-backed
         # adapter and ignored by the mock terminal.
+        self.close_log.append((ticket, reason))
         p = self.positions.get(ticket)
         if p is None or p.closed:
             return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="no position")
@@ -270,7 +289,23 @@ class MockMT5:
         info = self.symbols.get(p.symbol)
         close_price = price if price is not None else (
             info.bid if p.type == ORDER_TYPE_BUY else info.ask) if info else 0.0
+        outcome = self.close_outcomes.pop(0) if self.close_outcomes else "done"
+        if outcome == "reject":
+            return OrderResult(retcode=TRADE_RETCODE_REJECT, position=ticket,
+                               comment="scripted-reject")
+        if outcome == "residual":
+            # apparent success but the position remains fully open (not flat).
+            return OrderResult(retcode=TRADE_RETCODE_DONE, position=ticket,
+                               price=close_price, volume=0.0)
+        if isinstance(outcome, tuple) and outcome and outcome[0] == "partial":
+            closed_vol = p.volume - float(outcome[1])
+            p.volume = float(outcome[1])                # residual remains open
+            return OrderResult(retcode=TRADE_RETCODE_DONE, position=ticket,
+                               price=close_price, volume=max(closed_vol, 0.0))
+        # full close (default, and the "disconnect_after" prefix)
         p.closed = True
         p.close_price = close_price
+        if outcome == "disconnect_after":
+            self.connected = False                      # verification will see a drop
         return OrderResult(retcode=TRADE_RETCODE_DONE, position=ticket,
                            price=close_price, volume=p.volume)
