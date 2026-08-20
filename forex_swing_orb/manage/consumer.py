@@ -264,9 +264,19 @@ class ManageConsumer:
         })
 
     def _write_result(self, res, now):
-        rid = serialize.compute_integrity_digest(res)[:16]
-        atomic_write_text(self.paths.results / P.result_name(res["manage_id"], rid),
-                          serialize.dumps(res))
+        # M-4: content-addressed, CLOCK-FREE result identity keyed on
+        # (manage_id, effective terminal status). A recover re-run for the same
+        # logical outcome resolves to the SAME filename, so it can never mint a
+        # second forensic result file for one management outcome.
+        rid = MC.manage_result_id(res["manage_id"], res["status"])
+        dest = self.paths.results / P.result_name(res["manage_id"], rid)
+        # Idempotent + conflict-safe: the FIRST canonical terminal artifact stands.
+        # Never write a second file just to record a later timestamp, and never
+        # silently overwrite an existing (possibly conflicting) payload at the same
+        # canonical name. Readers verify integrity, so a stale/corrupt existing file
+        # is never trusted as valid terminal evidence.
+        if not dest.exists():
+            atomic_write_text(dest, serialize.dumps(res))
         if self.audit is not None:
             self.audit.emit({"kind": "manage_result", "timestamp": serialize.iso_utc(now),
                              "manage_id": res["manage_id"], "signal_id": res["signal_id"],

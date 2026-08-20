@@ -51,6 +51,20 @@ bool MgEqStop(const string symbol, const double a, const double b)
 //+------------------------------------------------------------------+
 //| Write ONE terminal MANAGE_RESULT and archive the claimed file.    |
 //+------------------------------------------------------------------+
+// M-4: canonical EFFECTIVE terminal status (mirror manage/contract.py
+// ManageStatus.effective_status). APPLIED and ALREADY_APPLIED are the SAME
+// effective outcome; REJECTED_* collapse to REJECTED; NO_OP_CLOSED is CLOSED.
+string MgEffectiveStatus(const string status)
+{
+   if(status=="APPLIED" || status=="ALREADY_APPLIED") return "APPLIED";
+   if(status=="NO_OP_CLOSED")                          return "CLOSED";
+   if(status=="REJECTED_STALE" || status=="REJECTED_LOOSEN" ||
+      status=="REJECTED_WIDEN" || status=="REJECTED_BROKER_CONSTRAINT" ||
+      status=="REJECTED_EXPIRED" || status=="REJECTED_INVALID" ||
+      status=="NO_POSITION" || status=="BROKER_REJECTED")            return "REJECTED";
+   return status;                                       // ERROR / QUARANTINED / other
+}
+
 void MgWriteResult(const string mid, const string sid, const long ticket,
                    const string symbol, const string action, const string status,
                    const string reason, const uint retcode,
@@ -73,8 +87,15 @@ void MgWriteResult(const string mid, const string sid, const long ticket,
       (before!=0.0)?StringFormat("%.10g",before):"null", seq, reason,
       reconc, (reqStop!=0.0)?StringFormat("%.10g",reqStop):"null", MG_SCHEMA_VERSION,
       sid, status, symbol, ticket);
-   string rid = StringSubstr(Sha256Hex16(json), 0, 16);
-   BridgeWriteTextAtomic(MgPath(MG_RESULTS, mid + "." + rid + ".json"), UseCommonFolder, json);
+   // M-4: clock-free, content-addressed result id keyed on (manage_id, effective
+   // status) — NOT the timestamped JSON — so a recover re-run for the same logical
+   // outcome resolves to the SAME artifact name (mirrors ResultId in the entry EA).
+   string rid = Sha256Hex16(mid + "|" + MgEffectiveStatus(status));
+   string relpath = MgPath(MG_RESULTS, mid + "." + rid + ".json");
+   // Idempotent: the FIRST canonical terminal artifact stands. Never write a second
+   // file for a later timestamp, and never silently overwrite an existing payload.
+   if(!BridgeExists(relpath, UseCommonFolder))
+      BridgeWriteTextAtomic(relpath, UseCommonFolder, json);
    BridgeMove(MgPath(MG_CLAIMED, mid + ".json"), MgPath(archdir, mid + ".json"), UseCommonFolder);
 }
 

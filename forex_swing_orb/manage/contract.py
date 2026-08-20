@@ -69,6 +69,38 @@ class ManageStatus:
     # fresh truth): TERMINAL_DISCONNECTED, UNCERTAIN are non-terminal.
     NON_TERMINAL = frozenset({TERMINAL_DISCONNECTED, UNCERTAIN})
 
+    @staticmethod
+    def effective_status(status):
+        """The canonical EFFECTIVE terminal class for a raw status — what happened,
+        not which report variant reported it. APPLIED and ALREADY_APPLIED are the
+        SAME effective outcome (the modification is in place), so a recover re-run
+        that re-emits ALREADY_APPLIED resolves to the APPLIED artifact (M-4).
+        REJECTED_* collapse to a single REJECTED class (all leave the position
+        untouched); NO_OP_CLOSED is CLOSED. ERROR/QUARANTINED (and any non-terminal)
+        pass through unchanged."""
+        if status in ManageStatus.APPLIED_FAMILY:
+            return "APPLIED"
+        if status in ManageStatus.CLOSED_FAMILY:
+            return "CLOSED"
+        if status in ManageStatus.REJECTED_FAMILY:
+            return "REJECTED"
+        return status
+
+
+def manage_result_id(manage_id, status):
+    """Deterministic, clock-free manage result id: ``sha256(manage_id|effective)[:16]``
+    where ``effective`` is :meth:`ManageStatus.effective_status`.
+
+    Keyed on (manage_id, EFFECTIVE terminal outcome) ONLY — never the wall clock —
+    so a recover re-run for the same logical outcome (including the APPLIED ->
+    ALREADY_APPLIED report variant) maps to the SAME artifact name and can never
+    mint a second terminal result file for one management outcome. This mirrors the
+    entry channel's ``serialize.result_id(signal_id, status)`` principle; the manage
+    channel keys on ``manage_id`` (its per-action identity) instead of ``signal_id``
+    because one signal_id has many management actions."""
+    payload = f"{manage_id}|{ManageStatus.effective_status(status)}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
 
 # ---- instruction / result field contracts (frozen) ------------------------
 INSTRUCTION_FIELDS = (
