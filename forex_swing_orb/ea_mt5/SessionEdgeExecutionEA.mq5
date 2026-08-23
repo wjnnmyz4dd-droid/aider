@@ -49,7 +49,7 @@ input long   MagicNumber     = 920240125;
 
 //--- allow-lists mirror bridge/config.py ----------------------------
 // PR-3J/M9: the production instruction schema is 3 (adds a required, authoritative
-// ``volume`` — the executable lot sized upstream and proven within risk-per-trade by
+// ``volume`` - the executable lot sized upstream and proven within risk-per-trade by
 // compliance; the EA executes it VERBATIM and never sizes from risk_fraction nor from
 // any manual/default lot). This MUST equal bridge/config.py schema_version_allowlist; a
 // source-parity test guards divergence. Schema 1 (London-only) and schema 2 (no
@@ -263,7 +263,7 @@ string ValidateInstruction(const string sid, const uchar &raw[], const int rawle
    if(!ok || schema != ALLOW_SCHEMA_VERSION) return "E_SCHEMA";
    if(!VerifyIntegrityDigest(raw, rawlen))    return "E_INTEGRITY";
 
-   // required fields present (schema 3 adds an authoritative ``volume`` — the EA
+   // required fields present (schema 3 adds an authoritative ``volume`` - the EA
    // executes it verbatim; session_id/risk_fraction are schema integrity only, the
    // EA never evaluates session time/eligibility nor sizes from risk_fraction)
    string need[] = {"signal_id","session_id","strategy_id","strategy_version","symbol",
@@ -319,7 +319,7 @@ void Execute(const string sid, const string json, const string received)
       WriteResult(sid, st, vreason, received, 0, 0, 0, 0, 0, 0, 0, "", "{}");
       return;
    }
-   // diagnostic only — the EA logs the originating session but NEVER decides
+   // diagnostic only - the EA logs the originating session but NEVER decides
    // session eligibility (session authority stays upstream in Session Edge).
    Print("Session Edge EA: executing ", sid, " session=", JsonGet(json, "session_id"),
          " ", direction, " ", symbol);
@@ -343,7 +343,7 @@ void Execute(const string sid, const string json, const string received)
                  StringFormat("{\"symbol\":\"%s\"}", symbol), "{}"); return; }
 
    // M9: execute the AUTHORITATIVE instruction volume verbatim. Verify EXACT alignment
-   // with live broker constraints and REJECT on mismatch — the EA never rounds up or
+   // with live broker constraints and REJECT on mismatch - the EA never rounds up or
    // substitutes any manual/default lot (single upstream sizing authority; no EA upsizing).
    double vmin = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MIN);
    double vmax = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MAX);
@@ -450,7 +450,7 @@ void ProcessClaimed(const string sid)
 }
 
 //+------------------------------------------------------------------+
-//| EA LIVENESS HEARTBEAT (observability only — ZERO trade authority). |
+//| EA LIVENESS HEARTBEAT (observability only - ZERO trade authority). |
 //| Writes health\ea_status.json every timer tick so the host verifier |
 //| (runtime ea_liveness) can PROVE, from an EA-originated artifact,    |
 //| that an EA is running, polling, and bound to the SAME bridge the    |

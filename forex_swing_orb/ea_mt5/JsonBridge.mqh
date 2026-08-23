@@ -16,6 +16,8 @@
 //| the raw file bytes reproduces the without-digest bytes EXACTLY -   |
 //| so we never reformat numbers and cannot drift from the producer.  |
 //+------------------------------------------------------------------+
+#ifndef SESSION_EDGE_JSONBRIDGE_MQH
+#define SESSION_EDGE_JSONBRIDGE_MQH
 #property strict
 
 //--- fixed bridge sub-paths (mirror forex_swing_orb/bridge/paths.py)
@@ -138,8 +140,11 @@ bool BridgeDirHasEntries(const string reldir, const bool common)
 string JsonEscape(const string s)
 {
    string out = s;
-   StringReplace(out, "\\", "\\\\");
-   StringReplace(out, "\"", "\\\"");
+   StringReplace(out, "\\", "\\\\");   // backslash MUST be first
+   StringReplace(out, "\"", "\\\"");   // quote
+   StringReplace(out, "\r", "\\r");    // carriage return
+   StringReplace(out, "\n", "\\n");    // newline
+   StringReplace(out, "\t", "\\t");    // tab
    return out;
 }
 
@@ -273,3 +278,5 @@ datetime ParseIsoUtc(const string iso)
    return StringToTime(StringSubstr(s, 0, 19));   // "YYYY-MM-DD HH:MM:SS"
 }
 //+------------------------------------------------------------------+
+
+#endif // SESSION_EDGE_JSONBRIDGE_MQH

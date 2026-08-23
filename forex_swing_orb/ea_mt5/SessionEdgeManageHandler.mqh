@@ -15,11 +15,14 @@
 //| NOTE: like SessionEdgeExecutionEA.mq5 this is compiled only in    |
 //| MetaEditor on Windows; it is not compiled in the project CI.      |
 //+------------------------------------------------------------------+
+#ifndef SESSION_EDGE_MANAGE_HANDLER_MQH
+#define SESSION_EDGE_MANAGE_HANDLER_MQH
 #property strict
 // This header is included by SessionEdgeExecutionEA.mq5 AFTER JsonBridge.mqh and
-// after g_trade / BridgeRoot / UseCommonFolder / NowIso / Sha256Hex16 are declared;
-// it deliberately does NOT re-include JsonBridge.mqh (that header has no include
-// guard, so a second include would duplicate its definitions).
+// after g_trade / BridgeRoot / UseCommonFolder / NowIso / Sha256Hex16 are declared,
+// so it relies on those already being in scope (it is NOT a standalone header) and
+// does NOT itself re-include JsonBridge.mqh. JsonBridge.mqh now carries its own
+// include guard, so even a duplicate include would be a harmless no-op.
 
 //--- manage sub-paths (mirror forex_swing_orb/manage/paths.py) -------
 #define MG_PENDING   "manage\\outbox\\pending\\"
@@ -88,7 +91,7 @@ void MgWriteResult(const string mid, const string sid, const long ticket,
       reconc, (reqStop!=0.0)?StringFormat("%.10g",reqStop):"null", MG_SCHEMA_VERSION,
       sid, status, symbol, ticket);
    // M-4: clock-free, content-addressed result id keyed on (manage_id, effective
-   // status) — NOT the timestamped JSON — so a recover re-run for the same logical
+   // status) - NOT the timestamped JSON - so a recover re-run for the same logical
    // outcome resolves to the SAME artifact name (mirrors ResultId in the entry EA).
    string rid = Sha256Hex16(mid + "|" + MgEffectiveStatus(status));
    string relpath = MgPath(MG_RESULTS, mid + "." + rid + ".json");
@@ -249,3 +252,5 @@ void ManageRecover()
    FileFindClose(h);
 }
 //+------------------------------------------------------------------+
+
+#endif // SESSION_EDGE_MANAGE_HANDLER_MQH
