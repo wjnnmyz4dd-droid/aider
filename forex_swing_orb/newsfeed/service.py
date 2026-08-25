@@ -24,8 +24,8 @@ from ..bridge import serialize
 from . import health as health_mod
 from . import writer
 from .acquire import CalendarAcquirer
+from .acquisition_lock import AcquisitionOwnerState, acquire_ownership
 from .contract import AcquisitionError, Reason
-from .supervisor import LockHeld, SingleInstanceLock
 
 
 def _utc_now():
@@ -56,6 +56,7 @@ class CalendarAcquisitionService:
         self._stop = False
         self._busy = False
         self._last_content_hash = None       # for content_changed diagnostics
+        self.acquisition_owner = None        # AcquisitionOwnerState once startup runs
 
     # -- one refresh attempt (bounded retries; never raises) -----------------
     def refresh_once(self, now):
@@ -136,18 +137,41 @@ class CalendarAcquisitionService:
         self._stop = True
 
     def run_forever(self, max_cycles=None):
-        """Refresh, then sleep the interval, repeatedly. Guarded by a single-instance
-        lock so a duplicate process refuses to start. No busy loop; clean shutdown."""
+        """Refresh, then sleep the interval, repeatedly. Guarded by the canonical
+        single-owner OS lock so at most one LIVE acquirer runs per domain. Self-
+        healing: a dead owner's leftover lock never blocks startup; a live owner is
+        never displaced; an unknown ownership outcome fails closed. No busy loop;
+        clean shutdown. Returns the :class:`AcquisitionOwnerState` reached."""
         if not self.cfg.enabled:
             self.logger.info("calendar acquisition disabled; not starting")
-            return
-        lock = SingleInstanceLock(self.cfg.lock_file) if self.cfg.lock_file else None
-        if lock is not None:
-            try:
-                lock.acquire()
-            except LockHeld:
-                self.logger.error("another acquisition instance is running; refusing to start")
-                return
+            self.acquisition_owner = None
+            return None
+
+        lock, state, detail = (None, AcquisitionOwnerState.ACQUIRED, {})
+        if self.cfg.lock_file:
+            lock, state, detail = acquire_ownership(self.cfg.lock_file, logger=self.logger)
+        self.acquisition_owner = state
+        self.health.acquisition_owner = state
+
+        if state in AcquisitionOwnerState.REFUSING:
+            if state == AcquisitionOwnerState.HELD_BY_OTHER:
+                # Preserved message + explicit owner state. The live owner's health
+                # artifact is left untouched (no mutation of an active owner's state).
+                self.logger.error("another acquisition instance is running; refusing to "
+                                   "start (News Acquisition Owner: HELD_BY_OTHER; holder=%s)",
+                                   detail.get("holder"))
+            else:
+                self.logger.error("news acquisition ownership could not be established "
+                                  "(News Acquisition Owner: %s; %s); failing closed",
+                                  state, detail.get("reason"))
+            return state
+
+        if state == AcquisitionOwnerState.STALE_RECOVERED:
+            self.logger.info("news acquisition ownership acquired after safe stale "
+                             "recovery (News Acquisition Owner: STALE_RECOVERED)")
+        else:
+            self.logger.info("news acquisition ownership acquired "
+                             "(News Acquisition Owner: ACQUIRED)")
         try:
             self._install_signals()
             self.logger.info("calendar acquisition service started (DEMO, data-only)")
@@ -161,7 +185,8 @@ class CalendarAcquisitionService:
             self.logger.info("calendar acquisition service stopped gracefully")
         finally:
             if lock is not None:
-                lock.release()
+                lock.release()               # graceful release; a crash frees via the OS
+        return state
 
     def _sleep_interval(self):
         remaining = float(self.cfg.refresh_sec)

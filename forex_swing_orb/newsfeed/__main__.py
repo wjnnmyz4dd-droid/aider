@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 
+from .acquisition_lock import AcquisitionOwnerState
 from .contract import AcquisitionError
 from .service import build_from_env
 
@@ -22,7 +23,13 @@ def main(argv=None):
     except AcquisitionError as exc:
         sys.stderr.write(f"calendar acquisition config error: {exc}\n")
         return 2
-    service.run_forever()
+    state = service.run_forever()
+    # Truthful exit codes (mirrors the producer/manager F1 convention): a fail-closed
+    # ownership refusal is exit 4 so an OS supervisor / operator can distinguish it
+    # from a clean stop. A dead prior owner self-heals to ACQUIRED/STALE_RECOVERED
+    # and runs normally, so it never lands here.
+    if state in AcquisitionOwnerState.REFUSING:
+        return 4
     return 0
 
 

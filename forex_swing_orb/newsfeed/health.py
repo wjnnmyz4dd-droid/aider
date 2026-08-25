@@ -54,6 +54,10 @@ class HealthState:
         self.event_count = None
         self.high_event_count = None
         self.next_refresh = None
+        # Observational single-owner acquisition state (ACQUIRED / STALE_RECOVERED /
+        # ... ) set by the service at startup. A SEPARATE dimension from `status`,
+        # `healthy`, and the externally-derived SERVICE_STALE liveness -- never merged.
+        self.acquisition_owner = None
 
     def record_attempt(self, now_iso):
         self.last_attempt = now_iso
@@ -108,6 +112,7 @@ class HealthState:
             "event_count": self.event_count,
             "high_event_count": self.high_event_count,
             "next_refresh": self.next_refresh,
+            "acquisition_owner": self.acquisition_owner,
             "file_path": self.file_path,
             "refresh_sec": self.refresh_sec,
             "service_stale_rule": (
