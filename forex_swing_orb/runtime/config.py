@@ -58,6 +58,10 @@ _ENV = {
     "advisory_mode": "SESSION_EDGE_ADVISORY_MODE",
     "advisory_provider": "SESSION_EDGE_ADVISORY_PROVIDER",
     "advisory_output_path": "SESSION_EDGE_ADVISORY_OUTPUT_PATH",
+    # -- user risk configuration (front-end only; PR-3J stays the sole sizer) ---
+    "risk_profile": "SESSION_EDGE_RISK_PROFILE",
+    "risk_fraction": "SESSION_EDGE_RISK_FRACTION",
+    "sizing_mode": "SESSION_EDGE_SIZING_MODE",
 }
 _CONFIG_PATH_ENV = "SESSION_EDGE_CONFIG"
 _PASSWORD_ENV = "SESSION_EDGE_MT5_PASSWORD"     # secret; never stored on the config
@@ -95,6 +99,15 @@ class RuntimeConfig:
     advisory_mode: str = "SHADOW_ONLY"
     advisory_provider: str = "mock"
     advisory_output_path_override: str = None
+    # -- user risk configuration (front-end only; PR-3J is the sole sizer) ----
+    # risk_profile/sizing_mode are informational (reporting); risk_fraction is the
+    # resolved per-trade risk cap the producer applies as the sizing POLICY input.
+    # None -> no override (use the engine instruction's risk_fraction; backward
+    # compatible). Always <= max_risk_per_trade_pct (validated + re-enforced by the
+    # compliance RISK gate).
+    risk_profile: str = "MODERATE"
+    risk_fraction: float = None
+    sizing_mode: str = "ADAPTIVE"
 
     # -- canonical session model (single source of truth) -------------------
     def session_model(self):
@@ -180,6 +193,9 @@ class RuntimeConfig:
             "news_file": self.news_file,
             "cadence_sec": self.cadence_sec,
             "mt5_server": self.mt5_server,
+            "risk_profile": self.risk_profile,
+            "risk_fraction": self.risk_fraction,
+            "sizing_mode": self.sizing_mode,
             # deliberately omitted: mt5_login (identity), password (secret)
         }
 
@@ -341,6 +357,23 @@ def _validate(merged):
         raise ConfigError("advisory_mode must be SHADOW_ONLY in this phase")
     advisory_provider = str(merged.get("advisory_provider") or "mock")
 
+    # -- user risk configuration (front-end only; PR-3J stays the sole sizer) --
+    # risk_profile/sizing_mode are informational. risk_fraction, if provided, is the
+    # resolved per-trade risk cap; it MUST be a finite fraction in (0, ceiling]. The
+    # compliance RISK gate re-enforces the same ceiling at runtime (defense in depth).
+    from .risk_profile import CEILING_RISK_FRACTION
+    risk_profile = str(merged.get("risk_profile") or "MODERATE").upper()
+    sizing_mode = str(merged.get("sizing_mode") or "ADAPTIVE").upper()
+    risk_fraction = merged.get("risk_fraction")
+    if risk_fraction in (None, ""):
+        risk_fraction = None
+    else:
+        risk_fraction = _as_float("risk_fraction", risk_fraction)
+        if not (0 < risk_fraction <= CEILING_RISK_FRACTION + 1e-12):
+            raise ConfigError(
+                f"risk_fraction must be in (0, {CEILING_RISK_FRACTION}] "
+                f"(max_risk_per_trade_pct), got {risk_fraction}")
+
     return RuntimeConfig(
         bridge_root=bridge_root, runtime_dir=runtime_dir, symbols=symbols,
         initial_balance=initial_balance, account_currency=account_currency,
@@ -360,7 +393,8 @@ def _validate(merged):
         advisory_enabled=advisory_enabled, advisory_mode=advisory_mode,
         advisory_provider=advisory_provider,
         advisory_output_path_override=(str(merged["advisory_output_path"])
-                                       if merged.get("advisory_output_path") else None))
+                                       if merged.get("advisory_output_path") else None),
+        risk_profile=risk_profile, risk_fraction=risk_fraction, sizing_mode=sizing_mode)
 
 
 def _parse_symbols(raw):

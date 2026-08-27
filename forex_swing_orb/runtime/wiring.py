@@ -66,7 +66,11 @@ def build_runner_config(cfg, compliance=None):
         strategy_capability=SESSION_ORB_CAPABILITY,
         # PR-4A: the enabled session profiles the runner fans out over (validated,
         # deterministic order). Fails closed at config time on an unknown session.
-        session_profiles=profiles_for(cfg.enabled_sessions))
+        session_profiles=profiles_for(cfg.enabled_sessions),
+        # User risk-profile policy cap (front-end resolved value). None -> use the
+        # engine instruction's own risk_fraction (backward compatible).
+        policy_risk_fraction=getattr(cfg, "risk_fraction", None),
+        sizing_mode=getattr(cfg, "sizing_mode", None))
 
 
 # --------------------------------------------------------------------------- #

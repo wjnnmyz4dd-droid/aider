@@ -211,6 +211,39 @@ class ProducerRunner:
             bh.get("tick_size"), bh.get("tick_value"),
             bh.get("volume_min"), bh.get("volume_max"), bh.get("volume_step"))
 
+    def _sizing_diagnostics(self, candidate, bh, final_volume):
+        """Explainable, deterministic sizing breakdown for the audit — 'why this
+        volume?'. Read-only: it recomputes the same PR-3J inputs for transparency and
+        NEVER makes a second sizing decision (``final_volume`` is PR-3J's output).
+        No account identity/secret is exposed (only the capital BASIS amount)."""
+        from ..compliance.contract import finite
+        profile = self.config.compliance.profile
+        rf = finite(candidate.get("risk_fraction"))
+        basis = finite(getattr(profile, "initial_balance", None))   # pinned funded capital
+        permitted = candidate_risk_amount(candidate, profile)       # rf * initial_balance
+        d = sizing.price_distance(candidate.get("entry"), candidate.get("stop_loss"))
+        raw = None
+        ts, tv = finite(bh.get("tick_size")), finite(bh.get("tick_value"))
+        if permitted is not None and d is not None and ts and tv:
+            per_lot = d / ts * tv
+            raw = (permitted / per_lot) if per_lot > 0 else None
+        loss = sizing.loss_at_stop(candidate.get("entry"), candidate.get("stop_loss"),
+                                   final_volume, ts, tv) if final_volume else None
+        return {
+            "authority": "PR-3J compliance.sizing.allowable_volume",
+            "sizing_mode": getattr(self.config, "sizing_mode", None),
+            "capital_basis": basis,                 # pinned initial_balance (not live equity)
+            "risk_fraction": rf,
+            "risk_amount": permitted,               # basis * risk_fraction
+            "stop_distance": d,
+            "tick_size": ts, "tick_value": tv,
+            "volume_min": bh.get("volume_min"), "volume_max": bh.get("volume_max"),
+            "volume_step": bh.get("volume_step"),
+            "raw_volume": raw,                      # pre-rounding (illustrative)
+            "final_volume": final_volume,           # PR-3J step-rounded, budget-proven
+            "loss_at_stop_final": loss,
+        }
+
     def _session_trade_eligible(self, profile, now):
         """Per-session entry eligibility (PR-4A). Authority = the session's STRATEGY
         entry window (SC-2), then the configured OVERLAP_MODE from the session model:
@@ -357,10 +390,24 @@ class ProducerRunner:
         # A None volume (missing metadata, or risk budget below the minimum lot) flows
         # to compliance, which fails closed (RISK_MONETARY_UNVERIFIABLE) — no trade,
         # never an independent EA lot.
+        # User risk-profile POLICY: stamp the configured per-trade risk cap onto BOTH
+        # the instruction and the candidate BEFORE sizing/compliance/write, so PR-3J
+        # sizing, the compliance RISK re-proof, and H-1 committed-risk accounting all
+        # use the SAME risk_fraction (one authority). None -> keep the engine's own
+        # risk_fraction (backward compatible). This is a risk CAP only; it changes no
+        # signal, geometry, session, news, or FTMO logic.
+        prf = getattr(self.config, "policy_risk_fraction", None)
+        if prf is not None:
+            instr = {**instr, "risk_fraction": prf}
+            candidate = {**candidate, "risk_fraction": prf}
+
         volume = self._size_volume(candidate, bh)
         instr = {**instr, "volume": volume,
                  "schema_version": PRODUCTION_INSTRUCTION_SCHEMA_VERSION}
         candidate = {**candidate, "volume": volume}
+        # Explainable sizing diagnostics (audit only; NOT a second decision — PR-3J
+        # already produced `volume`). Answers "why this volume?" deterministically.
+        detail["sizing"] = self._sizing_diagnostics(candidate, bh, volume)
 
         decision = self.compliance.evaluate(
             candidate, market_state=market_state, account_state=eff_acct,

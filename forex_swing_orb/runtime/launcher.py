@@ -88,7 +88,8 @@ def build_env(base_env, *, bridge_root, runtime_dir, news_file, symbols,
               symbol_suffix, initial_balance, account_currency, ftmo_source,
               ftmo_verified_at, enabled_sessions=DEFAULT_SESSIONS,
               overlap_mode=DEFAULT_OVERLAP_MODE, calendar_provider=DEFAULT_PROVIDER,
-              terminal_path=None):
+              terminal_path=None, risk_profile=None, risk_fraction=None,
+              sizing_mode=None):
     """Build the child environment. FTMO_PROFILE_VERIFIED is set true here because
     the caller only reaches this step AFTER the operator has attested (see main).
     ``terminal_path`` (when known) pins producer/manager to the SAME MT5 terminal the
@@ -115,6 +116,13 @@ def build_env(base_env, *, bridge_root, runtime_dir, news_file, symbols,
         "SESSION_EDGE_CALENDAR_PROVIDER": calendar_provider,
         "SESSION_EDGE_CALENDAR_OUTPUT_FILE": str(news_file),
     })
+    # user risk configuration (front-end resolved; PR-3J stays the sole sizer)
+    if risk_profile:
+        env["SESSION_EDGE_RISK_PROFILE"] = str(risk_profile)
+    if sizing_mode:
+        env["SESSION_EDGE_SIZING_MODE"] = str(sizing_mode)
+    if risk_fraction is not None:
+        env["SESSION_EDGE_RISK_FRACTION"] = repr(float(risk_fraction))
     # a stale SESSION_EDGE_CONFIG file would override our env — drop it so discovery wins
     env.pop("SESSION_EDGE_CONFIG", None)
     return env
@@ -251,6 +259,17 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
                         "NEW_YORK or ALL. Omit to reuse your last saved selection "
                         "(persisted per run); first run with none defaults to LONDON. "
                         "Passing this pins it as your new default.")
+    p.add_argument("--risk-profile", default=None,
+                   help="risk profile: CONSERVATIVE (0.25%), MODERATE (0.50%, default), "
+                        "AGGRESSIVE (1.00%), or CUSTOM (with --risk-fraction). Omit to "
+                        "reuse your last saved profile; first run defaults to MODERATE. "
+                        "Passing this pins it as your new default. Risk only — it never "
+                        "changes strategy/session/news/FTMO logic, and is always capped "
+                        "by max_risk_per_trade_pct.")
+    p.add_argument("--risk-fraction", type=float, default=None,
+                   help="per-trade risk fraction for --risk-profile CUSTOM (e.g. 0.004 "
+                        "for 0.4%). Must be in (0, max_risk_per_trade_pct]; fails closed "
+                        "otherwise. Ignored for the named profiles.")
     p.add_argument("--initial-balance", type=float, default=None,
                    help="OPTIONAL: true FTMO challenge starting capital. On first run "
                         "for an account it pins this value; normally omitted (the launcher "
@@ -363,6 +382,22 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
               f"started. Re-run with --sessions SYDNEY,TOKYO,LONDON,NEW_YORK or ALL.",
               file=sys.stderr)
         return 7
+    # Risk profile / sizing mode (zero-friction, persisted; ONE risk front-end). Like
+    # sessions: explicit CLI wins and is persisted; else the saved profile; else
+    # MODERATE. Resolves to an explicit risk_fraction bounded by max_risk_per_trade_pct
+    # (fails closed above the ceiling). This is the SOLE risk-config surface; PR-3J
+    # stays the sole sizer and compliance re-proves the ceiling.
+    from . import risk_profile as _rp
+    try:
+        risk_prof, risk_frac, sizing_mode, risk_source = _rp.resolve(
+            args.risk_profile, args.risk_fraction, _rp.store_path(), now_iso=now_iso)
+    except _rp.RiskProfileError as exc:
+        print(f"Session Edge launcher: invalid risk profile ({exc}). Nothing started. "
+              f"Re-run with --risk-profile CONSERVATIVE|MODERATE|AGGRESSIVE|CUSTOM "
+              f"(CUSTOM needs --risk-fraction <= {_rp.CEILING_RISK_FRACTION}).",
+              file=sys.stderr)
+        return 7
+
     currency = args.currency or disc.get("currency")
     if not currency:
         _did_not_start(disc, bridge_root, reason="ACCOUNT CURRENCY UNAVAILABLE",
@@ -405,6 +440,7 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         news_file=str(news_file), symbols=symbols, symbol_suffix=args.symbol_suffix,
         initial_balance=balance, account_currency=currency,
         enabled_sessions=sessions, terminal_path=disc.get("terminal_exe"),
+        risk_profile=risk_prof, risk_fraction=risk_frac, sizing_mode=sizing_mode,
         ftmo_source="FTMO 2-Step Swing (operator-attested via launcher)",
         ftmo_verified_at=datetime.now(timezone.utc).date().isoformat())
 
@@ -432,6 +468,18 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     # has no manual lot control anywhere (the EA's DefaultVolume input was removed).
     print(_line("Lot Sizing", "PASS", "AUTONOMOUS — PR-3J (compliance/sizing)"))
     print(_line("Manual Lot Override", "DISABLED"))
+    # Risk & Sizing configuration (front-end only; PR-3J stays the sole sizer). The
+    # "Safe Risk Capacity" is the per-trade money budget = risk_fraction × pinned
+    # funded capital; the actual volume is derived per-trade by PR-3J from this budget,
+    # the stop distance, and broker lot metadata, and re-proven by compliance/H-1.
+    _rsrc = {"cli": "from --risk-profile (saved)", "persisted": "saved profile",
+             "default": "default"}.get(risk_source, risk_source)
+    print(_line("Risk Profile", "PASS", f"{risk_prof} — {_rsrc}"))
+    print(_line("Sizing Mode", "PASS", f"{sizing_mode} (risk-based; PR-3J)"))
+    print(_line("Configured Risk", "PASS", f"{risk_frac * 100:.2f}% per trade "
+                f"(cap {_rp.CEILING_RISK_FRACTION * 100:.2f}%)"))
+    print(_line("Safe Risk Capacity", "PASS",
+                f"{currency} {balance * risk_frac:,.2f} per trade (max loss-at-stop)"))
     print(_line("Timezone Data", tz_status, tz_detail if tz_status != _pf.PASS else ""))
 
     # Bridge readiness — split the old ambiguous single "Bridge PASS" (which only ever

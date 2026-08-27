@@ -109,6 +109,13 @@ class RunnerConfig:
     # evaluation per profile per symbol). Empty -> a single implicit LONDON profile
     # (backward compatible: the frozen engine's default session is LONDON).
     session_profiles: tuple = ()
+    # User risk-profile POLICY input: the resolved per-trade risk cap the runner
+    # stamps onto each candidate/instruction BEFORE PR-3J sizing + compliance +
+    # H-1 (so all three use the SAME fraction). None -> use the engine instruction's
+    # own risk_fraction (backward compatible). NEVER a second sizer: PR-3J still
+    # computes the volume and compliance still re-proves the ceiling and the money.
+    policy_risk_fraction: float = None
+    sizing_mode: str = None                     # informational (audit/diagnostics only)
 
 
 @dataclass(frozen=True)
