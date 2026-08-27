@@ -468,10 +468,22 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
     print(_line("Manager", "STARTING"))
     print("=" * 60)
 
+    # Bind children to the launcher's lifetime so an abnormal launcher exit (console
+    # [X], force-kill, or a fatal error that skips `finally`) can never leave an
+    # orphaned newsfeed child holding the news-acquisition OS lock. On Windows this is
+    # a Job Object with kill-on-close; on POSIX it is a no-op and the terminate()+wait()
+    # below remains the reaper. It only ever kills processes WE assign — never an
+    # unrelated python.exe.
+    from . import proc_group as _pg
+    group = _pg.create_kill_on_close_group()
     procs = []
     try:
         for module in CHILDREN:
-            procs.append((module, _spawn(module, env)))
+            proc = _spawn(module, env)
+            group.assign(proc)
+            procs.append((module, proc))
+        if group.supported:
+            print(_line("Child Cleanup", "PASS", "kill-on-exit bound (no orphans)"))
         print(" SESSION EDGE PROCESSES STARTED")
         print(" STARTED is not READY: the child processes are up, but end-to-end")
         print(" readiness (a LIVE EA heartbeat on this bridge, producer not blocked,")
@@ -506,7 +518,14 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
             try:
                 proc.wait(timeout=10)
             except Exception:
+                # A child that ignored terminate() within the grace window would
+                # otherwise orphan and keep the lock; the job's kill-on-close (below)
+                # is the deterministic backstop that still reaps it.
                 pass
+        try:
+            group.close()               # Windows: kill-on-close reaps any survivor
+        except Exception:
+            pass
     return 0
 
 

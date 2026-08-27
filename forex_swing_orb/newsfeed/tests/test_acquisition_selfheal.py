@@ -106,7 +106,9 @@ def test_16_recovery_module_has_no_trade_authority():
 def test_1_fresh_acquire_reports_acquired(tmp_path):
     lock, state, detail = acquire_ownership(str(tmp_path / "acq.lock"))
     try:
-        assert state == S.ACQUIRED and lock.held and detail == {}
+        assert state == S.ACQUIRED and lock.held
+        assert detail.get("lock_path")               # diagnostic path surfaced
+        assert "prior_owner" not in detail           # fresh: no leftover artifact
     finally:
         lock.release()
 

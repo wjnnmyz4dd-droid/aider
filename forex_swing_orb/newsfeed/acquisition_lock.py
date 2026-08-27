@@ -60,7 +60,7 @@ NewsAcquisitionLockUnavailable = ProcessLockUnavailable
 
 __all__ = ["NewsAcquisitionLock", "NewsAcquisitionLockError", "NewsAcquisitionLockHeld",
            "NewsAcquisitionLockUnavailable", "AcquisitionOwnerState",
-           "acquire_ownership", "canonical_domain"]
+           "acquire_ownership", "probe_ownership", "canonical_domain"]
 
 
 class AcquisitionOwnerState:
@@ -128,16 +128,26 @@ def acquire_ownership(lock_path, *, logger=None):
 
     try:
         lock.acquire()
-    except ProcessLockHeld:                           # a LIVE owner holds it
-        return (None, AcquisitionOwnerState.HELD_BY_OTHER,
-                {"holder": lock.owner_diagnostics()})
-    except ProcessLockUnavailable as exc:             # no primitive / I/O error
-        return (None, AcquisitionOwnerState.UNKNOWN, {"reason": repr(exc)})
+    except ProcessLockHeld:                           # a LIVE owner holds the OS lock
+        # The OS lock -- not this metadata -- proved a live owner exists. Holder
+        # identity is best-effort: it can be None if the live owner is between taking
+        # the lock and writing its diagnostics, or if the file is transiently
+        # unreadable. A None holder NEVER downgrades the HELD_BY_OTHER decision.
+        holder = lock.owner_diagnostics()
+        detail = {"holder": holder, "lock_path": str(lock.path), "contended": True}
+        if not holder:
+            detail["holder_note"] = ("a live owner holds the OS lock but has not yet "
+                                     "published (or we could not read) its identity")
+        return (None, AcquisitionOwnerState.HELD_BY_OTHER, detail)
+    except ProcessLockUnavailable as exc:             # no primitive / I/O error at open/lock
+        return (None, AcquisitionOwnerState.UNKNOWN,
+                {"reason": repr(exc), "lock_path": str(lock.path), "contended": False})
     except Exception as exc:                          # defensive: fail closed on anything
-        return (None, AcquisitionOwnerState.ERROR, {"reason": repr(exc)})
+        return (None, AcquisitionOwnerState.ERROR,
+                {"reason": repr(exc), "lock_path": str(lock.path)})
 
     if pre_existed:
-        detail = {"prior_owner": prior_owner}
+        detail = {"prior_owner": prior_owner, "lock_path": str(lock.path)}
         if logger is not None:
             logger.warning(
                 "STALE_ACQUISITION_OWNER_RECOVERED: superseded a leftover news-"
@@ -145,4 +155,26 @@ def acquire_ownership(lock_path, *, logger=None):
                 "crash, forced termination, reboot, or restart). previous_owner=%s",
                 prior_owner)
         return (lock, AcquisitionOwnerState.STALE_RECOVERED, detail)
-    return (lock, AcquisitionOwnerState.ACQUIRED, {})
+    return (lock, AcquisitionOwnerState.ACQUIRED, {"lock_path": str(lock.path)})
+
+
+def probe_ownership(lock_path):
+    """READ-ONLY, NON-DESTRUCTIVE ownership probe for diagnostics/recovery.
+
+    Attempts to take the OS lock and, on success, IMMEDIATELY releases it -- so this
+    only observes whether a LIVE owner currently exists; it never keeps ownership,
+    never deletes a lock file, and never kills a process. Returns ``(state, detail)``:
+
+      * ACQUIRED / STALE_RECOVERED -> no live owner right now (safe to start; a leftover
+        artifact, if any, is harmless and will self-heal).
+      * HELD_BY_OTHER              -> a live Session Edge news process holds the lock.
+      * UNKNOWN / ERROR            -> ownership could not be determined (fail closed).
+
+    NB: this is a point-in-time observation; between probing and starting, ownership
+    can change. The authoritative single-owner guarantee is still the live acquire in
+    the service, never this probe.
+    """
+    lock, state, detail = acquire_ownership(lock_path)
+    if lock is not None:
+        lock.release()                                # observe only; never keep ownership
+    return (state, detail)

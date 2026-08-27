@@ -157,9 +157,14 @@ class CalendarAcquisitionService:
             if state == AcquisitionOwnerState.HELD_BY_OTHER:
                 # Preserved message + explicit owner state. The live owner's health
                 # artifact is left untouched (no mutation of an active owner's state).
+                # A live owner is proven by the OS lock even when holder identity is
+                # unavailable; surface the lock path and the note either way.
                 self.logger.error("another acquisition instance is running; refusing to "
-                                   "start (News Acquisition Owner: HELD_BY_OTHER; holder=%s)",
-                                   detail.get("holder"))
+                                   "start (News Acquisition Owner: HELD_BY_OTHER; "
+                                   "lock=%s; holder=%s%s)",
+                                   detail.get("lock_path"), detail.get("holder"),
+                                   "" if detail.get("holder")
+                                   else " [" + str(detail.get("holder_note", "")) + "]")
             else:
                 self.logger.error("news acquisition ownership could not be established "
                                   "(News Acquisition Owner: %s; %s); failing closed",

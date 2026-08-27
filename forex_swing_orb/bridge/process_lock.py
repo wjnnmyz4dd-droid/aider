@@ -39,6 +39,12 @@ try:                                   # Windows
 except ImportError:                    # pragma: no cover - non-Windows
     _HAVE_MSVCRT = False
 
+# The single, fixed byte range every Windows owner locks (see ProcessLock._os_lock).
+# Fixed so all acquirers contend on the exact same region; the byte is guaranteed to
+# exist before locking. Irrelevant on POSIX (flock locks the whole open description).
+LOCK_BYTE_OFFSET = 0
+LOCK_BYTE_COUNT = 1
+
 
 class ProcessLockError(RuntimeError):
     """Base for process-lock failures (always fail closed)."""
@@ -113,22 +119,46 @@ class ProcessLock:
                 raise ProcessLockHeld(
                     "another owner holds {}".format(self.path)) from exc
         else:                                        # pragma: no cover - Windows only
-            os.lseek(fd, 0, os.SEEK_SET)
+            # Windows byte-range lock (msvcrt.locking -> LockFile). Two correctness
+            # requirements the kernel does NOT paper over for us:
+            #   (1) EVERY acquirer must lock the EXACT same byte range. We fix that
+            #       range to the single byte at offset 0 (LOCK_BYTE_OFFSET), seeking
+            #       there first, and locking exactly LOCK_BYTE_COUNT (=1) byte.
+            #   (2) That byte must EXIST. Locking a region beyond EOF on a freshly
+            #       created zero-length file is implementation-defined; guarantee a
+            #       non-empty file first. The sentinel write is idempotent across
+            #       racers (same single byte) and is overwritten by diagnostics on the
+            #       winner. The OS lock below -- never file size or contents -- decides
+            #       ownership; the kernel frees it when this process dies.
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                if os.fstat(fd).st_size < 1:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    os.write(fd, b"\n")              # sentinel; ensures byte 0 exists
+                    os.fsync(fd)
+            except OSError:
+                pass                                 # best-effort; the lock is authority
+            os.lseek(fd, LOCK_BYTE_OFFSET, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, LOCK_BYTE_COUNT)
             except OSError as exc:                    # region locked -> held (fail closed)
                 raise ProcessLockHeld(
                     "another owner holds {}".format(self.path)) from exc
 
     def _write_diagnostics(self):
-        """Best-effort operator diagnostics. NOT authority — the OS lock is."""
+        """Best-effort operator diagnostics. NOT authority — the OS lock is.
+
+        Written into the SAME byte the Windows lock guards (offset 0), which the
+        owning handle may freely rewrite. The old code truncated to 0 THEN wrote,
+        leaving a momentary empty file a racing reader could observe as
+        ``holder=None``; here we write first and only THEN trim any stale tail, so
+        the file is never emptied and the first byte is always populated."""
         payload = "pid={} host={} started_at={} domain={} lock={}\n".format(
             os.getpid(), platform.node() or "unknown", int(time.time()),
-            self.domain, self.lock_name)
+            self.domain, self.lock_name).encode("utf-8", "replace")
         try:
-            os.ftruncate(self._fd, 0)
             os.lseek(self._fd, 0, os.SEEK_SET)
-            os.write(self._fd, payload.encode("utf-8", "replace"))
+            n = os.write(self._fd, payload)
+            os.ftruncate(self._fd, max(n, 1))        # trim stale tail; NEVER empty it
             os.fsync(self._fd)
         except OSError:
             pass                                     # diagnostics only; lock still holds
@@ -146,8 +176,8 @@ class ProcessLock:
             if _HAVE_FCNTL:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             else:                                    # pragma: no cover - Windows only
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                os.lseek(fd, LOCK_BYTE_OFFSET, os.SEEK_SET)   # unlock the exact region
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, LOCK_BYTE_COUNT)
         except OSError:
             pass
         finally:
