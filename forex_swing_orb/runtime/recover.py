@@ -47,8 +47,12 @@ def main(argv=None):
         description="Read-only Session Edge news-acquisition ownership probe "
                     "(never kills a process or deletes a lock).")
     p.add_argument("--lock", default=None,
-                   help="path to the news-acquisition lock file (default: derived "
-                        "from SESSION_EDGE_CALENDAR_LOCK_FILE / the news output file).")
+                   help="path to the news-acquisition lock file. OMIT to use the SAME "
+                        "path the running service uses (derived from "
+                        "SESSION_EDGE_CALENDAR_LOCK_FILE / the news output file) — "
+                        "recommended, so you never probe a different/stale file than "
+                        "the launcher configured. This is the only accepted option "
+                        "name (there is no --lock-path).")
     args = p.parse_args(argv)
 
     lock_path = _resolve_lock_path(args.lock)
@@ -59,11 +63,23 @@ def main(argv=None):
         return 4
 
     state, detail = probe_ownership(lock_path)
+    # Plain-language diagnosis so a read-only probe result is unambiguous. The
+    # internal ACQUIRED/STALE_RECOVERED states both mean "no live owner held the OS
+    # lock at probe time" — the probe momentarily TOOK the lock to prove that and then
+    # RELEASED it (it is read-only w.r.t. persistent state: it never keeps ownership,
+    # deletes the file, or kills a process). It is NOT a claim that this diagnostic
+    # now owns the domain.
+    diagnosis = {
+        S.HELD_BY_OTHER: "LIVE_OWNER (a live owner holds the OS lock)",
+        S.ACQUIRED: "LOCK_FREE (no live owner; safe to start)",
+        S.STALE_RECOVERED: "LOCK_FREE — leftover marker present, no live owner (safe to start)",
+    }.get(state, "UNKNOWN (fail closed)")
     print("=" * 60)
     print(" SESSION EDGE — NEWS ACQUISITION OWNERSHIP PROBE (read-only)")
     print("=" * 60)
     print(f" Lock file          : {detail.get('lock_path', lock_path)}")
-    print(f" Ownership state    : {state}")
+    print(f" Diagnosis          : {diagnosis}")
+    print(f" Ownership state    : {state}   (probe took + released the OS lock to test)")
     if state == S.HELD_BY_OTHER:
         print(f" Holder identity    : {detail.get('holder') or 'unavailable'}")
         if not detail.get("holder"):

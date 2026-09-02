@@ -149,11 +149,16 @@ def acquire_ownership(lock_path, *, logger=None):
     if pre_existed:
         detail = {"prior_owner": prior_owner, "lock_path": str(lock.path)}
         if logger is not None:
-            logger.warning(
-                "STALE_ACQUISITION_OWNER_RECOVERED: superseded a leftover news-"
-                "acquisition ownership artifact with no live owner (expected after a "
-                "crash, forced termination, reboot, or restart). previous_owner=%s",
-                prior_owner)
+            # INFO, not WARNING: this is the EXPECTED, benign path on essentially every
+            # restart. The lock FILE is deliberately never deleted on release (the OS
+            # lock, not the file, is authority), so a leftover marker is present after a
+            # clean shutdown just as after a crash. We reached here only because the OS
+            # lock was FREE (a live owner would have been HELD_BY_OTHER above), so
+            # nothing unsafe happened — we simply reclaimed the marker. Not alarming.
+            logger.info(
+                "news acquisition ownership acquired; reclaimed a leftover ownership "
+                "marker (no live owner held the OS lock — normal on any restart, crash, "
+                "or reboot). previous_owner=%s", prior_owner)
         return (lock, AcquisitionOwnerState.STALE_RECOVERED, detail)
     return (lock, AcquisitionOwnerState.ACQUIRED, {"lock_path": str(lock.path)})
 

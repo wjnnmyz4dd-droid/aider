@@ -172,8 +172,11 @@ class CalendarAcquisitionService:
             return state
 
         if state == AcquisitionOwnerState.STALE_RECOVERED:
-            self.logger.info("news acquisition ownership acquired after safe stale "
-                             "recovery (News Acquisition Owner: STALE_RECOVERED)")
+            # Benign + expected on virtually every restart (the lock file is never
+            # deleted on release); the OS lock was free, so no live owner was displaced.
+            self.logger.info("news acquisition ownership acquired; reclaimed a leftover "
+                             "ownership marker, no live owner (News Acquisition Owner: "
+                             "STALE_RECOVERED — normal on restart)")
         else:
             self.logger.info("news acquisition ownership acquired "
                              "(News Acquisition Owner: ACQUIRED)")
