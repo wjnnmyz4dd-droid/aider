@@ -16,16 +16,23 @@ and ``sleep_fn`` are injected for deterministic tests.
 from __future__ import annotations
 
 import logging
+import os
 import signal
+import sys
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from ..bridge import serialize
+from ..bridge.atomic import atomic_write_text
 from . import health as health_mod
 from . import writer
 from .acquire import CalendarAcquirer
 from .acquisition_lock import AcquisitionOwnerState, acquire_ownership
 from .contract import AcquisitionError, Reason
+
+STARTUP_DIAGNOSTIC_SCHEMA = 1
+STARTUP_DIAGNOSTIC_FILE = "startup_diagnostic.json"
 
 
 def _utc_now():
@@ -35,9 +42,19 @@ def _utc_now():
 def _configure_logging(log_path):
     logger = logging.getLogger("session_edge.calendar")
     logger.setLevel(logging.INFO)
-    if log_path and not logger.handlers:
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    # Always attach a stderr handler so critical startup diagnostics (esp. an
+    # ownership refusal + its reason) are reliably visible in the Windows console,
+    # instead of relying on Python's lastResort handler. Idempotent (guarded by a
+    # marker attribute) so repeated construction in-process does not duplicate lines.
+    if not any(getattr(h, "_session_edge_stderr", False) for h in logger.handlers):
+        sh = logging.StreamHandler(sys.stderr)
+        sh.setFormatter(fmt)
+        sh._session_edge_stderr = True
+        logger.addHandler(sh)
+    if log_path and not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
         h = logging.FileHandler(log_path, encoding="utf-8")
-        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        h.setFormatter(fmt)
         logger.addHandler(h)
     return logger
 
@@ -117,6 +134,46 @@ class CalendarAcquisitionService:
                     self._sleep(min(self.cfg.backoff_sec * (2 ** i), 60.0))
         raise last
 
+    def _runtime_dir(self):
+        """The canonical Session Edge runtime directory (parent of the news bundle /
+        lock), derived from the SAME config the ownership lock uses -- no new path
+        authority. None if it cannot be resolved."""
+        base = self.cfg.output_file or self.cfg.lock_file
+        return str(Path(base).parent) if base else None
+
+    def _write_startup_diagnostic(self, state, detail):
+        """Persist an operator-readable startup-refusal diagnostic (Part B). Best-effort
+        and diagnostic-ONLY: any failure here is swallowed and NEVER changes the
+        fail-closed outcome. No secrets/credentials/env dump."""
+        runtime_dir = self._runtime_dir()
+        payload = {
+            "schema_version": STARTUP_DIAGNOSTIC_SCHEMA,
+            "timestamp": serialize.iso_utc(self._now()),
+            "build_id": os.environ.get("SESSION_EDGE_BUILD_ID"),   # null if unset
+            "gate": "NEWS_ACQUISITION_OWNERSHIP",
+            "state": state,
+            "operation": detail.get("operation"),
+            "runtime_dir": runtime_dir,
+            "lock_path": detail.get("lock_path"),
+            "exception_class": detail.get("exception_class"),
+            "errno": detail.get("errno"),
+            "winerror": detail.get("winerror"),
+            "message": detail.get("message") or detail.get("reason"),
+            "holder": detail.get("holder"),                       # only for HELD_BY_OTHER
+            "disposition": "FAIL_CLOSED",
+        }
+        try:
+            if not runtime_dir:
+                self.logger.error("startup diagnostic not written: runtime dir unresolved")
+                return None
+            path = Path(runtime_dir) / STARTUP_DIAGNOSTIC_FILE
+            atomic_write_text(str(path), serialize.canonical_json(payload))
+            self.logger.error("startup diagnostic written: %s", path)
+            return str(path)
+        except Exception as exc:                                  # never mask the refusal
+            self.logger.error("could not write startup diagnostic (%r); refusal stands", exc)
+            return None
+
     def _write_health(self):
         if self.cfg.health_file:
             try:
@@ -154,6 +211,11 @@ class CalendarAcquisitionService:
         self.health.acquisition_owner = state
 
         if state in AcquisitionOwnerState.REFUSING:
+            # Persist a deterministic, operator-readable diagnostic so a Windows
+            # startup refusal never requires a screenshot. Diagnostic-ONLY: a failure
+            # to write it can NEVER turn the refusal into permission (we still return
+            # the REFUSING state below).
+            self._write_startup_diagnostic(state, detail)
             if state == AcquisitionOwnerState.HELD_BY_OTHER:
                 # Preserved message + explicit owner state. The live owner's health
                 # artifact is left untouched (no mutation of an active owner's state).

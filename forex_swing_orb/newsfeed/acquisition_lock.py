@@ -96,6 +96,46 @@ class NewsAcquisitionLock(ProcessLock):
         super().__init__(parent, lock_name=name)
 
 
+def _sanitize(text):
+    """Trim an exception message to a short, secret-free single line for diagnostics."""
+    s = " ".join(str(text).split())
+    return s[:400]
+
+
+def _error_detail(exc, *, lock_path=None, operation=None):
+    """Structured, diagnostic-only detail for an UNKNOWN/ERROR outcome. Preserves the
+    exception class and the underlying OS errno/winerror (Windows) when available -- so
+    the operator never sees a bare UNKNOWN when the reason is technically knowable. It
+    inspects ``__cause__`` because ProcessLock raises ``... from exc`` over the real
+    OSError. Never changes ownership semantics; carries no secrets."""
+    d = {"reason": repr(exc), "exception_class": type(exc).__name__,
+         "message": _sanitize(exc)}
+    if lock_path is not None:
+        d["lock_path"] = str(lock_path)
+    # find the underlying OSError (this exc, or the cause it was raised from)
+    src = exc if isinstance(exc, OSError) else getattr(exc, "__cause__", None)
+    if isinstance(src, OSError):
+        d["errno"] = getattr(src, "errno", None)
+        d["winerror"] = getattr(src, "winerror", None)   # None on POSIX
+        d["os_message"] = _sanitize(getattr(src, "strerror", "") or "")
+    else:
+        d["errno"] = None
+        d["winerror"] = None
+    # infer the operation from ProcessLock's message prefix when not given explicitly
+    if operation is None:
+        m = str(exc).lower()
+        if "cannot open lock" in m:
+            operation = "OPEN_LOCK_FILE"          # os.open / parent mkdir
+        elif "cannot lock" in m:
+            operation = "OS_LOCK"                 # msvcrt.locking / lseek
+        elif "no os file-lock primitive" in m:
+            operation = "NO_LOCK_PRIMITIVE"
+        else:
+            operation = "ESTABLISH_LOCK"
+    d["operation"] = operation
+    return d
+
+
 def acquire_ownership(lock_path, *, logger=None):
     """Attempt single-owner news-acquisition ownership. Self-healing and fail-closed.
 
@@ -115,11 +155,14 @@ def acquire_ownership(lock_path, *, logger=None):
     """
     if not lock_path:
         return (None, AcquisitionOwnerState.UNKNOWN,
-                {"reason": "no acquisition lock path configured"})
+                {"reason": "no acquisition lock path configured", "operation":
+                 "RESOLVE_LOCK_PATH", "exception_class": None, "errno": None,
+                 "winerror": None})
     try:
         lock = NewsAcquisitionLock(lock_path)
     except ProcessLockError as exc:                  # bad path / no primitive
-        return (None, AcquisitionOwnerState.UNKNOWN, {"reason": repr(exc)})
+        return (None, AcquisitionOwnerState.UNKNOWN,
+                _error_detail(exc, lock_path=lock_path, operation="CONSTRUCT_LOCK"))
 
     # Read any leftover ownership artifact BEFORE acquiring (read-only; never deleted).
     # Its mere presence is NOT proof of a live owner -- the OS lock decides that.
@@ -140,11 +183,12 @@ def acquire_ownership(lock_path, *, logger=None):
                                      "published (or we could not read) its identity")
         return (None, AcquisitionOwnerState.HELD_BY_OTHER, detail)
     except ProcessLockUnavailable as exc:             # no primitive / I/O error at open/lock
-        return (None, AcquisitionOwnerState.UNKNOWN,
-                {"reason": repr(exc), "lock_path": str(lock.path), "contended": False})
+        d = _error_detail(exc, lock_path=lock.path)
+        d["contended"] = False
+        return (None, AcquisitionOwnerState.UNKNOWN, d)
     except Exception as exc:                          # defensive: fail closed on anything
         return (None, AcquisitionOwnerState.ERROR,
-                {"reason": repr(exc), "lock_path": str(lock.path)})
+                _error_detail(exc, lock_path=lock.path, operation="UNEXPECTED"))
 
     if pre_existed:
         detail = {"prior_owner": prior_owner, "lock_path": str(lock.path)}

@@ -510,6 +510,19 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
               "to the EA's terminal64.exe for a deterministic bind.")
     print(_line("Symbol Metadata", _pf.ENV, "verify on-machine: python -m "
                 "forex_swing_orb.runtime.preflight"))
+    # Canonical paths (from the existing config owners) so a diagnosis never needs a
+    # screenshot to find where state lives. No secrets. The acquisition lock is the
+    # exact file whose open failure yields News Acquisition Owner: UNKNOWN.
+    _news_lock = str(Path(runtime_dir) / "calendar_acq.lock")
+    _startup_diag = str(Path(runtime_dir) / "startup_diagnostic.json")
+    print("-" * 60)
+    print(" Canonical paths (for diagnostics):")
+    print(f"   MT5 data path      : {disc.get('data_path')}")
+    print(f"   Runtime directory  : {runtime_dir}")
+    print(f"   Bridge directory   : {bridge_root}")
+    print(f"   News bundle        : {news_file}")
+    print(f"   News acq. lock     : {_news_lock}")
+    print(f"   Startup diagnostic : {_startup_diag} (written only on a startup refusal)")
     print("-" * 60)
     print(_line("News Service", "STARTING"))
     print(_line("Producer", "STARTING"))
@@ -543,12 +556,27 @@ def main(argv=None):  # pragma: no cover - Windows/terminal orchestration
         print(" (Ctrl+C to stop all)")
         print("=" * 60)
         # wait until interrupted or a child exits
+        _gate = {"forex_swing_orb.newsfeed": "NEWS_ACQUISITION_OWNERSHIP / NEWS_ACQUISITION",
+                 "forex_swing_orb.producer": "PRODUCER_STARTUP",
+                 "forex_swing_orb.manage": "MANAGER_STARTUP"}
         while True:
             for module, proc in procs:
                 rc = proc.poll()
                 if rc is not None:
-                    print(f"Session Edge launcher: '{module}' exited (code {rc}); "
-                          f"stopping the pipeline.", file=sys.stderr)
+                    comp = module.rsplit(".", 1)[-1].upper()
+                    print("=" * 60, file=sys.stderr)
+                    print(f" {comp} FAILED", file=sys.stderr)
+                    print(f"   Component   : {module}", file=sys.stderr)
+                    print(f"   Exit code   : {rc}", file=sys.stderr)
+                    print(f"   Gate        : {_gate.get(module, 'STARTUP')}", file=sys.stderr)
+                    if module == "forex_swing_orb.newsfeed":
+                        print(f"   Diagnostic  : {_startup_diag} (if written)", file=sys.stderr)
+                        print(f"   Lock path   : {_news_lock}", file=sys.stderr)
+                    print("   Disposition : SESSION EDGE NOT READY — pipeline shut down "
+                          "FAIL-CLOSED", file=sys.stderr)
+                    print("   (The child made the safety decision; the launcher does not "
+                          "override it.)", file=sys.stderr)
+                    print("=" * 60, file=sys.stderr)
                     raise KeyboardInterrupt
             try:
                 procs[0][1].wait(timeout=2)

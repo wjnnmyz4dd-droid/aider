@@ -330,6 +330,48 @@ def _check_lot_sizing():
     return out
 
 
+def _check_news_acquisition_ownership(cfg):
+    """READ-ONLY news-acquisition ownership/runtime-writability probe (parity with the
+    live launcher). Reuses the ONE ownership authority (newsfeed.acquisition_lock.
+    probe_ownership) and the ONE canonical lock-path derivation (newsfeed.config); it
+    creates no second lock mechanism. probe_ownership momentarily TAKES and RELEASES
+    the OS lock only when it is FREE — it never keeps ownership, deletes a lock, starts
+    the newsfeed, or kills a process, and when a LIVE owner exists it returns
+    HELD_BY_OTHER without acquiring (no interference with a running instance).
+
+    PASS   : runtime dir writable + lock openable (no live owner), OR a live owner is
+             present (a running Session Edge is healthy for ownership).
+    FAIL   : UNKNOWN/ERROR — the exact condition (errno/winerror/operation) the live
+             newsfeed would hit; this is what lets preflight PREDICT the launcher P0.
+    ENV    : the lock path cannot be resolved without the launcher's environment.
+    """
+    label = "news acquisition ownership (runtime writable)"
+    try:
+        from ..newsfeed.config import load_calendar_config
+        from ..newsfeed.acquisition_lock import probe_ownership, AcquisitionOwnerState as S
+        ccfg = load_calendar_config()
+        lock_path = ccfg.lock_file
+    except Exception as exc:                            # config error -> cannot resolve
+        return (label, ENV, f"lock path unresolved ({exc}); set the news output/runtime path")
+    if not lock_path:
+        return (label, ENV, "acquisition lock path unresolved (news output file not set); "
+                            "the launcher derives it from the MT5 data folder at start")
+    state, detail = probe_ownership(lock_path)
+    if state in (S.ACQUIRED, S.STALE_RECOVERED):
+        return (label, PASS, f"runtime writable; lock openable, no live owner ({lock_path})")
+    if state == S.HELD_BY_OTHER:
+        return (label, PASS, f"a live acquisition owner is present ({lock_path})")
+    # UNKNOWN / ERROR -> surface the exact underlying reason (the P0 predictor)
+    bits = [f"state={state}", f"op={detail.get('operation')}"]
+    if detail.get("winerror") is not None:
+        bits.append(f"winerror={detail.get('winerror')}")
+    if detail.get("errno") is not None:
+        bits.append(f"errno={detail.get('errno')}")
+    if detail.get("exception_class"):
+        bits.append(detail.get("exception_class"))
+    return (label, FAIL, f"cannot establish ownership at {lock_path}: " + ", ".join(bits))
+
+
 def _mt5_checks(cfg):
     """READ-ONLY MT5 probes. When MetaTrader5/terminal is unavailable every MT5 check
     is ENV (never a false PASS). Never sends/modifies an order."""
@@ -444,6 +486,9 @@ def run_checks(now=None):
     # and H5.
     results.append(_check_producer_health(cfg, now))
     results.append(_check_manager_health(cfg, now))
+    # Parity: predict the launcher's news-acquisition ownership blocker BEFORE starting
+    # the process tree (read-only; reuses the ownership authority).
+    results.append(_check_news_acquisition_ownership(cfg))
     results.extend(_mt5_checks(cfg))
     return results
 
