@@ -36,6 +36,44 @@ _ENDPOINTS = {
 _DEFAULT_MAX_BYTES = 5_000_000
 
 
+def _short_repr(obj, limit=300):
+    """Bounded repr so a diagnostic string can never balloon the log/status file."""
+    try:
+        s = repr(obj)
+    except Exception:                          # a hostile __repr__ must not crash us
+        return "<unrepr-able %s>" % type(obj).__name__
+    return s if len(s) <= limit else s[:limit] + "...(truncated)"
+
+
+def _network_error_detail(exc):
+    """Canonical, STRUCTURED, sanitized detail for a network exception raised during
+    acquisition — so the operator can distinguish HTTP 403/429/5xx from DNS / TLS /
+    connection-reset / connection-refused WITHOUT parsing human-readable strings
+    downstream.
+
+    Captures, where the OS/stdlib supplies them: the exception class, the HTTP status
+    (``urllib.error.HTTPError.code``), the wrapped OSError class
+    (``URLError.reason``), and ``errno`` / ``winerror``. Contains no request headers,
+    response body, or credentials (the free weekly endpoint carries none); the
+    bounded repr is additionally scrubbed by :func:`contract.sanitize_detail` before
+    it is logged or persisted."""
+    detail = {"exception_class": type(exc).__name__, "error": _short_repr(exc)}
+    code = getattr(exc, "code", None)          # HTTPError carries the HTTP status here
+    if isinstance(code, int):
+        detail["http_status"] = code
+    underlying = getattr(exc, "reason", None)  # URLError wraps gaierror/OSError/SSLError
+    if underlying is not None and not isinstance(underlying, str) and underlying is not exc:
+        detail["underlying_class"] = type(underlying).__name__
+    for src in (underlying, exc):
+        if src is None or isinstance(src, str):
+            continue
+        for attr in ("errno", "winerror"):
+            v = getattr(src, attr, None)
+            if isinstance(v, int) and attr not in detail:
+                detail[attr] = v
+    return detail
+
+
 def _check_url_secure(url):
     """Raise unless ``url`` is HTTPS on the allow-listed host (no network). Shared by
     the initial request and the redirect guard so both enforce the same policy."""
@@ -66,15 +104,18 @@ def _default_fetcher(url, timeout, max_bytes):  # pragma: no cover - real networ
     try:
         with opener.open(req, timeout=timeout) as resp:
             if getattr(resp, "status", 200) != 200:
-                raise AcquisitionError(Reason.SOURCE_ERROR, {"status": resp.status})
+                raise AcquisitionError(Reason.SOURCE_ERROR,
+                                       {"http_status": resp.status})
             ctype = resp.headers.get("Content-Type")
             data = resp.read(max_bytes + 1)          # bounded read (no unbounded memory)
             if len(data) > max_bytes:
                 raise AcquisitionError(Reason.OVERSIZED_RESPONSE, {"max_bytes": max_bytes})
             return data.decode("utf-8"), ctype
     except urllib.error.URLError as exc:
-        reason = Reason.TIMEOUT if "timed out" in str(exc).lower() else Reason.SOURCE_ERROR
-        raise AcquisitionError(reason, {"error": repr(exc)})
+        underlying = getattr(exc, "reason", None)
+        is_timeout = isinstance(underlying, TimeoutError) or "timed out" in str(exc).lower()
+        reason = Reason.TIMEOUT if is_timeout else Reason.SOURCE_ERROR
+        raise AcquisitionError(reason, _network_error_detail(exc))
 
 
 class ForexFactoryCalendarProvider(CalendarProvider):

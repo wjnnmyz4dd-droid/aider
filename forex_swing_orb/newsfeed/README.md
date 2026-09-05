@@ -132,9 +132,14 @@ ages and compliance blocks.
 `SESSION_EDGE_CALENDAR_HEALTH_FILE` is written atomically each cycle with a single
 `status`: `HEALTHY` / `PROVIDER_FAILURE` / `SOURCE_STALE` /
 `SOURCE_FRESHNESS_UNESTABLISHED` / `FILE_WRITE_FAILURE`, plus `last_attempt/
-last_success/last_failure/last_failure_reason`, `fetched_at`, `source_as_of`,
-`effective_calendar_as_of`, `coverage_start/end/verified`, `content_hash`,
-`last_content_change`, `event_count`, `high_event_count`, `next_refresh`. A **dead
+last_success/last_failure/last_failure_reason`, `last_failure_detail`, `fetched_at`,
+`source_as_of`, `effective_calendar_as_of`, `coverage_start/end/verified`,
+`content_hash`, `last_content_change`, `event_count`, `high_event_count`,
+`next_refresh`. `last_failure_detail` is a sanitized structured breakdown of the last
+failure (e.g. `http_status` for HTTP 403/429/5xx, or `underlying_class` + `errno`/
+`winerror` for DNS/TLS/reset/refused) so `ACQ_SOURCE_ERROR` is no longer opaque; it
+is cleared on the next successful refresh. The same breakdown is echoed on the
+operator `WARNING` line (`code=… http_status=… disposition=FAIL_CLOSED`). A **dead
 service** cannot self-report; `derive_service_status(status, now)` returns
 `SERVICE_STALE` when `now - last_attempt > 2 * refresh_sec` (rule embedded in the
 file as `service_stale_rule`). No credentials are ever written (asserted).

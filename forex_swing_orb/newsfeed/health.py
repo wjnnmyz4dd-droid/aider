@@ -17,7 +17,7 @@ from ..bridge import serialize
 from ..bridge.atomic import atomic_write_text
 from .contract import (HEALTH_FILE_WRITE_FAILURE, HEALTH_FRESHNESS_UNESTABLISHED,
                        HEALTH_HEALTHY, HEALTH_PROVIDER_FAILURE, HEALTH_SERVICE_STALE,
-                       HEALTH_SOURCE_STALE, SCHEMA_VERSION, Reason)
+                       HEALTH_SOURCE_STALE, SCHEMA_VERSION, Reason, sanitize_detail)
 
 _FORBIDDEN = ("password", "secret", "token", "api_key", "apikey", "credential",
               "authorization", "auth")
@@ -43,6 +43,7 @@ class HealthState:
         self.last_success = None
         self.last_failure = None
         self.last_failure_reason = None
+        self.last_failure_detail = None      # sanitized structured detail (F/E-observability)
         self.fetched_at = None
         self.source_as_of = None
         self.effective_calendar_as_of = None
@@ -68,6 +69,7 @@ class HealthState:
         self.status = HEALTH_HEALTHY
         self.last_success = now_iso
         self.last_failure_reason = None
+        self.last_failure_detail = None                  # cleared on recovery
         self.fetched_at = prov.get("fetched_at")
         self.source_as_of = prov.get("source_as_of")
         self.effective_calendar_as_of = prov.get("effective_calendar_as_of")
@@ -82,11 +84,15 @@ class HealthState:
         self.content_hash = new_hash
         self.next_refresh = next_refresh_iso
 
-    def record_failure(self, *, now_iso, reason, next_refresh_iso):
+    def record_failure(self, *, now_iso, reason, next_refresh_iso, detail=None):
         self.healthy = False
         self.status = _REASON_STATUS.get(reason, HEALTH_PROVIDER_FAILURE)
         self.last_failure = now_iso
         self.last_failure_reason = reason
+        # Sanitized structured detail (http_status / errno / winerror / exception
+        # class ...) so the exact external condition is no longer collapsed into the
+        # bare reason code. None when the failure carried no detail.
+        self.last_failure_detail = sanitize_detail(detail) if detail else None
         self.next_refresh = next_refresh_iso
 
     def to_dict(self):
@@ -101,6 +107,7 @@ class HealthState:
             "last_success": self.last_success,
             "last_failure": self.last_failure,
             "last_failure_reason": self.last_failure_reason,
+            "last_failure_detail": self.last_failure_detail,
             "fetched_at": self.fetched_at,
             "source_as_of": self.source_as_of,
             "effective_calendar_as_of": self.effective_calendar_as_of,

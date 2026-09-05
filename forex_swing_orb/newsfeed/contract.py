@@ -88,6 +88,55 @@ class AcquisitionError(Exception):
         super().__init__(f"{reason}: {self.detail}")
 
 
+# Credential-shaped substrings scrubbed from any diagnostic VALUE before it reaches
+# a log line or the status artifact. (health.py separately guards KEY names.)
+_SENSITIVE_TOKENS = ("password", "secret", "token", "api_key", "apikey", "apitoken",
+                     "credential", "authorization", "auth=", "cookie", "session=",
+                     "access_key", "bearer ")
+
+
+def sanitize_detail(detail, *, max_len=300):
+    """Canonical, single-source sanitizer for an :class:`AcquisitionError` detail
+    dict. Bounds string length and redacts any credential-shaped value so the same
+    guarantee applies to BOTH the operator log line and the persisted status file.
+    Diagnostic-only: never raises (a diagnostic must not break the failure path).
+
+    This is observability rendering, NOT trade/veto logic — it approves nothing and
+    reads no clock. It is the ONE authority for turning a detail into safe output;
+    callers must not re-implement the redaction/truncation elsewhere."""
+    out = {}
+    for k, v in (detail or {}).items():
+        try:
+            # Coerce anything that is not a JSON-native scalar into a bounded repr
+            # so the persisted status file is ALWAYS serializable (a malformed detail
+            # can never crash the health write / the failure path).
+            if v is not None and not isinstance(v, (str, int, float, bool)):
+                v = repr(v)
+            if isinstance(v, str):
+                low = v.lower()
+                if any(tok in low for tok in _SENSITIVE_TOKENS):
+                    out[k] = "[REDACTED]"
+                elif len(v) > max_len:
+                    out[k] = v[:max_len] + "...(truncated)"
+                else:
+                    out[k] = v
+            else:
+                out[k] = v
+        except Exception:                      # never let diagnostics break the caller
+            out[k] = "[UNRENDERABLE]"
+    return out
+
+
+def format_failure(reason, detail):
+    """Canonical operator-log rendering of an acquisition failure as compact,
+    sanitized ``key=value`` pairs (e.g. ``code=ACQ_SOURCE_ERROR http_status=429``).
+    Single authority shared by every human-readable failure surface."""
+    parts = ["code=%s" % reason]
+    for k, v in sanitize_detail(detail).items():
+        parts.append("%s=%s" % (k, v))
+    return " ".join(parts)
+
+
 @dataclass(frozen=True)
 class RawCalendar:
     """Provider output: raw upstream rows plus acquisition metadata. Source-specific

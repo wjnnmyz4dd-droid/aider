@@ -29,7 +29,7 @@ from . import health as health_mod
 from . import writer
 from .acquire import CalendarAcquirer
 from .acquisition_lock import AcquisitionOwnerState, acquire_ownership
-from .contract import AcquisitionError, Reason
+from .contract import AcquisitionError, Reason, format_failure
 
 STARTUP_DIAGNOSTIC_SCHEMA = 1
 STARTUP_DIAGNOSTIC_FILE = "startup_diagnostic.json"
@@ -87,20 +87,31 @@ class CalendarAcquisitionService:
             try:
                 bundle = self._acquire_with_retries(now)
             except AcquisitionError as exc:
+                lkg_age = self._last_known_good_age_sec(now)
                 self.health.record_failure(now_iso=now_iso, reason=exc.reason,
-                                           next_refresh_iso=next_iso)
+                                           next_refresh_iso=next_iso, detail=exc.detail)
                 self._write_health()
-                self.logger.warning("acquisition failed (%s); last-known-good preserved",
-                                    exc.reason)
+                # Preserve the exact external condition (http_status / errno /
+                # winerror / exception class ...) instead of collapsing it into the
+                # bare reason code. Observability only: last-known-good is untouched
+                # and the compliance freshness rule remains the sole trade authority.
+                self.logger.warning(
+                    "acquisition failed; %s provider=%s "
+                    "last_known_good_preserved=%s last_known_good_age_sec=%s "
+                    "disposition=FAIL_CLOSED",
+                    format_failure(exc.reason, exc.detail), self.cfg.provider,
+                    "true" if lkg_age is not None else "unknown",
+                    lkg_age if lkg_age is not None else "unknown")
                 return False
             try:
                 writer.write_bundle(self.cfg.output_file, bundle)
             except OSError as exc:
                 self.health.record_failure(now_iso=now_iso, reason=Reason.WRITE_FAILED,
-                                           next_refresh_iso=next_iso)
+                                           next_refresh_iso=next_iso,
+                                           detail={"error": repr(exc)})
                 self._write_health()
-                self.logger.error("news-file write failed (%r); last-known-good preserved",
-                                  exc)
+                self.logger.error("news-file write failed (%s); last-known-good preserved",
+                                  format_failure(Reason.WRITE_FAILED, {"error": repr(exc)}))
                 return False
             self._last_content_hash = bundle["provenance"].get("content_hash")
             self.health.record_success(now_iso=now_iso, bundle=bundle,
@@ -133,6 +144,24 @@ class CalendarAcquisitionService:
                 if i < attempts - 1:
                     self._sleep(min(self.cfg.backoff_sec * (2 ** i), 60.0))
         raise last
+
+    def _last_known_good_age_sec(self, now):
+        """Best-effort age (whole seconds) of the PRESERVED bundle's content
+        ``as_of``, for the operator failure log only. Reads the SAME durable bundle
+        used elsewhere (no new state authority) and NEVER raises. This is a display
+        number ONLY: it does not compute freshness, veto, or influence any trade
+        decision — ``compliance/news.py`` remains the sole freshness/veto authority.
+        Returns None when unavailable."""
+        try:
+            bundle = writer.read_last_good(self.cfg.output_file)
+            if not isinstance(bundle, dict):
+                return None
+            as_of = serialize.parse_iso(bundle.get("as_of"))
+            if as_of is None:
+                return None
+            return int((now - as_of).total_seconds())
+        except Exception:                        # diagnostics must never break refresh
+            return None
 
     def _runtime_dir(self):
         """The canonical Session Edge runtime directory (parent of the news bundle /
